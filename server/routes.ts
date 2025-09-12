@@ -99,14 +99,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Helper function to sanitize CSV fields and prevent formula injection
-  const sanitizeCsvField = (field: string): string => {
-    if (!field) return '';
-    const str = String(field);
-    // Prefix dangerous characters that could be interpreted as formulas
-    if (str.match(/^[=+\-@]/)) {
-      return "'" + str;
-    }
-    return str;
+  const sanitizeCsvField = (value: any): string => {
+    const str = String(value ?? '');
+    
+    // Check for formula injection patterns (including leading whitespace)
+    const needsPrefix = /^[\s\t\r\n\u00a0]*[=+\-@]/.test(str);
+    const safeValue = (needsPrefix ? "'" : '') + str;
+    
+    // Escape double quotes and wrap in quotes
+    return '"' + safeValue.replaceAll('"', '""') + '"';
   };
 
   // Export SERP results as CSV
@@ -124,10 +125,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const topKeywords = await storage.getTopKeywordsByBlog(blog.id);
         
         if (topKeywords.length === 0) {
-          csv += `"${sanitizeCsvField(blog.blogName)}","${sanitizeCsvField(blog.blogUrl)}","${sanitizeCsvField(blog.seedKeyword)}",${blog.rank},"추가 떠있는 키워드 없음","",""\n`;
+          csv += `${sanitizeCsvField(blog.blogName)},${sanitizeCsvField(blog.blogUrl)},${sanitizeCsvField(blog.seedKeyword)},${sanitizeCsvField(blog.rank)},${sanitizeCsvField("추가 떠있는 키워드 없음")},${sanitizeCsvField("")},${sanitizeCsvField("")}\n`;
         } else {
           for (const keyword of topKeywords) {
-            csv += `"${sanitizeCsvField(blog.blogName)}","${sanitizeCsvField(blog.blogUrl)}","${sanitizeCsvField(blog.seedKeyword)}",${blog.rank},"${sanitizeCsvField(keyword.keyword)}",${keyword.searchVolume || ''},${keyword.serpRank || ''}\n`;
+            csv += `${sanitizeCsvField(blog.blogName)},${sanitizeCsvField(blog.blogUrl)},${sanitizeCsvField(blog.seedKeyword)},${sanitizeCsvField(blog.rank)},${sanitizeCsvField(keyword.keyword)},${sanitizeCsvField(keyword.searchVolume || '')},${sanitizeCsvField(keyword.serpRank || '')}\n`;
           }
         }
       }
