@@ -1,0 +1,155 @@
+한줄 결론: 백엔드는 돌지만 “API 계약 불일치/가짜 시드 코드 참조/프론트 렌더 오류(빈 화면)” 조합입니다. **HTTP-only 실코드로 고정 + API 응답 스키마 고정 + 프론트 상태처리(loading/empty/error/partial)**를 강제하면 바로 잡힙니다.
+
+짧은 브리핑
+
+“가짜 시드” 모듈이 여전히 import되어 실검색 코드가 실행되지 않음 → 백엔드는 ‘성공’처럼 보이지만 결과 엔드포인트는 빈값/다른 스키마.
+
+프론트는 /api/serp/jobs/:jobId/results의 스키마 가정이 달라 런타임 에러 → 빈 화면 (ErrorBoundary 없음).
+
+Replit에선 Playwright 제거 후 RSS/HTTP 파서로 통일해야 안정.
+
+아래 그대로 적용하면 됩니다 — 수정 지시 + 패치 + 수락기준 + 스모크 테스트.
+
+1) 서버측 “진짜 검색만” 쓰도록 고정 (가짜 시드 제거)
+A. server/routes.ts (Express 가정) — 가짜 시드 import 제거 + 스키마 고정
+// BEFORE (문제: stub/seedSearch import가 남아있음)
+// import { searchBlogs } from './seedSearch';
+
+// AFTER: 실제 OpenAPI + Fallback 사용
+import { startJob, getJobStatus, getJobResults } from './services/jobs'; // 단일 진입점
+
+export default function mountRoutes(app) {
+  app.post('/api/serp/search', async (req, res) => {
+    try {
+      const { keyword, blogs = 10, recent = 10, seeds = [] } = req.body || {};
+      const jobId = await startJob({ keyword, blogs, recent, seeds }); // 실검색+RSS/HTML
+      res.type('application/json').status(202).send({ jobId });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  app.get('/api/serp/jobs/:jobId/status', (req, res) => {
+    const data = getJobStatus(req.params.jobId);
+    if (!data) return res.status(404).json({ error: 'JOB_NOT_FOUND' });
+    res.type('application/json').json(data);
+  });
+
+  app.get('/api/serp/jobs/:jobId/results', (req, res) => {
+    const data = getJobResults(req.params.jobId);
+    if (!data) return res.status(404).json({ error: 'JOB_NOT_FOUND' });
+    // ▶️ 프론트 계약: 항상 동일 스키마
+    // { blogs:[{blog_id,blog_url,gathered_posts}], posts:[{blog_id,post_url,post_title,published_at}], keywords:[{blog_id,top3:[...]}], errors:[...] }
+    res.type('application/json').json(data);
+  });
+}
+
+B. server/services/jobs.ts — HTTP-only 파이프라인 + OpenAPI/Fallback
+import { discoverBlogs } from './naver_discovery';   // OpenAPI 있으면 사용
+import { listRecentPosts } from './recent_http';     // RSS 우선, 실패 시 m.blog HTML 파싱
+import { extractTop3 } from './keywords';            // n-gram + (선택) 검색광고 가중치
+import { serpRank } from './naver_serp';             // OpenAPI 있으면 랭크, 없으면 NA
+
+type JobState = 'pending'|'running'|'partial'|'done'|'error';
+const store = new Map<string, any>();
+
+export async function startJob({ keyword, blogs, recent, seeds }){
+  const jobId = Math.random().toString(36).slice(2);
+  store.set(jobId, { state:'pending', blogs:[], posts:[], keywords:[], errors:[] });
+  queueMicrotask(async () => {
+    const job = store.get(jobId);
+    job.state = 'running';
+    try {
+      // 1) 블로그 발견: 키 없으면 seeds 사용(필수)
+      const targets = (await discoverBlogs(keyword, blogs, seeds));
+      job.blogs = targets.map(b => ({ blog_id: b.id, blog_url: b.url, gathered_posts: 0 }));
+
+      // 2) 블로그별 최근 글 수집 + 키워드 산출 + SERP
+      for (const b of targets) {
+        const posts = await listRecentPosts(b); // 최대 recent개
+        job.posts.push(...posts);
+        const top3 = extractTop3(posts.map(p => p.title));
+        job.keywords.push({ blog_id: b.id, top3, rank: await serpRank(top3, b.id) });
+        const idx = job.blogs.findIndex(x => x.blog_id === b.id);
+        if (idx>=0) job.blogs[idx].gathered_posts = posts.length;
+      }
+
+      job.state = 'done';
+    } catch (e) {
+      job.errors.push(String(e));
+      job.state = job.posts.length > 0 ? 'partial' : 'error';
+    } finally {
+      store.set(jobId, job);
+    }
+  });
+  return jobId;
+}
+
+export function getJobStatus(jobId:string){
+  const j = store.get(jobId);
+  return j ? { jobId, state:j.state, counts:{ blogs:j.blogs.length, posts:j.posts.length, keywords:j.keywords.length }, errors:j.errors } : null;
+}
+
+export function getJobResults(jobId:string){
+  const j = store.get(jobId);
+  return j ? { jobId, state:j.state, blogs:j.blogs, posts:j.posts, keywords:j.keywords, errors:j.errors } : null;
+}
+
+
+핵심: seedSearch 같은 스텁 경로를 완전히 제거하고, discoverBlogs가 “OpenAPI 키 없으면 seeds로 진행”하도록 강제. 그리고 results 응답 스키마를 고정했습니다.
+
+2) 프론트엔드: 빈 화면 방지(로딩/에러/빈값/부분성공)
+
+React(또는 Next) 기준 예시:
+
+// components/SearchPanel.tsx
+import useSWR from 'swr';
+const fetcher = (url:string) => fetch(url).then(r => r.json());
+
+export function ResultsView({ jobId }: { jobId:string }) {
+  const { data:status } = useSWR(`/api/serp/jobs/${jobId}/status`, fetcher, { refreshInterval: 1500 });
+  const { data:res, error } = useSWR(
+    status?.state === 'done' || status?.state === 'partial' ? `/api/serp/jobs/${jobId}/results` : null,
+    fetcher
+  );
+
+  if (!status) return <div>⏳ 검색 중…</div>;
+  if (error) return <div>❌ 오류: {String(error)}</div>;
+  if (status.state === 'error') return <div>⚠️ 작업 실패: {status.errors?.[0] || 'unknown'}</div>;
+  if (!res) return <div>🔎 처리 중… {status.state}</div>;
+
+  const hasData = (res.posts?.length || 0) > 0;
+  if (!hasData) return <div>📭 결과 없음(빈값). 키워드/시드/권한을 확인하세요.</div>;
+
+  return (
+    <div>
+      <h3>블로그 {res.blogs.length}개 · 포스트 {res.posts.length}개</h3>
+      <ul>
+        {res.keywords.map((k:any) => (
+          <li key={k.blog_id}>
+            <b>{k.blog_id}</b> — TOP3: {k.top3.join(', ')} — 랭크: {JSON.stringify(k.rank)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+
+포인트: state=partial도 화면에 보여주고, 빈 배열을 “오류”로 취급하지 않음. 빈 화면 대신 명시 메시지를 표시.
+
+3) 수락 기준(Acceptance) — “성공” 문구 금지, 숫자 보고
+
+POST /api/serp/search → { jobId } 반환.
+
+GET /api/serp/jobs/:id/status → {state in [pending,running,partial,done,error], counts, errors}.
+
+GET /api/serp/jobs/:id/results → 항상 동일 스키마:
+blogs[]: {blog_id, blog_url, gathered_posts},
+posts[]: {blog_id, post_url, post_title, published_at},
+keywords[]: {blog_id, top3[], rank: { [kw]: number|null }},
+errors[]: string[].
+
+Playwright 불사용(요구사항/의존성에서 제거).
+
+API 키 없을 때도 실행(seeds로 진행) — 결과가 적어도 빈 화면 금지.

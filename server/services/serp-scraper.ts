@@ -228,7 +228,7 @@ class SerpScraper {
   private extractTitleFromSearchContext(context: string, blogId: string, keyword: string): string {
     // Try multiple title extraction patterns
     const titlePatterns = [
-      /<[^>]*title[^>]*['"]([^'"]{10,80})['"][^>]*>/i,
+      /<[^>]*title[^>]*['"]([^'"]{10,80})['"][^>]*>/gi,
       /<[^>]*>([^<]{10,80}[가-힣][^<]{0,40})<\/[^>]*>/g,
       />([^<]{15,80}[가-힣][^<]{0,20})</g,
     ];
@@ -252,11 +252,12 @@ class SerpScraper {
    */
   private extractSnippetFromSearchContext(context: string, keyword: string): string {
     // Look for text content that might be description
-    const textMatches = context.match(/>([^<]{20,150}[가-힣][^<]{0,50})</g);
+    const textPattern = />([^<]{20,150}[가-힣][^<]{0,50})</g;
+    const textMatches = Array.from(context.matchAll(textPattern));
     
-    if (textMatches) {
+    if (textMatches.length > 0) {
       for (const match of textMatches) {
-        const text = match.slice(1, -1).trim();
+        const text = match[1].trim();
         if (text.includes(keyword) || text.length > 30) {
           return text.slice(0, 100) + (text.length > 100 ? '...' : '');
         }
