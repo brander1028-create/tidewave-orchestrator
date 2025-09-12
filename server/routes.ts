@@ -66,6 +66,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Cancel/Stop SERP job
+  app.post("/api/serp/jobs/:jobId/cancel", async (req, res) => {
+    try {
+      console.log(`[CANCEL] 🛑 Received cancellation request for job: ${req.params.jobId}`);
+      
+      const job = await storage.getSerpJob(req.params.jobId);
+      if (!job) {
+        console.log(`[CANCEL] ❌ Job not found: ${req.params.jobId}`);
+        return res.status(404).json({ error: "Job not found" });
+      }
+      
+      console.log(`[CANCEL] 📊 Current job status: ${job.status}, step: ${job.currentStep}, progress: ${job.progress}%`);
+      
+      if (job.status !== "running") {
+        console.log(`[CANCEL] ⚠️  Job is not running, current status: ${job.status}`);
+        return res.status(400).json({ error: "Job is not running" });
+      }
+      
+      // Update job status to cancelled
+      const updatedJob = await storage.updateSerpJob(req.params.jobId, {
+        status: "cancelled",
+        currentStep: null,
+        currentStepDetail: "사용자에 의해 분석이 중단되었습니다",
+        progress: job.progress, // Keep current progress
+        updatedAt: new Date(),
+      });
+      
+      console.log(`[CANCEL] ✅ Job ${req.params.jobId} successfully cancelled by user`);
+      console.log(`[CANCEL] 📋 Updated job status:`, {
+        id: updatedJob?.id,
+        status: updatedJob?.status,
+        currentStepDetail: updatedJob?.currentStepDetail,
+        progress: updatedJob?.progress
+      });
+      
+      res.json(updatedJob);
+    } catch (error) {
+      console.error("[CANCEL] ❌ Error cancelling job:", error);
+      res.status(500).json({ error: "Failed to cancel job" });
+    }
+  });
+
   // Get SERP job results with discovered blogs and keywords
   app.get("/api/serp/jobs/:jobId/results", async (req, res) => {
     try {
@@ -149,12 +191,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
 // Background SERP analysis job processing
 async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank: number, maxRank: number) {
   try {
+    // Helper function to check if job is cancelled
+    const checkIfCancelled = async (): Promise<boolean> => {
+      const currentJob = await storage.getSerpJob(jobId);
+      return currentJob?.status === "cancelled";
+    };
+
     const job = await storage.getSerpJob(jobId);
     if (!job) return;
 
     await storage.updateSerpJob(jobId, {
       status: "running",
       currentStep: "discovering_blogs",
+      currentStepDetail: "키워드 검색을 시작합니다...",
       progress: 5
     });
 
@@ -164,7 +213,24 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
     const allDiscoveredBlogs = new Map<string, any>(); // Use URL as key to deduplicate
     
     for (const [index, keyword] of Array.from(keywords.entries())) {
+      // Check if job is cancelled before processing each keyword
+      if (await checkIfCancelled()) {
+        console.log(`Job ${jobId} cancelled during keyword discovery phase`);
+        return;
+      }
+      
       try {
+        // Update detailed progress
+        await storage.updateSerpJob(jobId, {
+          currentStepDetail: `키워드 '${keyword}' 검색 중 (${index + 1}/${keywords.length})`,
+          detailedProgress: {
+            currentKeyword: keyword,
+            keywordIndex: index + 1,
+            totalKeywords: keywords.length,
+            phase: "keyword_search"
+          }
+        });
+        
         console.log(`Searching blogs for keyword: ${keyword} (${index + 1}/${keywords.length})`);
         
         const serpResults = await serpScraper.searchKeywordOnMobileNaver(keyword, minRank, maxRank);
@@ -175,7 +241,7 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
               jobId: job.id,
               seedKeyword: keyword,
               rank: result.rank,
-              blogName: result.blogName || result.title,
+              blogName: result.title,
               blogUrl: result.url
             });
             
@@ -200,15 +266,43 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
     const discoveredBlogs = Array.from(allDiscoveredBlogs.values());
     console.log(`Discovered ${discoveredBlogs.length} unique blogs`);
 
+    // Check if cancelled before proceeding to blog analysis
+    if (await checkIfCancelled()) {
+      console.log(`Job ${jobId} cancelled after keyword discovery phase`);
+      return;
+    }
+
     await storage.updateSerpJob(jobId, {
       currentStep: "analyzing_posts",
+      currentStepDetail: `발견된 ${discoveredBlogs.length}개 블로그의 포스트를 분석합니다...`,
       completedSteps: 1,
-      progress: 35
+      progress: 35,
+      detailedProgress: {
+        blogsDiscovered: discoveredBlogs.length,
+        phase: "blog_analysis_start"
+      }
     });
 
     // Step 2: Analyze posts for each discovered blog
     for (const [index, blog] of Array.from(discoveredBlogs.entries())) {
+      // Check if job is cancelled before processing each blog
+      if (await checkIfCancelled()) {
+        console.log(`Job ${jobId} cancelled during blog analysis phase`);
+        return;
+      }
+      
       try {
+        // Update detailed progress
+        await storage.updateSerpJob(jobId, {
+          currentStepDetail: `블로그 '${blog.blogName}' 분석 중 (${index + 1}/${discoveredBlogs.length})`,
+          detailedProgress: {
+            currentBlog: blog.blogName,
+            blogIndex: index + 1,
+            totalBlogs: discoveredBlogs.length,
+            phase: "blog_analysis"
+          }
+        });
+        
         console.log(`Analyzing posts for blog: ${blog.blogName} (${index + 1}/${discoveredBlogs.length})`);
         
         // Scrape recent posts
@@ -257,19 +351,67 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
       }
     }
 
+    // Check if cancelled before proceeding to ranking checks
+    if (await checkIfCancelled()) {
+      console.log(`Job ${jobId} cancelled after blog analysis phase`);
+      return;
+    }
+
     await storage.updateSerpJob(jobId, {
       currentStep: "checking_rankings",
+      currentStepDetail: "키워드 순위 확인을 시작합니다...",
       completedSteps: 2,
-      progress: 65
+      progress: 65,
+      detailedProgress: {
+        phase: "ranking_check_start"
+      }
     });
 
     // Step 3: Check SERP rankings for extracted keywords
     for (const [index, blog] of Array.from(discoveredBlogs.entries())) {
+      // Check if job is cancelled before processing each blog's rankings
+      if (await checkIfCancelled()) {
+        console.log(`Job ${jobId} cancelled during ranking check phase`);
+        return;
+      }
+      
       try {
         const topKeywords = await storage.getTopKeywordsByBlog(blog.id);
         
-        for (const keyword of topKeywords) {
+        // Update progress for this blog's ranking checks
+        await storage.updateSerpJob(jobId, {
+          currentStepDetail: `'${blog.blogName}' 키워드 순위 확인 중 (${index + 1}/${discoveredBlogs.length})`,
+          detailedProgress: {
+            currentBlog: blog.blogName,
+            blogIndex: index + 1,
+            totalBlogs: discoveredBlogs.length,
+            keywordsToCheck: topKeywords.length,
+            phase: "ranking_check"
+          }
+        });
+        
+        for (const [keywordIndex, keyword] of Array.from(topKeywords.entries())) {
+          // Check cancellation for each keyword ranking check
+          if (await checkIfCancelled()) {
+            console.log(`Job ${jobId} cancelled during keyword ranking check`);
+            return;
+          }
+          
           try {
+            // Update detailed progress for current keyword check
+            await storage.updateSerpJob(jobId, {
+              currentStepDetail: `키워드 '${keyword.keyword}' 순위 확인 중 (${keywordIndex + 1}/${topKeywords.length}) - ${blog.blogName}`,
+              detailedProgress: {
+                currentBlog: blog.blogName,
+                currentKeyword: keyword.keyword,
+                keywordIndex: keywordIndex + 1,
+                totalKeywords: topKeywords.length,
+                blogIndex: index + 1,
+                totalBlogs: discoveredBlogs.length,
+                phase: "keyword_ranking_check"
+              }
+            });
+            
             console.log(`Checking SERP ranking for "${keyword.keyword}" from blog: ${blog.blogName}`);
             
             const serpRank = await serpScraper.checkKeywordRankingInMobileNaver(keyword.keyword, blog.blogUrl);
@@ -303,12 +445,22 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
       }
     }
 
+    // Final check before completion
+    if (await checkIfCancelled()) {
+      console.log(`Job ${jobId} cancelled before completion`);
+      return;
+    }
+
     // Complete the job
     await storage.updateSerpJob(jobId, {
       status: "completed",
       currentStep: "completed",
+      currentStepDetail: "분석이 완료되었습니다",
       completedSteps: 3,
       progress: 100,
+      detailedProgress: {
+        phase: "completed"
+      },
       results: {
         keywordsSearched: keywords.length,
         blogsDiscovered: discoveredBlogs.length,
@@ -323,6 +475,7 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
     
     await storage.updateSerpJob(jobId, {
       status: "failed",
+      currentStepDetail: "분석 중 오류가 발생했습니다",
       errorMessage: error instanceof Error ? error.message : "Unknown error occurred"
     });
   }

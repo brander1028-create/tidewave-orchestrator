@@ -14,7 +14,7 @@ export interface IStorage {
   // SERP Job operations
   createSerpJob(job: InsertSerpJob): Promise<SerpJob>;
   getSerpJob(id: string): Promise<SerpJob | undefined>;
-  updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<void>;
+  updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<SerpJob | undefined>;
   
   // Discovered blog operations
   createDiscoveredBlog(blog: InsertDiscoveredBlog): Promise<DiscoveredBlog>;
@@ -42,9 +42,14 @@ export class MemStorage implements IStorage {
     const job: SerpJob = {
       ...insertJob,
       id,
+      status: insertJob.status || "pending",
+      minRank: insertJob.minRank || 2,
+      maxRank: insertJob.maxRank || 15,
       progress: insertJob.progress || 0,
       results: insertJob.results || null,
       currentStep: insertJob.currentStep || null,
+      currentStepDetail: insertJob.currentStepDetail || null,
+      detailedProgress: insertJob.detailedProgress || null,
       totalSteps: insertJob.totalSteps || 3,
       completedSteps: insertJob.completedSteps || 0,
       errorMessage: insertJob.errorMessage || null,
@@ -59,15 +64,18 @@ export class MemStorage implements IStorage {
     return this.serpJobs.get(id);
   }
 
-  async updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<void> {
+  async updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<SerpJob | undefined> {
     const job = this.serpJobs.get(id);
     if (job) {
-      this.serpJobs.set(id, {
+      const updatedJob = {
         ...job,
         ...updates,
         updatedAt: new Date(),
-      });
+      };
+      this.serpJobs.set(id, updatedJob);
+      return updatedJob;
     }
+    return undefined;
   }
 
   // Discovered blog operations
@@ -105,7 +113,7 @@ export class MemStorage implements IStorage {
   async getAnalyzedPosts(blogId: string): Promise<AnalyzedPost[]> {
     return Array.from(this.analyzedPosts.values())
       .filter(post => post.blogId === blogId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
   }
 
   // Extracted keyword operations

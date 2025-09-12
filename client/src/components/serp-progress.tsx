@@ -1,7 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Search, RefreshCw, TrendingUp, AlertCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Search, RefreshCw, TrendingUp, AlertCircle, StopCircle } from "lucide-react";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { SerpJob } from "@shared/schema";
 
 interface SerpProgressProps {
@@ -33,8 +35,16 @@ export default function SerpProgress({ jobId }: SerpProgressProps) {
   const { data: job, isLoading } = useQuery<SerpJob>({
     queryKey: ["/api/serp/jobs", jobId],
     refetchInterval: (query) => {
-      // Stop refetching when completed or failed
-      return query.data?.status === "running" ? 2000 : false;
+      // Stop refetching when completed or failed  
+      return query.state.data?.status === "running" ? 2000 : false;
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () => apiRequest(`/api/serp/jobs/${jobId}/cancel`, "POST"),
+    onSuccess: () => {
+      // Invalidate job query to refresh status
+      queryClient.invalidateQueries({ queryKey: ["/api/serp/jobs", jobId] });
     },
   });
 
@@ -63,24 +73,46 @@ export default function SerpProgress({ jobId }: SerpProgressProps) {
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle>분석 진행 상황</CardTitle>
-          <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+              {isRunning && (
+                <>
+                  <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
+                  <span>실시간 분석 중</span>
+                </>
+              )}
+              {isFailed && (
+                <>
+                  <AlertCircle className="w-4 h-4 text-destructive" />
+                  <span className="text-destructive">분석 실패</span>
+                </>
+              )}
+              {job.status === "cancelled" && (
+                <>
+                  <StopCircle className="w-4 h-4 text-orange-500" />
+                  <span className="text-orange-600">분석 중단됨</span>
+                </>
+              )}
+              {job.status === "completed" && (
+                <>
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <span className="text-green-600">분석 완료</span>
+                </>
+              )}
+            </div>
+            {/* 정지 버튼 */}
             {isRunning && (
-              <>
-                <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
-                <span>실시간 분석 중</span>
-              </>
-            )}
-            {isFailed && (
-              <>
-                <AlertCircle className="w-4 h-4 text-destructive" />
-                <span className="text-destructive">분석 실패</span>
-              </>
-            )}
-            {job.status === "completed" && (
-              <>
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-green-600">분석 완료</span>
-              </>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => cancelMutation.mutate()}
+                disabled={cancelMutation.isPending}
+                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                data-testid="button-cancel-analysis"
+              >
+                <StopCircle className="w-4 h-4 mr-1" />
+                {cancelMutation.isPending ? "중단 중..." : "분석 중단"}
+              </Button>
             )}
           </div>
         </div>
@@ -120,6 +152,16 @@ export default function SerpProgress({ jobId }: SerpProgressProps) {
                     <div className="text-xs text-muted-foreground mt-1">
                       {step.description}
                     </div>
+                    {/* 상세한 현재 작업 내용 표시 */}
+                    {isCurrent && job.currentStepDetail && (
+                      <div className="text-xs text-blue-600 dark:text-blue-400 mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded">
+                        <div className="flex items-center space-x-1">
+                          <div className="w-1.5 h-1.5 bg-blue-600 dark:bg-blue-400 rounded-full animate-pulse"></div>
+                          <span className="font-medium">실시간:</span>
+                          <span>{job.currentStepDetail}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <span className="text-sm text-muted-foreground">

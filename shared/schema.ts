@@ -9,11 +9,13 @@ export const serpJobs = pgTable("serp_jobs", {
   keywords: text("keywords").array().notNull(), // Input keywords array
   minRank: integer("min_rank").notNull().default(2),
   maxRank: integer("max_rank").notNull().default(15),
-  status: text("status").notNull().default("pending"), // pending, running, completed, failed
+  status: text("status").notNull().default("pending"), // pending, running, completed, failed, cancelled
   progress: integer("progress").default(0), // 0-100
   currentStep: text("current_step"), // discovering_blogs, analyzing_posts, checking_rankings
+  currentStepDetail: text("current_step_detail"), // "홍삼스틱" 키워드 검색 중... (3/5)
   totalSteps: integer("total_steps").default(3),
   completedSteps: integer("completed_steps").default(0),
+  detailedProgress: jsonb("detailed_progress"), // { currentKeyword, processedKeywords, totalKeywords, currentBlog, etc }
   errorMessage: text("error_message"),
   results: jsonb("results"), // final analysis results
   createdAt: timestamp("created_at").defaultNow(),
