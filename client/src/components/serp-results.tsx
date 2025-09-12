@@ -180,21 +180,32 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                           노출된 키워드들:
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {result.topKeywords.map((keyword, keywordIndex) => (
-                            <Badge
-                              key={keyword.id}
-                              variant={keywordIndex === 0 ? "default" : "secondary"}
-                              className="flex items-center gap-1"
-                              data-testid={`keyword-${result.blog.id}-${keywordIndex}`}
-                            >
-                              {keyword.keyword}
-                              {keyword.serpRank && (
-                                <span className="text-xs">
-                                  {keyword.serpRank}위
+                          {result.topKeywords.map((keyword, keywordIndex) => {
+                            const tierNum = keywordIndex + 1;
+                            const tierClass = 
+                              keywordIndex === 0 ? "bg-blue-100 text-blue-800 border-blue-200" :
+                              keywordIndex === 1 ? "bg-green-100 text-green-800 border-green-200" : 
+                              "bg-orange-100 text-orange-800 border-orange-200";
+                            
+                            return (
+                              <Badge
+                                key={keyword.id}
+                                className={`flex items-center gap-2 ${tierClass} font-medium`}
+                                data-testid={`keyword-${result.blog.id}-${keywordIndex}`}
+                              >
+                                <span className="font-bold">TIER{tierNum}</span>
+                                <span>{keyword.keyword}</span>
+                                <span className="text-xs font-normal">
+                                  ({keyword.searchVolume ? keyword.searchVolume.toLocaleString() : '0'})
                                 </span>
-                              )}
-                            </Badge>
-                          ))}
+                                {keyword.serpRank && (
+                                  <span className="text-xs font-normal">
+                                    • {keyword.serpRank}위
+                                  </span>
+                                )}
+                              </Badge>
+                            );
+                          })}
                         </div>
                       </div>
 

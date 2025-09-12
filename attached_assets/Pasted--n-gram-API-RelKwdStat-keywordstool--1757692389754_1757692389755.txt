@@ -1,0 +1,163 @@
+지금 화면에 보이는 “키워드 칩”들은 **빈도(n-gram)**로만 뽑힌 흔적이고, 네이버 검색광고 키워드 도구 API(RelKwdStat /keywordstool)로 **월간 검색량(PC/모바일)**을 조회해 Tier 1/2/3로 랭킹해야 합니다. 아래처럼 고치면 바로 잡힙니다.
+
+한 줄 지시문(복붙)
+
+> Playwright/가짜 시드 제거 유지. 서버에 searchad 클라이언트를 추가해서 /keywordstool로 월간 검색량(PC/모바일)을 가져오고, extractTop3()는 검색량 합계 기준으로 tier1/tier2/tier3를 산출·반환. 프론트는 칩을 “Tier 1/2/3 (합계)”로 렌더. API 키 없으면 빈도 기반으로 Fallback하되 스키마는 동일 유지.
+
+
+
+
+---
+
+1) 서버: SearchAd(키워드 도구) 연동 추가 (TypeScript)
+
+env
+
+SEARCHAD_API_KEY=...        # Access License
+SEARCHAD_SECRET_KEY=...     # Secret Key
+SEARCHAD_CUSTOMER_ID=...    # Customer ID(숫자)
+
+server/services/searchad.ts
+
+import crypto from 'crypto';
+import fetch from 'node-fetch';
+
+const BASE = 'https://api.naver.com';
+const PATH = '/keywordstool';
+
+type Vol = { pc: number; mobile: number; total: number; compIdx?: string };
+
+function sign(ts: string, method: 'GET'|'POST', path: string, secret: string) {
+  // Naver SearchAd: signature = HMAC-SHA256( `${ts}.${method}.${path}` )
+  return crypto.createHmac('sha256', secret).update(`${ts}.${method}.${path}`).digest('base64');
+}
+
+export async function getVolumes(rawKeywords: string[]): Promise<Record<string, Vol>> {
+  const API_KEY = process.env.SEARCHAD_API_KEY!;
+  const SECRET = process.env.SEARCHAD_SECRET_KEY!;
+  const CUSTOMER = process.env.SEARCHAD_CUSTOMER_ID!;
+
+  if (!API_KEY || !SECRET || !CUSTOMER) return {};
+
+  // 중복/공백 정리, 너무 짧은 토큰 제거
+  const ks = Array.from(new Set(rawKeywords.map(k => k.trim()).filter(k => k.length >= 2)));
+  if (!ks.length) return {};
+
+  // 길이 제한 회피용 청크(너무 많이 붙이면 URL 길이 초과 위험) — 5개씩
+  const chunks: string[][] = [];
+  for (let i = 0; i < ks.length; i += 5) chunks.push(ks.slice(i, i+5));
+
+  const out: Record<string, Vol> = {};
+  for (const chunk of chunks) {
+    const ts = Date.now().toString();
+    const sig = sign(ts, 'GET', PATH, SECRET);
+
+    const headers = {
+      'X-Timestamp': ts,
+      'X-API-KEY': API_KEY,
+      'X-Customer': CUSTOMER,
+      'X-Signature': sig,
+    };
+    const qs = new URLSearchParams({ hintKeywords: chunk.join(','), showDetail: '1' });
+    const res = await fetch(`${BASE}${PATH}?${qs.toString()}`, { method: 'GET', headers });
+    if (!res.ok) continue;
+    const json = await res.json();
+
+    for (const row of (json.keywordList ?? [])) {
+      const key = String(row.relKeyword ?? row.keyword ?? '').trim().toLowerCase();
+      const pc = Number(row.monthlyPcQcCnt ?? 0);
+      const mobile = Number(row.monthlyMobileQcCnt ?? 0);
+      if (!key) continue;
+      out[key] = { pc, mobile, total: pc + mobile, compIdx: row.compIdx };
+    }
+  }
+  return out;
+}
+
+참고: 공식 스펙/샘플과 헤더·엔드포인트(/keywordstool) 구조는 여기와 동일합니다. 
+
+
+server/services/keywords.ts (교체)
+
+import { getVolumes } from './searchad';
+
+export function canonicalize(s: string) {
+  return s.replace(/[^0-9A-Za-z가-힣\s]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase()
+          .replace(/\b홍삼\s*스틱\b/g, '홍삼스틱'); // 예: 표기 통합
+}
+
+function ngrams(tokens: string[], n: 1|2|3) {
+  const out: string[] = [];
+  for (let i=0;i<=tokens.length-n;i++) out.push(tokens.slice(i,i+n).join(' '));
+  return out;
+}
+
+export async function extractTop3ByVolume(titles: string[]) {
+  // 1) 후보 생성
+  const cands = new Set<string>();
+  for (const t of titles) {
+    const toks = canonicalize(t).split(' ').filter(Boolean);
+    for (const n of [1,2,3] as const) for (const g of ngrams(toks, n)) if (g.length >= 2) cands.add(g);
+  }
+  const candList = Array.from(cands);
+
+  // 2) 검색량 조회 (없으면 빈 객체)
+  const volMap = await getVolumes(candList);
+
+  // 3) 랭킹 — 검색량 기반, 없으면 0
+  const sorted = candList
+    .map(k => ({ k, v: volMap[k] ? volMap[k].total : 0 }))
+    .sort((a,b) => b.v - a.v);
+
+  // 4) Tier 1/2/3
+  const top3 = sorted.slice(0,3).map(x => x.k);
+  const detail = top3.map(k => ({
+    keyword: k,
+    tier: `tier${top3.indexOf(k)+1}`,
+    volume_total: volMap[k]?.total ?? 0,
+    volume_pc: volMap[k]?.pc ?? 0,
+    volume_mobile: volMap[k]?.mobile ?? 0,
+  }));
+  return { top3, detail, allVolumes: volMap };
+}
+
+server/services/jobs.ts (한 줄 교체 포인트)
+
+// 기존: const top3 = extractTop3(posts.map(p => p.title));  // 빈도 기반
+// 교체:
+const vol = await extractTop3ByVolume(posts.map(p => p.title));
+job.keywords.push({ blog_id: b.id, top3: vol.top3, rank: await serpRank(vol.top3, b.id), detail: vol.detail });
+
+결과 스키마는 { blog_id, top3[], rank, detail[] }로 확장(기존 프론트는 top3만 써도 되고, 상세 뱃지용으로 detail.volume_total 사용 가능).
+
+
+
+---
+
+2) 프론트: “Tier + 검색량”으로 명확히 표기
+
+// 예시: 칩 렌더
+res.keywords.map((k:any) => (
+  <div key={k.blog_id} className="chips">
+    {k.detail?.map((d:any) => (
+      <span className="chip" key={d.keyword}>
+        {d.tier.toUpperCase()}: {d.keyword} ({d.volume_total.toLocaleString()})
+      </span>
+    ))}
+  </div>
+))
+
+
+---
+
+3) 수락 기준(검증)
+
+/api/serp/jobs/:id/results에 keywords[].detail[0..2]이 존재하고 각 항목에
+keyword, tier ∈ {tier1,tier2,tier3}, volume_total(>0) 포함.
+
+키 없을 때: detail.volume_* = 0일 수 있으나 top3는 존재(빈도 Fallback).
+
+UI에는 “TIER 1/2/3 (검색량 합계)”로 표시.

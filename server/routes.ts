@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scraper } from "./services/scraper";
 import { nlpService } from "./services/nlp";
+import { extractTop3ByVolume } from "./services/keywords";
 import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 
@@ -337,25 +338,23 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
           });
         }
 
-        // Extract keywords from post titles using n-gram (1-3) approach
+        // Extract top 3 keywords by search volume (with frequency fallback)
         const titles = scrapedPosts.map(post => post.title);
-        console.log(`   🔤 Extracting keywords from ${titles.length} titles for ${blog.blogName}`);
-        const keywordCandidates = nlpService.extractKeywords(titles);
+        console.log(`   🔤 Extracting volume-based keywords from ${titles.length} titles for ${blog.blogName}`);
+        const { top3, detail } = await extractTop3ByVolume(titles);
         
-        // Get top 3 keywords per post (simplified: take top 3 overall for this blog)
-        const topCandidates = keywordCandidates.slice(0, 3);
-        console.log(`   🏆 Top keywords for ${blog.blogName}: ${topCandidates.map(k => k.keyword).join(', ')}`);
+        console.log(`   🏆 Top 3 keywords for ${blog.blogName}: ${detail.map((d: any) => `${d.tier.toUpperCase()}: ${d.keyword} (${d.volume_total})`).join(', ')}`);
         
-        // Save top keywords
+        // Save top keywords with volume data
         const posts = await storage.getAnalyzedPosts(blog.id);
-        for (const [keywordIndex, candidate] of Array.from(topCandidates.entries())) {
+        for (const [keywordIndex, keywordDetail] of Array.from((detail as any[]).entries())) {
           if (posts[keywordIndex]) {
             await storage.createExtractedKeyword({
               postId: posts[keywordIndex].id,
-              keyword: candidate.keyword,
-              searchVolume: null, // Will be filled by DataLab API in future
-              score: candidate.score,
-              rank: keywordIndex + 1 // t1, t2, t3
+              keyword: keywordDetail.keyword,
+              searchVolume: keywordDetail.volume_total || null,
+              score: keywordDetail.volume_total || 0, // Use search volume as score
+              rank: keywordIndex + 1 // 1, 2, 3 for tier1, tier2, tier3
             });
           }
         }
