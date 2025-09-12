@@ -1,0 +1,408 @@
+# Tidewave 지시서 + Playwright 크롤러 스켈레톤 (홍삼스틱)
+
+**TL;DR**: 모바일 뷰 중심(\`m.blog.naver.com\`), 1\~2 동시성, 1–3초 랜덤 지연, 헤더 고정, 실패 스킵·로그로 안정화. “홍삼스틱” → 상위 10 블로그 → 각 블로그 최근 10 제목 → n-gram →(선택) 검색량 API → 블로그별 TOP3 → 모바일 SERP 노출·순위 확인 → CSV 저장.
+
+---
+
+## 1) 목적
+
+* 키워드 **홍삼스틱** 기준 노출 블로그 10개 선정 → 각 블로그의 **최근 10개 글 제목** 수집 → **제목 n-gram**으로 후보 키워드 생성 → **검색량 기준 TOP3**(임시: 빈도 기반) 산출 → **모바일 SERP**에서 블로그 도메인 노출/순위 확인.
+
+## 2) 정책·제약
+
+* **robots.txt/이용약관 준수**, 로그인/이웃공개/성인인증 등 접근 제한 콘텐츠는 **수집하지 않음**.
+* **모바일 뷰(m.blog.naver.com)** 우선. PC 페이지 렌더 의존도↓.
+* **동시성 1–2**, 요청 간 **1–3초 랜덤 슬립**. 403/429 시 **지수 백오프**.
+* **User-Agent/Accept-Language/Referer** 고정.
+
+## 3) 범위
+
+* 블로그 발견: 네이버 **오픈API(블로그 검색)** 사용 권장(앱 키 필요). 불가 시 수동 시드.
+* 검색량: 네이버 **검색광고 API**(RelKwd/보고서) 권장(키 필요). MVP는 **빈도 기반** 점수로 대체.
+* SERP 확인: 네이버 \*\*오픈API(블로그 검색)\*\*로 1페이지 결과의 **해당 블로그 링크 포함/순위** 확인.
+
+## 4) 산출물
+
+* **CSV 2종**
+
+  * `blogs.csv`: blog\_id, blog\_url, gathered\_posts, last\_checked
+  * `results.csv`: blog\_id, post\_url, post\_title, published\_at, top3\_keywords(json), serp\_mobile\_rank(int|NA), checked\_at
+* **실패 로그**: HTTP 상태/선택자 실패/인증 필요 등.
+
+## 5) 수락 기준 (Acceptance)
+
+* 지정 키워드에서 **10개 블로그 식별**(중복 제거). 7개 이상 확보 시 통과.
+* 각 블로그에서 **최대 10개** 최근 글 시도, 블로그당 **≥5개** 확보 시 통과.
+* 블로그별 **TOP3 키워드** 산출.
+* TOP3 각 키워드에 대해 **모바일 SERP 노출 여부/순위** 기록(없으면 NA).
+* CSV가 생성되고, 재실행 시 **중복 삽입 방지(덮어쓰기/키 기준 병합)**.
+
+## 6) 실행 파이프라인
+
+1. Discover(오픈API) → Top 10 blog URLs
+2. Profile(모바일 전환·blogId 추출)
+3. Recent Posts(Playwright로 스크롤·수집)
+4. NLP(n-gram 후보 생성 → 정규화)
+5. Volume(검색광고 API 연결 시 조회량 맵핑, 없으면 빈도)
+6. Select(TOP3/블로그)
+7. SERP Check(오픈API 블로그검색으로 해당 블로그 링크 순위)
+8. Save(CSV)
+
+## 7) Tidewave 작업 지시서 (복붙용)
+
+```
+당신은 수집-분석-검증 파이프라인 엔지니어입니다. 목표: "홍삼스틱" 키워드 기준 상위 블로그 10개를 찾아 각 블로그 최근 10개 글 제목을 수집하고, 제목에서 n-gram 키워드를 추출해 (가능하면 네이버 검색광고 API로 조회량을 붙여) 블로그별 TOP3 키워드를 선정합니다. 그리고 각 TOP3 키워드로 모바일 SERP(네이버 블로그 검색)를 조회해 해당 블로그 링크가 1페이지에 노출되는지와 순위를 기록합니다.
+
+필수 규칙:
+- robots/약관 준수. 로그인/이웃공개/성인 인증 요구 시 스킵.
+- 모바일 뷰(m.blog.naver.com) 우선. User-Agent/Accept-Language/Referer 지정.
+- 동시성 1–2, 요청 간 1~3초 랜덤 지연, 429/5xx 지수 백오프.
+- 실패는 스킵하고 로그 남김. 전체 파이프라인은 부분 성공이어도 계속 진행.
+
+출력:
+- blogs.csv(blog_id, blog_url, gathered_posts, last_checked)
+- results.csv(blog_id, post_url, post_title, published_at, top3_keywords(json), serp_mobile_rank, checked_at)
+
+Acceptance:
+- 10개 블로그 중 7개 이상 수집 성공, 각 블로그 최근 글 ≥5개 확보.
+- 블로그별 TOP3 키워드 산출, 모바일 SERP 순위 기록(없으면 NA).
+
+참고:
+- 블로그 발견: 네이버 오픈API 블로그 검색(앱 키 필요). 불가 시 초기 시드 수동 제공.
+- 검색량: 네이버 검색광고 API(키 필요) 연결. 없으면 빈도 기반 점수.
+- SERP: 오픈API 블로그검색 결과에서 해당 블로그 링크 포함/순위 확인.
+```
+
+## 8) 빠른 실행(Windows PowerShell)
+
+```powershell
+# 0) 가상환경
+py -3.10 -m venv .venv
+. .\.venv\Scripts\Activate.ps1
+
+# 1) 의존성 설치
+pip install -r requirements.txt
+python -m playwright install
+
+# 2) 환경변수(.env 준비)
+# NAVER_OPENAPI_ID, NAVER_OPENAPI_SECRET (필수: 발견/SERP)
+# NAVER_SEARCHAD_API_KEY, NAVER_SEARCHAD_CUSTOMER_ID (선택: 검색량)
+
+# 3) 실행
+python run_mvp.py --keyword "홍삼스틱" --blogs 10 --recent 10 --out out
+```
+
+> 파일 생성 빠른 안내(방법 A): \`Win+R → notepad C:\work\run\_mvp.py\` → 본문 붙여넣기 → 저장.
+
+---
+
+# 코드: Playwright 크롤러 스켈레톤
+
+> **주의**: 아래 코드는 **MVP 스켈레톤**입니다. 네이버 오픈API/검색광고 API 키가 없으면 일부 단계는 **빈도 기반 대체**나 **스텁**으로 동작합니다.
+
+## requirements.txt
+
+```txt
+playwright==1.46.0
+httpx>=0.27
+pandas>=2.2
+python-dotenv>=1.0
+beautifulsoup4>=4.12
+pydantic>=2.7
+```
+
+## .env.example
+
+```env
+NAVER_OPENAPI_ID=YOUR_ID
+NAVER_OPENAPI_SECRET=YOUR_SECRET
+# Optional (검색량 연동 시)
+NAVER_SEARCHAD_API_KEY=
+NAVER_SEARCHAD_CUSTOMER_ID=
+```
+
+## run\_mvp.py
+
+```python
+import asyncio, os, time, random, argparse, json
+from pathlib import Path
+from datetime import datetime
+from dotenv import load_dotenv
+import pandas as pd
+
+from crawler.discovery import search_blogs_openapi
+from crawler.profile import to_mobile_blog, extract_blog_id
+from crawler.recent import fetch_recent_posts
+from crawler.nlp import ngram_candidates, pick_top3
+from crawler.serp import mobile_blog_rank_openapi
+
+load_dotenv()
+
+async def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--keyword', required=True)
+    ap.add_argument('--blogs', type=int, default=10)
+    ap.add_argument('--recent', type=int, default=10)
+    ap.add_argument('--out', default='out')
+    args = ap.parse_args()
+
+    outdir = Path(args.out)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[1/6] Discover blogs for '{args.keyword}' (limit={args.blogs}) …")
+    blogs = await search_blogs_openapi(args.keyword, limit=args.blogs)
+    # Deduplicate by blog_id
+    uniq = {}
+    for b in blogs:
+        bid = extract_blog_id(b['url']) or b['url']
+        if bid not in uniq:
+            uniq[bid] = {**b, 'blog_id': bid}
+    blogs = list(uniq.values())[:args.blogs]
+    print(f"  → {len(blogs)} blogs")
+
+    rows_results = []
+    rows_blogs = []
+
+    print("[2/6] Fetch recent posts (per blog) …")
+    for i, b in enumerate(blogs, 1):
+        mobile_root = to_mobile_blog(b['url'])
+        print(f"  ({i}/{len(blogs)}) {b['title']} → {mobile_root}")
+        try:
+            posts = await fetch_recent_posts(mobile_root, limit=args.recent)
+        except Exception as e:
+            print(f"    ! recent posts failed: {e}")
+            posts = []
+        rows_blogs.append({
+            'blog_id': b['blog_id'],
+            'blog_url': b['url'],
+            'gathered_posts': len(posts),
+            'last_checked': datetime.utcnow().isoformat()
+        })
+        # NLP → candidates
+        titles = [p['title'] for p in posts]
+        cands = ngram_candidates(titles)
+        # Pick top3 (volume provider is optional → frequency fallback)
+        top3 = pick_top3(cands)
+
+        # SERP check per keyword (mobile)
+        serp_scores = {}
+        for kw in top3:
+            try:
+                rank = await mobile_blog_rank_openapi(kw, b['blog_id'])
+            except Exception:
+                rank = None
+            serp_scores[kw] = rank
+
+        for p in posts:
+            rows_results.append({
+                'blog_id': b['blog_id'],
+                'post_url': p['url'],
+                'post_title': p['title'],
+                'published_at': p.get('published_at'),
+                'top3_keywords': json.dumps(top3, ensure_ascii=False),
+                'serp_mobile_rank': json.dumps(serp_scores, ensure_ascii=False),
+                'checked_at': datetime.utcnow().isoformat()
+            })
+        # politeness delay between blogs
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+
+    print("[3/6] Save CSV …")
+    pd.DataFrame(rows_blogs).to_csv(outdir / 'blogs.csv', index=False)
+    pd.DataFrame(rows_results).to_csv(outdir / 'results.csv', index=False)
+    print(f"Done → {outdir / 'blogs.csv'} | {outdir / 'results.csv'}")
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+## crawler/**init**.py
+
+```python
+# empty
+```
+
+## crawler/profile.py
+
+```python
+from urllib.parse import urlparse, parse_qs
+import re
+
+def to_mobile_blog(url: str) -> str:
+    # Normalize to m.blog.naver.com root page
+    # Examples:
+    #  - https://blog.naver.com/USERNAME/223456789012 → https://m.blog.naver.com/USERNAME
+    #  - https://blog.naver.com/USERNAME → https://m.blog.naver.com/USERNAME
+    u = url.replace('https://blog.naver.com', 'https://m.blog.naver.com')
+    # Strip post part if exists
+    parts = u.split('/')
+    if len(parts) >= 4 and parts[3]:
+        return f"https://m.blog.naver.com/{parts[3]}"
+    return u
+
+def extract_blog_id(url: str) -> str | None:
+    # Try to extract blogId from url or query
+    # https://blog.naver.com/USERNAME/223... → USERNAME
+    m = re.search(r"blog\.naver\.com/([^/?#]+)", url)
+    if m:
+        return m.group(1)
+    # PostView.naver?blogId=xxxx
+    qs = parse_qs(urlparse(url).query)
+    if 'blogId' in qs:
+        return qs['blogId'][0]
+    return None
+```
+
+## crawler/discovery.py
+
+```python
+import os
+import httpx
+
+NAVER_ID = os.getenv('NAVER_OPENAPI_ID')
+NAVER_SECRET = os.getenv('NAVER_OPENAPI_SECRET')
+
+async def search_blogs_openapi(query: str, limit: int = 10):
+    if not NAVER_ID or not NAVER_SECRET:
+        raise RuntimeError('NAVER_OPENAPI_ID/SECRET required for discovery')
+    url = 'https://openapi.naver.com/v1/search/blog.json'
+    headers = {'X-Naver-Client-Id': NAVER_ID, 'X-Naver-Client-Secret': NAVER_SECRET}
+    params = {'query': query, 'display': min(100, max(10, limit)), 'start': 1, 'sort': 'sim'}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, headers=headers, params=params)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get('items', [])[:limit]
+        # Normalize fields
+        results = [{'title': i.get('title'), 'url': i.get('link')} for i in items]
+        return results
+```
+
+## crawler/recent.py
+
+```python
+from playwright.async_api import async_playwright
+import asyncio, random
+from typing import List, Dict
+
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+
+async def _collect_posts_from_page(page, limit=10) -> List[Dict]:
+    posts = []
+    # Try common selectors on mobile blog list
+    # We scroll a few times to load ~10 items
+    for _ in range(6):
+        await page.evaluate('window.scrollBy(0, document.body.scrollHeight)')
+        await asyncio.sleep(random.uniform(0.6, 1.2))
+        # Various link patterns to post pages
+        links = await page.locator('a[href*="PostView"], a[href^="/PostView"], a:has(h3)').element_handles()
+        seen = set()
+        tmp = []
+        for el in links:
+            href = await (await el.get_property('href')).json_value()
+            if not href or 'PostView' not in href:
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            # Title heuristic
+            t = await el.inner_text() if await el.is_visible() else ''
+            t = (t or '').strip().replace('\n', ' ')
+            if t:
+                tmp.append({'url': href, 'title': t})
+        if tmp:
+            posts = tmp
+        if len(posts) >= limit:
+            break
+    return posts[:limit]
+
+async def fetch_recent_posts(mobile_root_url: str, limit=10):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        ctx = await browser.new_context(
+            user_agent=UA,
+            locale='ko-KR',
+            extra_http_headers={'Accept-Language': 'ko-KR,ko;q=0.9', 'Referer': 'https://m.blog.naver.com/'}
+        )
+        page = await ctx.new_page()
+        await page.goto(mobile_root_url, wait_until='networkidle', timeout=30000)
+        posts = await _collect_posts_from_page(page, limit=limit)
+        await ctx.close(); await browser.close()
+        return posts
+```
+
+## crawler/nlp.py
+
+```python
+import re
+from collections import Counter
+
+_hangul_num_alnum = re.compile(r"[^0-9A-Za-z가-힣\s]+")
+
+def normalize(text: str) -> str:
+    t = _hangul_num_alnum.sub(' ', text or '').lower()
+    t = re.sub(r"\s+", ' ', t).strip()
+    return t
+
+def ngrams(tokens, n=1):
+    return [' '.join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+
+def ngram_candidates(titles: list[str]) -> Counter:
+    c = Counter()
+    for t in titles:
+        nt = normalize(t)
+        toks = nt.split(' ')
+        for n in (1,2,3):
+            for g in ngrams(toks, n):
+                if len(g) < 2:  # too short
+                    continue
+                c[g] += 1
+    return c
+
+def pick_top3(counter: Counter) -> list[str]:
+    # MVP: frequency only. Replace with volume-weighted ranking when API ready.
+    return [w for w,_ in counter.most_common(3)]
+```
+
+## crawler/serp.py
+
+```python
+import os
+import httpx
+from urllib.parse import urlparse
+
+NAVER_ID = os.getenv('NAVER_OPENAPI_ID')
+NAVER_SECRET = os.getenv('NAVER_OPENAPI_SECRET')
+
+async def mobile_blog_rank_openapi(keyword: str, blog_id: str, domain='blog.naver.com') -> int | None:
+    """Returns 1-based rank on first page if domain contains blog_id, else None"""
+    if not NAVER_ID or not NAVER_SECRET:
+        return None
+    url = 'https://openapi.naver.com/v1/search/blog.json'
+    headers = {'X-Naver-Client-Id': NAVER_ID, 'X-Naver-Client-Secret': NAVER_SECRET}
+    params = {'query': keyword, 'display': 100, 'start': 1, 'sort': 'sim'}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, headers=headers, params=params)
+        r.raise_for_status()
+        items = r.json().get('items', [])
+        for idx, it in enumerate(items, start=1):
+            link = it.get('link', '')
+            if domain in link and blog_id in link:
+                return idx
+    return None
+```
+
+---
+
+## 운영 체크리스트
+
+* [ ] .env에 오픈API 키 입력
+* [ ] 실행 후 out\blogs.csv / out\results.csv 생성 확인
+* [ ] 실패 로그(콘솔)에서 403/429 과다 발생 시 지연 늘리기
+* [ ] 검색량 연동 필요 시: 검색광고 API 클라이언트 추가 → `pick_top3()`에서 가중치 교체
+
+## 장애 대응 런북
+
+* **본문/제목이 비어있음**: 모바일 루트가 맞는지, 스크롤 시도 횟수↑, 선택자 다양화.
+* **429/403**: 동시성 1로 내리고 슬립 2–5초, User-Agent/Referer 고정 확인.
+* **오픈API 401/403**: 키/시크릿 재확인, 쿼터 확인.
+* **SERP 결과 엇갈림**: 모바일/PC 혼용 금지(모바일 고정), 날짜/정렬 모드 확인.
