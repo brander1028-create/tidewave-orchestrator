@@ -1,19 +1,13 @@
-import { useState, useEffect } from "react";
-import { Bell, Settings, User, TrendingUp } from "lucide-react";
-import URLInput from "@/components/url-input";
-import AnalysisProgress from "@/components/analysis-progress";
-import RecentPosts from "@/components/recent-posts";
-import KeywordExtraction from "@/components/keyword-extraction";
-import SearchRankings from "@/components/search-rankings";
-import DataVisualization from "@/components/data-visualization";
-import ExportSection from "@/components/export-section";
+import { useState } from "react";
+import { Bell, Settings, User, Search } from "lucide-react";
+import KeywordInput from "@/components/keyword-input";
+import SerpProgress from "@/components/serp-progress";
+import SerpResults from "@/components/serp-results";
 
 export default function Dashboard() {
-  const [currentBlogId, setCurrentBlogId] = useState<string | null>(null);
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
 
-  const handleAnalysisStarted = (blogId: string, jobId: string) => {
-    setCurrentBlogId(blogId);
+  const handleAnalysisStarted = (jobId: string) => {
     setCurrentJobId(jobId);
   };
 
@@ -25,9 +19,9 @@ export default function Dashboard() {
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-3">
               <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <TrendingUp className="text-primary-foreground h-4 w-4" />
+                <Search className="text-primary-foreground h-4 w-4" />
               </div>
-              <h1 className="text-xl font-bold text-foreground">블로그 키워드 분석</h1>
+              <h1 className="text-xl font-bold text-foreground">네이버 검색 순위 분석</h1>
             </div>
             <div className="flex items-center space-x-4">
               <button 
@@ -51,35 +45,17 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* URL Input Section */}
-        <URLInput onAnalysisStarted={handleAnalysisStarted} />
+        {/* Keyword Input Section */}
+        <KeywordInput onAnalysisStarted={handleAnalysisStarted} />
 
         {/* Analysis Progress */}
         {currentJobId && (
-          <AnalysisProgress jobId={currentJobId} />
+          <SerpProgress jobId={currentJobId} />
         )}
 
-        {/* Recent Posts */}
-        {currentBlogId && (
-          <RecentPosts blogId={currentBlogId} />
-        )}
-
-        {/* Main Content Grid */}
-        {currentBlogId && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            <KeywordExtraction blogId={currentBlogId} />
-            <SearchRankings blogId={currentBlogId} />
-          </div>
-        )}
-
-        {/* Data Visualization */}
-        {currentBlogId && (
-          <DataVisualization blogId={currentBlogId} />
-        )}
-
-        {/* Export Section */}
-        {currentBlogId && (
-          <ExportSection blogId={currentBlogId} />
+        {/* Results Section */}
+        {currentJobId && (
+          <SerpResults jobId={currentJobId} />
         )}
       </main>
     </div>

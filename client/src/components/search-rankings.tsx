@@ -65,13 +65,13 @@ export default function SearchRankings({ blogId }: SearchRankingsProps) {
   const getRankingBadge = (keyword: Keyword) => {
     const { rankChange } = keyword;
     
-    if (rankChange > 0) {
+    if ((rankChange || 0) > 0) {
       return (
         <Badge variant="default" className="bg-chart-1/10 text-chart-1 border-chart-1/20">
           순위 상승
         </Badge>
       );
-    } else if (rankChange < 0) {
+    } else if ((rankChange || 0) < 0) {
       return (
         <Badge variant="destructive" className="bg-destructive/10 text-destructive border-destructive/20">
           순위 하락
@@ -95,9 +95,9 @@ export default function SearchRankings({ blogId }: SearchRankingsProps) {
   const getRankingIcon = (keyword: Keyword) => {
     const { rankChange } = keyword;
     
-    if (rankChange > 0) {
+    if ((rankChange || 0) > 0) {
       return <ArrowUp className="text-chart-1 h-3 w-3" />;
-    } else if (rankChange < 0) {
+    } else if ((rankChange || 0) < 0) {
       return <ArrowDown className="text-destructive h-3 w-3" />;
     } else if (keyword.searchRank) {
       return <Minus className="text-muted-foreground h-3 w-3" />;

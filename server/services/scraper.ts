@@ -76,7 +76,7 @@ export class BlogScraper {
         await page.waitForTimeout(1000 + Math.random() * 1000); // Random delay 1-2s
         
         // Extract post links and titles
-        const newPosts = await page.evaluate((currentCount, maxPosts) => {
+        const newPosts = await page.evaluate((currentCount: number, maxPosts: number): Array<{title: string; url: string}> => {
           const links = document.querySelectorAll('a[href*="PostView"], a[href*="/PostView"]');
           const posts: { title: string; url: string }[] = [];
           

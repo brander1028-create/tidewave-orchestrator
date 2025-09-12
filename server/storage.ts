@@ -1,139 +1,68 @@
-import { type Blog, type InsertBlog, type BlogPost, type InsertBlogPost, type Keyword, type InsertKeyword, type AnalysisJob, type InsertAnalysisJob } from "@shared/schema";
+import { 
+  type SerpJob, 
+  type InsertSerpJob, 
+  type DiscoveredBlog, 
+  type InsertDiscoveredBlog, 
+  type AnalyzedPost, 
+  type InsertAnalyzedPost, 
+  type ExtractedKeyword, 
+  type InsertExtractedKeyword 
+} from "@shared/schema";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
-  // Blog operations
-  createBlog(blog: InsertBlog): Promise<Blog>;
-  getBlog(id: string): Promise<Blog | undefined>;
-  getBlogByUrl(url: string): Promise<Blog | undefined>;
-  updateBlogStatus(id: string, status: string, postsCollected?: number): Promise<void>;
+  // SERP Job operations
+  createSerpJob(job: InsertSerpJob): Promise<SerpJob>;
+  getSerpJob(id: string): Promise<SerpJob | undefined>;
+  updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<void>;
   
-  // Blog post operations
-  createBlogPost(post: InsertBlogPost): Promise<BlogPost>;
-  getBlogPosts(blogId: string): Promise<BlogPost[]>;
+  // Discovered blog operations
+  createDiscoveredBlog(blog: InsertDiscoveredBlog): Promise<DiscoveredBlog>;
+  getDiscoveredBlogs(jobId: string): Promise<DiscoveredBlog[]>;
   
-  // Keyword operations
-  createKeyword(keyword: InsertKeyword): Promise<Keyword>;
-  getBlogKeywords(blogId: string): Promise<Keyword[]>;
-  updateKeywordRanking(id: string, searchRank: number, previousRank?: number): Promise<void>;
+  // Analyzed post operations
+  createAnalyzedPost(post: InsertAnalyzedPost): Promise<AnalyzedPost>;
+  getAnalyzedPosts(blogId: string): Promise<AnalyzedPost[]>;
   
-  // Analysis job operations
-  createAnalysisJob(job: InsertAnalysisJob): Promise<AnalysisJob>;
-  getAnalysisJob(id: string): Promise<AnalysisJob | undefined>;
-  updateAnalysisJob(id: string, updates: Partial<AnalysisJob>): Promise<void>;
-  getAnalysisJobByBlogId(blogId: string): Promise<AnalysisJob | undefined>;
+  // Extracted keyword operations
+  createExtractedKeyword(keyword: InsertExtractedKeyword): Promise<ExtractedKeyword>;
+  getExtractedKeywords(postId: string): Promise<ExtractedKeyword[]>;
+  getTopKeywordsByBlog(blogId: string): Promise<ExtractedKeyword[]>;
 }
 
 export class MemStorage implements IStorage {
-  private blogs: Map<string, Blog> = new Map();
-  private blogPosts: Map<string, BlogPost> = new Map();
-  private keywords: Map<string, Keyword> = new Map();
-  private analysisJobs: Map<string, AnalysisJob> = new Map();
+  private serpJobs: Map<string, SerpJob> = new Map();
+  private discoveredBlogs: Map<string, DiscoveredBlog> = new Map();
+  private analyzedPosts: Map<string, AnalyzedPost> = new Map();
+  private extractedKeywords: Map<string, ExtractedKeyword> = new Map();
 
-  // Blog operations
-  async createBlog(insertBlog: InsertBlog): Promise<Blog> {
+  // SERP Job operations
+  async createSerpJob(insertJob: InsertSerpJob): Promise<SerpJob> {
     const id = randomUUID();
-    const blog: Blog = {
-      ...insertBlog,
-      id,
-      postsCollected: 0,
-      createdAt: new Date(),
-      lastAnalyzedAt: null,
-    };
-    this.blogs.set(id, blog);
-    return blog;
-  }
-
-  async getBlog(id: string): Promise<Blog | undefined> {
-    return this.blogs.get(id);
-  }
-
-  async getBlogByUrl(url: string): Promise<Blog | undefined> {
-    return Array.from(this.blogs.values()).find(blog => blog.url === url);
-  }
-
-  async updateBlogStatus(id: string, status: string, postsCollected?: number): Promise<void> {
-    const blog = this.blogs.get(id);
-    if (blog) {
-      this.blogs.set(id, {
-        ...blog,
-        status,
-        postsCollected: postsCollected ?? blog.postsCollected,
-        lastAnalyzedAt: new Date(),
-      });
-    }
-  }
-
-  // Blog post operations
-  async createBlogPost(insertPost: InsertBlogPost): Promise<BlogPost> {
-    const id = randomUUID();
-    const post: BlogPost = {
-      ...insertPost,
-      id,
-      createdAt: new Date(),
-    };
-    this.blogPosts.set(id, post);
-    return post;
-  }
-
-  async getBlogPosts(blogId: string): Promise<BlogPost[]> {
-    return Array.from(this.blogPosts.values()).filter(post => post.blogId === blogId);
-  }
-
-  // Keyword operations
-  async createKeyword(insertKeyword: InsertKeyword): Promise<Keyword> {
-    const id = randomUUID();
-    const keyword: Keyword = {
-      ...insertKeyword,
-      id,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    this.keywords.set(id, keyword);
-    return keyword;
-  }
-
-  async getBlogKeywords(blogId: string): Promise<Keyword[]> {
-    return Array.from(this.keywords.values())
-      .filter(keyword => keyword.blogId === blogId)
-      .sort((a, b) => b.score - a.score);
-  }
-
-  async updateKeywordRanking(id: string, searchRank: number, previousRank?: number): Promise<void> {
-    const keyword = this.keywords.get(id);
-    if (keyword) {
-      const rankChange = previousRank ? previousRank - searchRank : 0;
-      this.keywords.set(id, {
-        ...keyword,
-        searchRank,
-        previousRank: previousRank ?? keyword.searchRank,
-        rankChange,
-        updatedAt: new Date(),
-      });
-    }
-  }
-
-  // Analysis job operations
-  async createAnalysisJob(insertJob: InsertAnalysisJob): Promise<AnalysisJob> {
-    const id = randomUUID();
-    const job: AnalysisJob = {
+    const job: SerpJob = {
       ...insertJob,
       id,
+      progress: insertJob.progress || 0,
+      results: insertJob.results || null,
+      currentStep: insertJob.currentStep || null,
+      totalSteps: insertJob.totalSteps || 3,
+      completedSteps: insertJob.completedSteps || 0,
+      errorMessage: insertJob.errorMessage || null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-    this.analysisJobs.set(id, job);
+    this.serpJobs.set(id, job);
     return job;
   }
 
-  async getAnalysisJob(id: string): Promise<AnalysisJob | undefined> {
-    return this.analysisJobs.get(id);
+  async getSerpJob(id: string): Promise<SerpJob | undefined> {
+    return this.serpJobs.get(id);
   }
 
-  async updateAnalysisJob(id: string, updates: Partial<AnalysisJob>): Promise<void> {
-    const job = this.analysisJobs.get(id);
+  async updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<void> {
+    const job = this.serpJobs.get(id);
     if (job) {
-      this.analysisJobs.set(id, {
+      this.serpJobs.set(id, {
         ...job,
         ...updates,
         updatedAt: new Date(),
@@ -141,8 +70,83 @@ export class MemStorage implements IStorage {
     }
   }
 
-  async getAnalysisJobByBlogId(blogId: string): Promise<AnalysisJob | undefined> {
-    return Array.from(this.analysisJobs.values()).find(job => job.blogId === blogId);
+  // Discovered blog operations
+  async createDiscoveredBlog(insertBlog: InsertDiscoveredBlog): Promise<DiscoveredBlog> {
+    const id = randomUUID();
+    const blog: DiscoveredBlog = {
+      ...insertBlog,
+      id,
+      postsAnalyzed: insertBlog.postsAnalyzed || 0,
+      createdAt: new Date(),
+    };
+    this.discoveredBlogs.set(id, blog);
+    return blog;
+  }
+
+  async getDiscoveredBlogs(jobId: string): Promise<DiscoveredBlog[]> {
+    return Array.from(this.discoveredBlogs.values())
+      .filter(blog => blog.jobId === jobId)
+      .sort((a, b) => a.rank - b.rank);
+  }
+
+  // Analyzed post operations
+  async createAnalyzedPost(insertPost: InsertAnalyzedPost): Promise<AnalyzedPost> {
+    const id = randomUUID();
+    const post: AnalyzedPost = {
+      ...insertPost,
+      id,
+      publishedAt: insertPost.publishedAt || null,
+      createdAt: new Date(),
+    };
+    this.analyzedPosts.set(id, post);
+    return post;
+  }
+
+  async getAnalyzedPosts(blogId: string): Promise<AnalyzedPost[]> {
+    return Array.from(this.analyzedPosts.values())
+      .filter(post => post.blogId === blogId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  // Extracted keyword operations
+  async createExtractedKeyword(insertKeyword: InsertExtractedKeyword): Promise<ExtractedKeyword> {
+    const id = randomUUID();
+    const keyword: ExtractedKeyword = {
+      ...insertKeyword,
+      id,
+      searchVolume: insertKeyword.searchVolume || null,
+      rank: insertKeyword.rank || null,
+      serpRank: insertKeyword.serpRank || null,
+      createdAt: new Date(),
+    };
+    this.extractedKeywords.set(id, keyword);
+    return keyword;
+  }
+
+  async getExtractedKeywords(postId: string): Promise<ExtractedKeyword[]> {
+    return Array.from(this.extractedKeywords.values())
+      .filter(keyword => keyword.postId === postId)
+      .sort((a, b) => b.score - a.score);
+  }
+
+  async getTopKeywordsByBlog(blogId: string): Promise<ExtractedKeyword[]> {
+    // Get all posts for this blog
+    const posts = await this.getAnalyzedPosts(blogId);
+    const postIds = posts.map(p => p.id);
+    
+    // Get all keywords for these posts
+    const allKeywords = Array.from(this.extractedKeywords.values())
+      .filter(keyword => postIds.includes(keyword.postId))
+      .filter(keyword => keyword.rank && keyword.rank <= 3) // Only top 3 per post
+      .sort((a, b) => {
+        // Sort by search volume first, then by score
+        if (b.searchVolume !== a.searchVolume) {
+          return (b.searchVolume || 0) - (a.searchVolume || 0);
+        }
+        return b.score - a.score;
+      });
+    
+    return allKeywords;
   }
 }
 

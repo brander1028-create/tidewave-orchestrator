@@ -1,82 +1,84 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const blogs = pgTable("blogs", {
+// New schema for keyword-driven SERP analysis
+export const serpJobs = pgTable("serp_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  url: text("url").notNull().unique(),
-  title: text("title"),
-  status: text("status").notNull().default("pending"), // pending, analyzing, completed, failed
-  postsCollected: integer("posts_collected").default(0),
+  keywords: text("keywords").array().notNull(), // Input keywords array
+  minRank: integer("min_rank").notNull().default(2),
+  maxRank: integer("max_rank").notNull().default(15),
+  status: text("status").notNull().default("pending"), // pending, running, completed, failed
+  progress: integer("progress").default(0), // 0-100
+  currentStep: text("current_step"), // discovering_blogs, analyzing_posts, checking_rankings
+  totalSteps: integer("total_steps").default(3),
+  completedSteps: integer("completed_steps").default(0),
+  errorMessage: text("error_message"),
+  results: jsonb("results"), // final analysis results
   createdAt: timestamp("created_at").defaultNow(),
-  lastAnalyzedAt: timestamp("last_analyzed_at"),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-export const blogPosts = pgTable("blog_posts", {
+export const discoveredBlogs = pgTable("discovered_blogs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  blogId: varchar("blog_id").references(() => blogs.id).notNull(),
+  jobId: varchar("job_id").references(() => serpJobs.id).notNull(),
+  seedKeyword: text("seed_keyword").notNull(), // Original keyword that led to this blog
+  rank: integer("rank").notNull(), // Position in SERP (2-15)
+  blogName: text("blog_name").notNull(),
+  blogUrl: text("blog_url").notNull(),
+  postsAnalyzed: integer("posts_analyzed").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const analyzedPosts = pgTable("analyzed_posts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  blogId: varchar("blog_id").references(() => discoveredBlogs.id).notNull(),
   url: text("url").notNull(),
   title: text("title").notNull(),
   publishedAt: timestamp("published_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const keywords = pgTable("keywords", {
+export const extractedKeywords = pgTable("extracted_keywords", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  blogId: varchar("blog_id").references(() => blogs.id).notNull(),
+  postId: varchar("post_id").references(() => analyzedPosts.id).notNull(),
   keyword: text("keyword").notNull(),
-  frequency: integer("frequency").notNull(),
-  score: integer("score").notNull(), // calculated relevance score
-  searchRank: integer("search_rank"), // current Naver search ranking
-  previousRank: integer("previous_rank"),
-  rankChange: integer("rank_change").default(0),
+  searchVolume: integer("search_volume"), // From Naver DataLab
+  score: integer("score").notNull(), // Calculated relevance score
+  rank: integer("rank"), // t1=1, t2=2, t3=3 (top 3 keywords per post)
+  serpRank: integer("serp_rank"), // Position in Naver search results (1-10) or null
   createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-export const analysisJobs = pgTable("analysis_jobs", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  blogId: varchar("blog_id").references(() => blogs.id).notNull(),
-  status: text("status").notNull().default("pending"), // pending, running, completed, failed
-  progress: integer("progress").default(0), // 0-100
-  currentStep: text("current_step"), // collecting_posts, extracting_keywords, checking_rankings
-  totalSteps: integer("total_steps").default(3),
-  completedSteps: integer("completed_steps").default(0),
-  errorMessage: text("error_message"),
-  results: jsonb("results"), // analysis results
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
-
-export const insertBlogSchema = createInsertSchema(blogs).omit({
-  id: true,
-  createdAt: true,
-  lastAnalyzedAt: true,
-});
-
-export const insertBlogPostSchema = createInsertSchema(blogPosts).omit({
-  id: true,
-  createdAt: true,
-});
-
-export const insertKeywordSchema = createInsertSchema(keywords).omit({
+// Insert schemas for new entities
+export const insertSerpJobSchema = createInsertSchema(serpJobs).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
 });
 
-export const insertAnalysisJobSchema = createInsertSchema(analysisJobs).omit({
+export const insertDiscoveredBlogSchema = createInsertSchema(discoveredBlogs).omit({
   id: true,
   createdAt: true,
-  updatedAt: true,
 });
 
-export type Blog = typeof blogs.$inferSelect;
-export type InsertBlog = z.infer<typeof insertBlogSchema>;
-export type BlogPost = typeof blogPosts.$inferSelect;
-export type InsertBlogPost = z.infer<typeof insertBlogPostSchema>;
-export type Keyword = typeof keywords.$inferSelect;
-export type InsertKeyword = z.infer<typeof insertKeywordSchema>;
-export type AnalysisJob = typeof analysisJobs.$inferSelect;
-export type InsertAnalysisJob = z.infer<typeof insertAnalysisJobSchema>;
+export const insertAnalyzedPostSchema = createInsertSchema(analyzedPosts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertExtractedKeywordSchema = createInsertSchema(extractedKeywords).omit({
+  id: true,
+  createdAt: true,
+});
+
+// Types for new entities
+export type SerpJob = typeof serpJobs.$inferSelect;
+export type InsertSerpJob = z.infer<typeof insertSerpJobSchema>;
+export type DiscoveredBlog = typeof discoveredBlogs.$inferSelect;
+export type InsertDiscoveredBlog = z.infer<typeof insertDiscoveredBlogSchema>;
+export type AnalyzedPost = typeof analyzedPosts.$inferSelect;
+export type InsertAnalyzedPost = z.infer<typeof insertAnalyzedPostSchema>;
+export type ExtractedKeyword = typeof extractedKeywords.$inferSelect;
+export type InsertExtractedKeyword = z.infer<typeof insertExtractedKeywordSchema>;

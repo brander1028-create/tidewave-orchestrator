@@ -73,7 +73,7 @@ export class NLPService {
     const candidates: KeywordCandidate[] = [];
     const totalTitles = titles.length;
     
-    for (const [keyword, frequency] of keywordFreq.entries()) {
+    for (const [keyword, frequency] of Array.from(keywordFreq.entries())) {
       if (frequency >= 2) { // Filter out keywords that appear only once
         // Score based on frequency, length, and document frequency
         const documentFreq = cleanedTitles.filter(title => 

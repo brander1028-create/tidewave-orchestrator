@@ -1,34 +1,37 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Check, RefreshCw, Search, AlertCircle } from "lucide-react";
-import type { AnalysisJob } from "@shared/schema";
+import { Search, RefreshCw, TrendingUp, AlertCircle } from "lucide-react";
+import type { SerpJob } from "@shared/schema";
 
-interface AnalysisProgressProps {
+interface SerpProgressProps {
   jobId: string;
 }
 
 const stepConfig = [
   {
-    key: "collecting_posts",
-    label: "블로그 포스트 수집",
-    icon: Check,
+    key: "discovering_blogs",
+    label: "블로그 발견",
+    description: "키워드별 상위 블로그 검색 중",
+    icon: Search,
   },
   {
-    key: "extracting_keywords", 
-    label: "키워드 추출 및 분석",
+    key: "analyzing_posts", 
+    label: "포스트 분석",
+    description: "각 블로그의 최근 포스트 수집 및 키워드 추출",
     icon: RefreshCw,
   },
   {
     key: "checking_rankings",
-    label: "검색 순위 확인", 
-    icon: Search,
+    label: "순위 확인", 
+    description: "추출된 키워드들의 네이버 검색 순위 체크",
+    icon: TrendingUp,
   },
 ];
 
-export default function AnalysisProgress({ jobId }: AnalysisProgressProps) {
-  const { data: job, isLoading } = useQuery<AnalysisJob>({
-    queryKey: ["/api/jobs", jobId],
+export default function SerpProgress({ jobId }: SerpProgressProps) {
+  const { data: job, isLoading } = useQuery<SerpJob>({
+    queryKey: ["/api/serp/jobs", jobId],
     refetchInterval: (query) => {
       // Stop refetching when completed or failed
       return query.data?.status === "running" ? 2000 : false;
@@ -81,6 +84,9 @@ export default function AnalysisProgress({ jobId }: AnalysisProgressProps) {
             )}
           </div>
         </div>
+        <div className="text-sm text-muted-foreground">
+          키워드 {job.keywords.length}개 • 순위 범위 {job.minRank}-{job.maxRank}위
+        </div>
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
@@ -92,10 +98,10 @@ export default function AnalysisProgress({ jobId }: AnalysisProgressProps) {
             return (
               <div 
                 key={step.key}
-                className="flex items-center justify-between"
+                className="flex items-start justify-between"
                 data-testid={`progress-step-${step.key}`}
               >
-                <div className="flex items-center space-x-3">
+                <div className="flex items-start space-x-3">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
                     isCompleted 
                       ? "bg-primary text-primary-foreground" 
@@ -105,11 +111,16 @@ export default function AnalysisProgress({ jobId }: AnalysisProgressProps) {
                   }`}>
                     <IconComponent className={`w-4 h-4 ${isCurrent && isRunning ? "animate-spin" : ""}`} />
                   </div>
-                  <span className={`text-sm font-medium ${
-                    isCompleted || isCurrent ? "text-foreground" : "text-muted-foreground"
-                  }`}>
-                    {step.label}
-                  </span>
+                  <div className="flex-1">
+                    <div className={`text-sm font-medium ${
+                      isCompleted || isCurrent ? "text-foreground" : "text-muted-foreground"
+                    }`}>
+                      {step.label}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {step.description}
+                    </div>
+                  </div>
                 </div>
                 <span className="text-sm text-muted-foreground">
                   {isCompleted && "완료"}
@@ -121,12 +132,12 @@ export default function AnalysisProgress({ jobId }: AnalysisProgressProps) {
           })}
         </div>
         
-        <div className="mt-4">
+        <div className="mt-6">
           <div className="flex items-center justify-between text-sm mb-2">
             <span className="text-muted-foreground">전체 진행률</span>
             <span className="font-medium">{job.progress}%</span>
           </div>
-          <Progress value={job.progress} className="h-2" />
+          <Progress value={job.progress || 0} className="h-2" />
         </div>
 
         {job.errorMessage && (

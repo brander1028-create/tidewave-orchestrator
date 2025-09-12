@@ -13,20 +13,25 @@ export interface NaverBlogSearchResult {
 }
 
 export class NaverApiService {
-  private headers: Record<string, string>;
+  private headers: Record<string, string> | null = null;
 
   constructor() {
-    if (!NAVER_CLIENT_ID || !NAVER_CLIENT_SECRET) {
-      throw new Error('Naver API credentials not found in environment variables');
+    if (NAVER_CLIENT_ID && NAVER_CLIENT_SECRET) {
+      this.headers = {
+        'X-Naver-Client-Id': NAVER_CLIENT_ID,
+        'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+      };
+    } else {
+      console.warn('Naver API credentials not found. API features will be disabled.');
     }
-
-    this.headers = {
-      'X-Naver-Client-Id': NAVER_CLIENT_ID,
-      'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
-    };
   }
 
   async searchBlogs(query: string, display = 10, sort = 'sim'): Promise<NaverBlogSearchResult[]> {
+    if (!this.headers) {
+      console.warn('Naver API not configured. Returning empty results.');
+      return [];
+    }
+
     const url = `https://openapi.naver.com/v1/search/blog.json`;
     const params = new URLSearchParams({
       query,
@@ -52,6 +57,11 @@ export class NaverApiService {
   }
 
   async checkKeywordRanking(keyword: string, blogUrl: string): Promise<number | null> {
+    if (!this.headers) {
+      console.warn('Naver API not configured. Cannot check ranking.');
+      return null;
+    }
+
     try {
       const results = await this.searchBlogs(keyword, 100);
       const blogDomain = new URL(blogUrl).hostname;

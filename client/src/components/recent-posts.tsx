@@ -17,9 +17,9 @@ interface BlogData {
 export default function RecentPosts({ blogId }: RecentPostsProps) {
   const { data, isLoading, refetch } = useQuery<BlogData>({
     queryKey: ["/api/blogs", blogId],
-    refetchInterval: (data) => {
+    refetchInterval: (query) => {
       // Refetch while job is running
-      return data?.job?.status === "running" ? 3000 : false;
+      return query.data?.job?.status === "running" ? 3000 : false;
     },
   });
 
@@ -111,7 +111,7 @@ export default function RecentPosts({ blogId }: RecentPostsProps) {
                     {post.title}
                   </h3>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {formatDate(post.publishedAt?.toString() || post.createdAt.toString())}
+                    {formatDate(post.publishedAt?.toString() || post.createdAt?.toString() || '')}
                   </p>
                 </div>
                 <Button
