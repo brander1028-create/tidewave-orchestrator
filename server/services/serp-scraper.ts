@@ -26,21 +26,16 @@ class SerpScraper {
         return apiResults;
       }
       
-      // Step 2: Real mobile Naver search scraping
+      // Step 2: Real mobile Naver search scraping (NO FALLBACK TO FAKE SEEDS)
       console.log(`🔄 Naver API not available, using REAL mobile Naver search for "${keyword}"`);
       const mobileResults = await this.scrapeRealNaverMobileSearch(keyword, minRank, maxRank);
-      if (mobileResults.length > 0) {
-        console.log(`✅ Real mobile search successful: ${mobileResults.length} results for "${keyword}"`);
-        return mobileResults;
-      }
-      
-      // Step 3: Fallback only if everything fails
-      console.log(`⚠️ All search methods failed, using fallback for "${keyword}"`);
-      return this.createSeedResults(keyword, minRank, maxRank);
+      console.log(`📊 Real search results for "${keyword}": ${mobileResults.length} blogs found`);
+      return mobileResults; // Return empty array if no results, DO NOT use fake seeds
       
     } catch (error) {
       console.error(`❌ Error searching for keyword "${keyword}":`, error);
-      return this.createSeedResults(keyword, minRank, maxRank);
+      console.log(`🚫 No fake seeds used - returning empty results for "${keyword}"`);
+      return []; // Return empty array instead of fake seeds
     }
   }
 
@@ -97,38 +92,7 @@ class SerpScraper {
     }
   }
 
-  /**
-   * Create seed results when API is not available
-   * Uses hardcoded blog URLs with artificial ranking positions
-   */
-  private async createSeedResults(keyword: string, minRank: number, maxRank: number): Promise<SerpResult[]> {
-    // Import seed URLs from scraper
-    const { scraper } = await import('./scraper');
-    const seedUrls = scraper.getSeedBlogUrls();
-    
-    const results: SerpResult[] = [];
-    let currentRank = minRank;
-    
-    for (const blogUrl of seedUrls) {
-      if (currentRank > maxRank) break;
-      
-      // Extract blog ID for title generation
-      const blogIdMatch = blogUrl.match(/blog\.naver\.com\/([^/]+)/);
-      const blogId = blogIdMatch ? blogIdMatch[1] : 'blog';
-      
-      results.push({
-        url: blogUrl,
-        title: `${blogId}의 ${keyword} 관련 블로그`,
-        snippet: `${keyword}에 대한 유용한 정보와 경험을 공유하는 블로그입니다.`,
-        rank: currentRank
-      });
-      
-      currentRank++;
-    }
-    
-    console.log(`📋 Created ${results.length} seed results for keyword "${keyword}"`);
-    return results;
-  }
+  // REMOVED: createSeedResults() - NO MORE FAKE SEEDS
 
   /**
    * Scrape real Naver mobile search for blog results

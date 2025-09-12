@@ -30,20 +30,7 @@ export class BlogScraper {
     trimValues: true
   });
 
-  /**
-   * Hardcoded seed blog URLs for fallback when no API key is available
-   */
-  private seedBlogUrls = [
-    'https://blog.naver.com/produce13822',
-    'https://blog.naver.com/hongsamstick',
-    'https://blog.naver.com/healthylife2024',
-    'https://blog.naver.com/wellnessblog',
-    'https://blog.naver.com/ginsengpower'
-  ];
-
-  getSeedBlogUrls(): string[] {
-    return this.seedBlogUrls;
-  }
+  // REMOVED: No more seed blogs - only real search results
 
   /**
    * Extract blog ID from blog URL
@@ -69,7 +56,7 @@ export class BlogScraper {
     const blogId = this.extractBlogId(blogUrl);
     if (!blogId) {
       console.log(`❌ Could not extract blog ID from ${blogUrl}`);
-      return this.createFallbackPosts(blogUrl, Math.min(5, limit));
+      return []; // Return empty instead of fake posts
     }
 
     // Step 1: Try RSS feed first (PRIORITY)
@@ -89,11 +76,9 @@ export class BlogScraper {
     const uniquePosts = this.deduplicatePosts(combinedPosts);
     let finalPosts = uniquePosts.slice(0, limit);
     
-    // Ensure we have at least 5 posts for meaningful analysis
-    if (finalPosts.length < 5) {
-      console.log(`🔄 Only ${finalPosts.length} posts found, adding fallback posts`);
-      const fallbackPosts = await this.createFallbackPosts(blogUrl, 5 - finalPosts.length);
-      finalPosts = [...finalPosts, ...fallbackPosts].slice(0, limit);
+    // Return whatever we found - no fake posts
+    if (finalPosts.length < 3) {
+      console.log(`⚠️ Only ${finalPosts.length} posts found from ${blogUrl}, but no fake posts added`);
     }
     
     console.log(`📊 Final result for ${blogUrl}: ${finalPosts.length} posts (${rssPosts.length} from RSS, ${httpPosts.length} from HTTP, ${finalPosts.length - rssPosts.length - httpPosts.length} fallback)`);
@@ -387,33 +372,7 @@ export class BlogScraper {
     });
   }
 
-  /**
-   * Create meaningful fallback posts when scraping fails completely
-   */
-  async createFallbackPosts(blogUrl: string, count: number): Promise<ScrapedPost[]> {
-    const blogId = this.extractBlogId(blogUrl) || 'blog';
-    
-    const fallbackTitles = [
-      `${blogId}의 홍삼 효능 정리`,
-      `홍삼스틱 복용법과 주의사항`,
-      `${blogId} 건강 관리 일상`,
-      `홍삼 제품 비교 및 리뷰`,
-      `건강한 생활습관과 홍삼`,
-      `${blogId}의 영양 보조제 추천`,
-      `홍삼 복용 후기와 경험담`,
-      `면역력 강화 방법 정리`,
-      `${blogId} 건강 정보 공유`,
-      `홍삼의 다양한 효과 분석`
-    ];
-    
-    console.log(`🔄 Creating ${count} fallback posts for ${blogUrl}`);
-    
-    return Array.from({length: count}, (_, i) => ({
-      url: `${blogUrl}?logNo=${Date.now() + i}`,
-      title: fallbackTitles[i % fallbackTitles.length],
-      publishedAt: new Date(Date.now() - i * 24 * 60 * 60 * 1000)
-    }));
-  }
+  // REMOVED: createFallbackPosts() - NO MORE FAKE POSTS
 }
 
 export const scraper = new BlogScraper();

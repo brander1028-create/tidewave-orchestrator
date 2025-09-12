@@ -133,9 +133,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Add metadata for better UI handling
+      const totalPostsCount = results.reduce((sum, r) => sum + r.posts.length, 0);
+      const totalKeywordsCount = results.reduce((sum, r) => sum + r.topKeywords.length, 0);
+
       res.json({
         job,
-        results
+        results,
+        meta: {
+          isComplete: job.status === 'completed',
+          discoveredBlogsCount: discoveredBlogs.length,
+          totalPostsCount,
+          totalKeywordsCount,
+          isRealSearch: true // No fake seeds used
+        }
       });
     } catch (error) {
       console.error('Error fetching SERP results:', error);

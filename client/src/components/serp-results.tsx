@@ -18,12 +18,31 @@ interface BlogResult {
 interface SerpResultsData {
   job: SerpJob;
   results: BlogResult[];
+  meta?: {
+    isComplete: boolean;
+    discoveredBlogsCount: number;
+    totalPostsCount: number;
+    totalKeywordsCount: number;
+    isRealSearch: boolean;
+  };
 }
 
 export default function SerpResults({ jobId }: SerpResultsProps) {
+  // Get job status to know when to stop refetching
+  const { data: jobStatus } = useQuery<SerpJob>({
+    queryKey: ["/api/serp/jobs", jobId],
+    enabled: !!jobId,
+    refetchInterval: 2000, // Poll every 2 seconds
+  });
+
+  const isJobRunning = jobStatus?.status === 'running' || jobStatus?.status === 'pending';
+  
   const { data, isLoading, refetch } = useQuery<SerpResultsData>({
     queryKey: ["/api/serp/jobs", jobId, "results"],
     enabled: !!jobId,
+    refetchInterval: isJobRunning ? 2000 : false, // Only refetch while job is running
+    retry: 3, // Retry failed requests
+    retryDelay: 1000,
   });
 
   const handleExportCSV = () => {
@@ -65,6 +84,30 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
   const blogsWithKeywords = results.filter(r => r.topKeywords.length > 0);
   const blogsWithoutKeywords = results.filter(r => r.topKeywords.length === 0);
 
+  // Show collecting state if job is running and no results yet
+  if (isJobRunning && results.length === 0) {
+    return (
+      <Card className="shadow-sm">
+        <CardContent className="pt-6">
+          <div className="flex items-center justify-center py-8">
+            <div className="text-center space-y-4">
+              <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto"></div>
+              <div className="text-lg font-medium">블로그 데이터 수집 중...</div>
+              <p className="text-muted-foreground">
+                실제 네이버 검색 결과에서 블로그들을 분석하고 있습니다. (가짜 데이터 사용 안함)
+              </p>
+              {data?.meta && (
+                <div className="text-sm text-muted-foreground">
+                  현재까지: {data.meta.discoveredBlogsCount}개 블로그, {data.meta.totalPostsCount}개 포스트 발견
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="shadow-sm">
       <CardHeader>
@@ -73,6 +116,11 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
             <CardTitle>분석 결과</CardTitle>
             <div className="text-sm text-muted-foreground mt-1">
               총 {results.length}개 블로그 발견 • {blogsWithKeywords.length}개 블로그에서 상위 키워드 노출
+              {data?.meta?.isRealSearch && (
+                <div className="text-xs text-green-600 font-medium mt-1">
+                  ✓ 실제 네이버 검색 결과 사용 (가짜 데이터 없음)
+                </div>
+              )}
             </div>
           </div>
           <Button 
