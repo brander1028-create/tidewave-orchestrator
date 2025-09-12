@@ -31,10 +31,10 @@ Preferred communication style: Simple, everyday language.
 ## Core Services
 
 ### Web Scraping Service
-- **Engine**: Playwright for blog content scraping
-- **Strategy**: Mobile-first approach using m.blog.naver.com
+- **Engine**: HTTP + RSS based content scraping (no browser dependencies)
+- **Strategy**: RSS feeds → Mobile HTML parsing (m.blog.naver.com) → Fallback seed URLs
 - **Rate Limiting**: 1-2 concurrent requests with 1-3 second delays
-- **Error Handling**: Graceful failure handling with retry logic
+- **Error Handling**: Graceful fallback system when APIs unavailable
 
 ### NLP Service
 - **Approach**: N-gram based keyword extraction
@@ -54,8 +54,9 @@ Preferred communication style: Simple, everyday language.
 - **Naver Search Ads API**: Optional for search volume data
 
 ### Web Scraping Stack
-- **Playwright**: Chromium automation for blog content extraction
-- **User Agent Spoofing**: Mobile browser simulation for better access
+- **node-fetch**: HTTP request library for web content extraction
+- **fast-xml-parser**: RSS feed parsing for blog post collection
+- **User Agent Spoofing**: Mobile browser headers for better access
 
 ### Development Tools
 - **Replit Integration**: Development environment optimization
