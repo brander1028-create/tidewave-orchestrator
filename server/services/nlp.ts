@@ -18,16 +18,22 @@ export class NLPService {
     ...Array.from({length: 100}, (_, i) => i.toString()),
   ]);
 
+  /**
+   * Clean and normalize text for processing
+   */
   private cleanText(text: string): string {
-    // Remove HTML tags, special characters, and normalize
     return text
-      .replace(/<[^>]*>/g, '')
-      .replace(/[^\w\s가-힣]/g, ' ')
-      .replace(/\s+/g, ' ')
+      .replace(/<[^>]*>/g, '') // Remove HTML tags
+      .replace(/[^\w\s가-힣]/g, ' ') // Keep only Korean, alphanumeric and spaces
+      .replace(/\s+/g, ' ') // Normalize whitespace
       .trim()
       .toLowerCase();
   }
 
+  /**
+   * Extract n-grams from tokenized text
+   * Supports 1-gram, 2-gram, and 3-gram extraction as specified
+   */
   private extractNgrams(text: string, n: number): string[] {
     const words = text.split(' ').filter(word => 
       word.length >= 2 && 
@@ -47,13 +53,20 @@ export class NLPService {
     return ngrams;
   }
 
+  /**
+   * Extract keywords using simple n-gram (1-3) approach from titles
+   * This implements the specified simple n-gram keyword extraction
+   */
   extractKeywords(titles: string[]): KeywordCandidate[] {
+    console.log(`🔤 Starting n-gram keyword extraction from ${titles.length} titles`);
+    
     const keywordFreq = new Map<string, number>();
     
     // Clean titles and extract text
     const cleanedTitles = titles.map(title => this.cleanText(title));
+    console.log(`📝 Cleaned titles: ${cleanedTitles.slice(0, 3).join(', ')}...`);
     
-    // Extract 1-grams, 2-grams, and 3-grams
+    // Extract 1-grams, 2-grams, and 3-grams as specified
     for (const title of cleanedTitles) {
       // 1-grams (single words)
       const unigrams = this.extractNgrams(title, 1);
@@ -63,8 +76,9 @@ export class NLPService {
       const trigrams = this.extractNgrams(title, 3);
       
       // Count frequency with different weights
+      // Higher weight for longer phrases as they're more specific
       [...unigrams, ...bigrams, ...trigrams].forEach(ngram => {
-        const weight = ngram.split(' ').length; // Higher weight for longer phrases
+        const weight = ngram.split(' ').length; // 1, 2, or 3
         keywordFreq.set(ngram, (keywordFreq.get(ngram) || 0) + weight);
       });
     }
@@ -75,15 +89,16 @@ export class NLPService {
     
     for (const [keyword, frequency] of Array.from(keywordFreq.entries())) {
       if (frequency >= 2) { // Filter out keywords that appear only once
-        // Score based on frequency, length, and document frequency
+        // Document frequency: how many titles contain this keyword
         const documentFreq = cleanedTitles.filter(title => 
           title.includes(keyword)
         ).length;
         
+        // Score based on frequency, length, and document frequency
         const score = Math.round(
-          (frequency * 10) + 
-          (keyword.split(' ').length * 5) + 
-          (documentFreq / totalTitles * 20)
+          (frequency * 10) + // Base frequency score
+          (keyword.split(' ').length * 5) + // Length bonus
+          (documentFreq / totalTitles * 20) // Document frequency bonus
         );
         
         candidates.push({
@@ -95,13 +110,23 @@ export class NLPService {
     }
     
     // Sort by score and return top candidates
-    return candidates
+    const sortedCandidates = candidates
       .sort((a, b) => b.score - a.score)
       .slice(0, 50); // Return top 50 keywords
+    
+    console.log(`✅ N-gram extraction complete: ${sortedCandidates.length} keyword candidates found`);
+    console.log(`🏆 Top 5 keywords: ${sortedCandidates.slice(0, 5).map(k => `${k.keyword}(${k.score})`).join(', ')}`);
+    
+    return sortedCandidates;
   }
 
+  /**
+   * Get top N keywords from candidates
+   */
   getTopKeywords(candidates: KeywordCandidate[], limit = 20): KeywordCandidate[] {
-    return candidates.slice(0, limit);
+    const topKeywords = candidates.slice(0, limit);
+    console.log(`📊 Selected top ${topKeywords.length} keywords for analysis`);
+    return topKeywords;
   }
 }
 

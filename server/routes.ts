@@ -207,7 +207,8 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
       progress: 5
     });
 
-    console.log(`Starting SERP analysis for job ${jobId} with keywords:`, keywords);
+    console.log(`🚀 Starting SERP analysis for job ${jobId} with keywords:`, keywords);
+    console.log(`📊 System Configuration: HTTP + RSS based crawling (Playwright removed)`);
     
     // Step 1: Discover blogs for each keyword
     const allDiscoveredBlogs = new Map<string, any>(); // Use URL as key to deduplicate
@@ -264,7 +265,10 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
     }
 
     const discoveredBlogs = Array.from(allDiscoveredBlogs.values());
-    console.log(`Discovered ${discoveredBlogs.length} unique blogs`);
+    console.log(`📋 COLLECTION SUMMARY - Blog Discovery Phase:`);
+    console.log(`   ✅ Total blogs discovered: ${discoveredBlogs.length}`);
+    console.log(`   🎯 Target minimum: 3+ blogs required`);
+    console.log(`   📈 Discovery success rate: ${discoveredBlogs.length >= 3 ? 'PASSED' : 'BELOW MINIMUM'}`);
 
     // Check if cancelled before proceeding to blog analysis
     if (await checkIfCancelled()) {
@@ -305,8 +309,9 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         
         console.log(`Analyzing posts for blog: ${blog.blogName} (${index + 1}/${discoveredBlogs.length})`);
         
-        // Scrape recent posts
+        // Scrape recent posts using HTTP + RSS approach
         const scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, 10);
+        console.log(`   📄 Posts collected from ${blog.blogName}: ${scrapedPosts.length} posts`);
         
         // Save posts
         for (const post of scrapedPosts) {
@@ -318,12 +323,14 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
           });
         }
 
-        // Extract keywords from post titles
+        // Extract keywords from post titles using n-gram (1-3) approach
         const titles = scrapedPosts.map(post => post.title);
+        console.log(`   🔤 Extracting keywords from ${titles.length} titles for ${blog.blogName}`);
         const keywordCandidates = nlpService.extractKeywords(titles);
         
         // Get top 3 keywords per post (simplified: take top 3 overall for this blog)
         const topCandidates = keywordCandidates.slice(0, 3);
+        console.log(`   🏆 Top keywords for ${blog.blogName}: ${topCandidates.map(k => k.keyword).join(', ')}`);
         
         // Save top keywords
         const posts = await storage.getAnalyzedPosts(blog.id);
@@ -451,7 +458,24 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
       return;
     }
 
-    // Complete the job
+    // Generate final collection summary
+    const finalStats = {
+      keywordsSearched: keywords.length,
+      blogsDiscovered: discoveredBlogs.length,
+      totalPostsAnalyzed: 0,
+      blogsWithMinimumPosts: 0
+    };
+    
+    // Count actual posts analyzed
+    for (const blog of discoveredBlogs) {
+      const posts = await storage.getAnalyzedPosts(blog.id);
+      finalStats.totalPostsAnalyzed += posts.length;
+      if (posts.length >= 5) {
+        finalStats.blogsWithMinimumPosts++;
+      }
+    }
+    
+    // Complete the job with detailed results
     await storage.updateSerpJob(jobId, {
       status: "completed",
       currentStep: "completed",
@@ -461,12 +485,22 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
       detailedProgress: {
         phase: "completed"
       },
-      results: {
-        keywordsSearched: keywords.length,
-        blogsDiscovered: discoveredBlogs.length,
-        postsAnalyzed: discoveredBlogs.reduce((sum, blog) => sum + blog.postsAnalyzed, 0)
-      }
+      results: finalStats
     });
+    
+    // 📊 FINAL COLLECTION SUMMARY CONSOLE OUTPUT
+    console.log(`\n🎉 =============== FINAL COLLECTION SUMMARY ===============`);
+    console.log(`🚀 HTTP + RSS Based Analysis Complete for Job: ${jobId}`);
+    console.log(`📋 Keywords searched: ${finalStats.keywordsSearched}`);
+    console.log(`🏢 Blogs discovered: ${finalStats.blogsDiscovered}`);
+    console.log(`📄 Total posts collected: ${finalStats.totalPostsAnalyzed}`);
+    console.log(`✅ Blogs with 5+ posts: ${finalStats.blogsWithMinimumPosts}`);
+    console.log(`🎯 Minimum requirement check:`);
+    console.log(`   • 3+ blogs required: ${finalStats.blogsDiscovered >= 3 ? '✅ PASSED' : '❌ FAILED'}`);
+    console.log(`   • 5+ posts per blog target: ${finalStats.blogsWithMinimumPosts}/${finalStats.blogsDiscovered} blogs achieved`);
+    console.log(`📈 System Status: HTTP + RSS crawling with fallback seed URLs`);
+    console.log(`🔧 RSS Priority → HTTP Fallback → Seed URL Backup`);
+    console.log(`======================================================\n`);
     
     console.log(`SERP analysis job ${jobId} completed successfully`);
 
