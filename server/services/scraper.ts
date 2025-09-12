@@ -113,8 +113,7 @@ export class BlogScraper {
           'User-Agent': this.userAgent,
           'Accept': 'application/rss+xml, application/xml, text/xml',
           'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
-        },
-        timeout: 15000
+        }
       });
 
       if (!response.ok) {
@@ -174,8 +173,7 @@ export class BlogScraper {
           'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
           'Accept-Encoding': 'gzip, deflate, br',
           'Referer': 'https://m.blog.naver.com/',
-        },
-        timeout: 20000
+        }
       });
 
       if (!response.ok) {
@@ -328,7 +326,7 @@ export class BlogScraper {
     ];
     
     for (const pattern of titlePatterns) {
-      const matches = [...context.matchAll(pattern)];
+      const matches = Array.from(context.matchAll(pattern));
       for (const match of matches) {
         const candidate = this.cleanTitle(match[1]);
         if (this.isValidTitle(candidate)) {

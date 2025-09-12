@@ -17,6 +17,7 @@ const serpAnalysisSchema = z.object({
   keywords: z.array(z.string().min(1, "키워드를 입력해주세요")).min(1, "최소 1개의 키워드가 필요합니다").max(20, "최대 20개까지 입력 가능합니다"),
   minRank: z.number().min(2).max(15),
   maxRank: z.number().min(2).max(15),
+  postsPerBlog: z.number().min(1, "최소 1개").max(20, "최대 20개"),
 }).refine((data) => data.minRank <= data.maxRank, {
   message: "최소 순위는 최대 순위보다 작거나 같아야 합니다",
   path: ["maxRank"],
@@ -33,6 +34,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
   const [currentKeyword, setCurrentKeyword] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
   const [rankRange, setRankRange] = useState<[number, number]>([2, 10]);
+  const [postsPerBlog, setPostsPerBlog] = useState(10);
   
   const form = useForm<SerpAnalysisFormData>({
     resolver: zodResolver(serpAnalysisSchema),
@@ -40,6 +42,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
       keywords: [],
       minRank: 2,
       maxRank: 10,
+      postsPerBlog: 10,
     },
   });
 
@@ -93,6 +96,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
       keywords,
       minRank: rankRange[0],
       maxRank: rankRange[1],
+      postsPerBlog,
     });
   };
 
@@ -183,12 +187,38 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
             </p>
           </div>
 
+          {/* 블로그별 포스트 개수 설정 */}
+          <div className="space-y-3">
+            <Label>각 블로그별 분석할 최근 포스트 개수 ({postsPerBlog}개)</Label>
+            <div className="px-4">
+              <Slider
+                value={[postsPerBlog]}
+                onValueChange={(value) => {
+                  setPostsPerBlog(value[0]);
+                  form.setValue("postsPerBlog", value[0]);
+                }}
+                min={1}
+                max={20}
+                step={1}
+                className="w-full"
+                data-testid="slider-posts-per-blog"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                <span>1개</span>
+                <span>20개</span>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              각 블로그에서 최근 포스트를 몇 개까지 수집하여 키워드 분석할지 설정합니다.
+            </p>
+          </div>
+
           {/* 분석 시작 버튼 */}
           <div className="flex justify-between items-center pt-4 border-t border-border">
             <div className="text-sm text-muted-foreground">
               {keywords.length > 0 ? (
                 <span>
-                  {keywords.length}개 키워드, {rankRange[0]}-{rankRange[1]}위 블로그 분석 예정
+                  {keywords.length}개 키워드, {rankRange[0]}-{rankRange[1]}위 블로그, 블로그당 {postsPerBlog}개 포스트 분석 예정
                 </span>
               ) : (
                 <span>키워드를 추가하여 분석을 시작하세요</span>

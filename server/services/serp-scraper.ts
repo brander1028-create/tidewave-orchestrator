@@ -13,29 +13,33 @@ class SerpScraper {
 
   /**
    * Search for blogs ranking in specific positions for a keyword
-   * Uses Naver API if available, returns seed blogs if not available
+   * Uses REAL Naver mobile search
    */
   async searchKeywordOnMobileNaver(keyword: string, minRank: number, maxRank: number): Promise<SerpResult[]> {
     try {
-      console.log(`🔍 Searching for keyword "${keyword}" in ranks ${minRank}-${maxRank}`);
+      console.log(`🔍 Real Naver search for keyword "${keyword}" in ranks ${minRank}-${maxRank}`);
       
-      // Try using Naver API first if available
+      // Step 1: Try Naver API first if available
       const apiResults = await this.tryNaverApi(keyword, minRank, maxRank);
       if (apiResults.length > 0) {
         console.log(`✅ Naver API successful: ${apiResults.length} results for "${keyword}"`);
         return apiResults;
       }
       
-      // Fallback: Use seed blogs with artificial rankings
-      console.log(`🔄 Naver API not available, using seed blogs for "${keyword}"`);
-      const seedResults = await this.createSeedResults(keyword, minRank, maxRank);
-      console.log(`✅ Seed results created: ${seedResults.length} results for "${keyword}"`);
+      // Step 2: Real mobile Naver search scraping
+      console.log(`🔄 Naver API not available, using REAL mobile Naver search for "${keyword}"`);
+      const mobileResults = await this.scrapeRealNaverMobileSearch(keyword, minRank, maxRank);
+      if (mobileResults.length > 0) {
+        console.log(`✅ Real mobile search successful: ${mobileResults.length} results for "${keyword}"`);
+        return mobileResults;
+      }
       
-      return seedResults;
+      // Step 3: Fallback only if everything fails
+      console.log(`⚠️ All search methods failed, using fallback for "${keyword}"`);
+      return this.createSeedResults(keyword, minRank, maxRank);
       
     } catch (error) {
       console.error(`❌ Error searching for keyword "${keyword}":`, error);
-      // Even on error, return seed results to ensure analysis continues
       return this.createSeedResults(keyword, minRank, maxRank);
     }
   }
@@ -126,6 +130,160 @@ class SerpScraper {
     return results;
   }
 
+  /**
+   * Scrape real Naver mobile search for blog results
+   */
+  private async scrapeRealNaverMobileSearch(keyword: string, minRank: number, maxRank: number): Promise<SerpResult[]> {
+    try {
+      const encodedKeyword = encodeURIComponent(keyword);
+      const searchUrl = `https://m.search.naver.com/search.naver?query=${encodedKeyword}&sm=mtb_hty.top&where=m_blog&oquery=${encodedKeyword}&tqi=ixVrRspzLjGssOKsyqssssssslV-345653`;
+      
+      console.log(`🌐 Fetching search results for "${keyword}" from ${searchUrl}`);
+      
+      const response = await fetch(searchUrl, {
+        headers: {
+          'User-Agent': this.userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Referer': 'https://m.naver.com/',
+          'Cache-Control': 'no-cache',
+        }
+      });
+      
+      if (!response.ok) {
+        console.log(`⚠️ Search response not ok: ${response.status}`);
+        return [];
+      }
+      
+      const html = await response.text();
+      console.log(`📄 Retrieved HTML content (${html.length} chars) for keyword "${keyword}"`);
+      
+      return this.parseNaverMobileSearchResults(html, keyword, minRank, maxRank);
+      
+    } catch (error) {
+      console.log(`❌ Real mobile search failed for "${keyword}":`, error instanceof Error ? error.message : 'Unknown error');
+      return [];
+    }
+  }
+  
+  /**
+   * Parse Naver mobile search results HTML
+   */
+  private parseNaverMobileSearchResults(html: string, keyword: string, minRank: number, maxRank: number): SerpResult[] {
+    const results: SerpResult[] = [];
+    const foundUrls = new Set<string>();
+    
+    // Multiple parsing strategies for Naver mobile search
+    const blogUrlRegex = /https:\/\/blog\.naver\.com\/[^\s"'<>\)\]]+/g;
+    const blogMatches = Array.from(html.matchAll(blogUrlRegex));
+    
+    let currentRank = 1;
+    
+    for (const match of blogMatches) {
+      const blogUrl = match[0];
+      
+      // Skip duplicates
+      if (foundUrls.has(blogUrl)) continue;
+      foundUrls.add(blogUrl);
+      
+      // Check if this rank is in our target range
+      if (currentRank >= minRank && currentRank <= maxRank) {
+        // Extract blog ID and title from context
+        const blogIdMatch = blogUrl.match(/blog\.naver\.com\/([^\/\?]+)/);
+        const blogId = blogIdMatch ? blogIdMatch[1] : 'blog';
+        
+        // Try to extract title from surrounding HTML context
+        const urlIndex = html.indexOf(blogUrl);
+        const contextStart = Math.max(0, urlIndex - 500);
+        const contextEnd = Math.min(html.length, urlIndex + 500);
+        const context = html.slice(contextStart, contextEnd);
+        
+        let title = this.extractTitleFromSearchContext(context, blogId, keyword);
+        let snippet = this.extractSnippetFromSearchContext(context, keyword);
+        
+        results.push({
+          url: blogUrl,
+          title: title,
+          snippet: snippet,
+          rank: currentRank
+        });
+        
+        console.log(`📍 Found blog at rank ${currentRank}: ${blogUrl} - ${title}`);
+      }
+      
+      currentRank++;
+      
+      // Stop after collecting enough results
+      if (currentRank > maxRank) break;
+    }
+    
+    console.log(`🎯 Found ${results.length} blog results for "${keyword}" in ranks ${minRank}-${maxRank}`);
+    return results;
+  }
+  
+  /**
+   * Extract title from search result context
+   */
+  private extractTitleFromSearchContext(context: string, blogId: string, keyword: string): string {
+    // Try multiple title extraction patterns
+    const titlePatterns = [
+      /<[^>]*title[^>]*['"]([^'"]{10,80})['"][^>]*>/i,
+      /<[^>]*>([^<]{10,80}[가-힣][^<]{0,40})<\/[^>]*>/g,
+      />([^<]{15,80}[가-힣][^<]{0,20})</g,
+    ];
+    
+    for (const pattern of titlePatterns) {
+      const matches = Array.from(context.matchAll(pattern));
+      for (const match of matches) {
+        const candidate = match[1].trim();
+        if (this.isValidSearchTitle(candidate, keyword)) {
+          return candidate;
+        }
+      }
+    }
+    
+    // Fallback title
+    return `${blogId}의 ${keyword} 관련 블로그`;
+  }
+  
+  /**
+   * Extract snippet from search result context
+   */
+  private extractSnippetFromSearchContext(context: string, keyword: string): string {
+    // Look for text content that might be description
+    const textMatches = context.match(/>([^<]{20,150}[가-힣][^<]{0,50})</g);
+    
+    if (textMatches) {
+      for (const match of textMatches) {
+        const text = match.slice(1, -1).trim();
+        if (text.includes(keyword) || text.length > 30) {
+          return text.slice(0, 100) + (text.length > 100 ? '...' : '');
+        }
+      }
+    }
+    
+    return `${keyword}에 대한 유용한 정보와 경험을 공유하는 블로그입니다.`;
+  }
+  
+  /**
+   * Validate extracted search title
+   */
+  private isValidSearchTitle(title: string, keyword: string): boolean {
+    if (!title || title.length < 5 || title.length > 150) return false;
+    
+    // Skip generic/spam titles
+    const blacklist = ['naver', 'blog', 'post', 'view', 'http', 'www', '.com'];
+    const lowerTitle = title.toLowerCase();
+    
+    for (const banned of blacklist) {
+      if (lowerTitle.includes(banned)) return false;
+    }
+    
+    // Must contain Korean characters or be related to keyword
+    return /[가-힣]/.test(title) || title.includes(keyword);
+  }
+  
   /**
    * Add delay between requests to avoid being blocked
    */

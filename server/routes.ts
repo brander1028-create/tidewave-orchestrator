@@ -3,8 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scraper } from "./services/scraper";
 import { nlpService } from "./services/nlp";
-import { serpScraper } from "./services/serp-scraper.js";
-import { insertSerpJobSchema } from "@shared/schema";
+import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -12,7 +11,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Start SERP analysis with keywords
   app.post("/api/serp/analyze", async (req, res) => {
     try {
-      const { keywords, minRank = 2, maxRank = 15 } = req.body;
+      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10 } = req.body;
       
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
@@ -24,6 +23,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (minRank < 2 || maxRank > 15 || minRank > maxRank) {
         return res.status(400).json({ error: "Invalid rank range. Min: 2, Max: 15" });
+      }
+
+      if (postsPerBlog < 1 || postsPerBlog > 20) {
+        return res.status(400).json({ error: "Posts per blog must be between 1 and 20" });
       }
 
       // Create SERP analysis job
@@ -39,7 +42,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Start analysis in background
-      processSerpAnalysisJob(job.id, keywords, minRank, maxRank);
+      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog);
 
       res.json({ 
         jobId: job.id,
@@ -189,7 +192,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 }
 
 // Background SERP analysis job processing
-async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank: number, maxRank: number) {
+async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank: number, maxRank: number, postsPerBlog: number = 10) {
   try {
     // Helper function to check if job is cancelled
     const checkIfCancelled = async (): Promise<boolean> => {
@@ -310,7 +313,7 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         console.log(`Analyzing posts for blog: ${blog.blogName} (${index + 1}/${discoveredBlogs.length})`);
         
         // Scrape recent posts using HTTP + RSS approach
-        const scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, 10);
+        const scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
         console.log(`   📄 Posts collected from ${blog.blogName}: ${scrapedPosts.length} posts`);
         
         // Save posts
