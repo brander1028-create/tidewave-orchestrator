@@ -184,14 +184,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let volumesMode = 'fallback';
       if (allBlogs.length > 0) {
         try {
+          console.log(`🔍 Determining volumes mode from first blog analysis...`);
           const firstBlogPosts = await storage.getAnalyzedPosts(allBlogs[0].id);
           const titles = firstBlogPosts.map(p => p.title);
           const { volumesMode: firstBlogVolumesMode } = await extractTop3ByVolume(titles);
+          console.log(`📊 Volumes mode determined: ${firstBlogVolumesMode}`);
           volumesMode = firstBlogVolumesMode;
         } catch (e) {
           console.log('⚠️ Could not determine volumes mode, defaulting to fallback');
         }
       }
+      
+      console.log(`📈 Final volumes_mode for response: ${volumesMode}`);
 
       const response = {
         blogs: hitBlogs,

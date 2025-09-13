@@ -26,7 +26,7 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
     console.log(`🔑 SearchAd API credentials not found, using fallback mode`);
     console.log(`   - API_KEY: ${API_KEY ? 'present' : 'missing'} (length: ${API_KEY?.length || 0})`);
     console.log(`   - SECRET: ${SECRET ? 'present' : 'missing'} (length: ${SECRET?.length || 0})`);
-    console.log(`   - CUSTOMER: ${CUSTOMER ? 'present' : 'missing'} (value: ${CUSTOMER})`);
+    console.log(`   - CUSTOMER: ${CUSTOMER ? 'present' : 'missing'} (length: ${CUSTOMER?.length || 0})`);
     
     // Return fallback volumes (all 0)
     const fallbackVolumes: Record<string, Vol> = {};
@@ -48,6 +48,9 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
   for (let i = 0; i < ks.length; i += 5) chunks.push(ks.slice(i, i+5));
 
   const out: Record<string, Vol> = {};
+  let hasSuccessfulApiCall = false;
+  let hasApiErrors = false;
+  
   for (const chunk of chunks) {
     try {
       const ts = Date.now().toString();
@@ -64,11 +67,13 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
       
       if (!res.ok) {
         console.log(`⚠️ SearchAd API error for chunk ${chunk.join(',')}: ${res.status} ${res.statusText}`);
+        hasApiErrors = true;
         continue;
       }
       
       const json = await res.json() as any;
       console.log(`📊 SearchAd API response for ${chunk.join(',')}: ${json.keywordList?.length || 0} keywords`);
+      hasSuccessfulApiCall = true;
 
       for (const row of (json.keywordList ?? [])) {
         const key = String(row.relKeyword ?? row.keyword ?? '').trim().toLowerCase();
@@ -79,11 +84,24 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
       }
     } catch (error) {
       console.error(`❌ SearchAd API error for chunk ${chunk.join(',')}:`, error);
+      hasApiErrors = true;
     }
+  }
+  
+  // If any API errors occurred or no successful calls, return fallback mode
+  if (hasApiErrors || !hasSuccessfulApiCall || Object.keys(out).length === 0) {
+    console.log(`🔄 SearchAd API failed (errors: ${hasApiErrors}, successful: ${hasSuccessfulApiCall}), falling back to frequency-based mode`);
+    console.log(`   📊 hasSuccessfulApiCall: ${hasSuccessfulApiCall}, hasApiErrors: ${hasApiErrors}, volumes found: ${Object.keys(out).length}`);
+    const fallbackVolumes: Record<string, Vol> = {};
+    ks.forEach(k => {
+      fallbackVolumes[k.toLowerCase()] = { pc: 0, mobile: 0, total: 0 };
+    });
+    return { volumes: fallbackVolumes, mode: 'fallback' };
   }
   
   console.log(`📊 Final volumes collected: ${Object.keys(out).length} keywords using SearchAd API`);
   console.log(`📈 Sample volumes: ${Object.entries(out).slice(0, 3).map(([k, v]) => `${k}:${v.total}`).join(', ')}`);
+  console.log(`   ✅ hasSuccessfulApiCall: ${hasSuccessfulApiCall}, returning mode: 'searchads'`);
   
   return { volumes: out, mode: 'searchads' };
 }
