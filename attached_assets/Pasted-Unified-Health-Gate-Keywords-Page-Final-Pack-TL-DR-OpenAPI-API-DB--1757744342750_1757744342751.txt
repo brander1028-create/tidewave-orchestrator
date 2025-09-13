@@ -1,0 +1,284 @@
+Unified Health Gate + Keywords Page (Final Pack)
+
+TL;DR: 시작 전에 헬스체크(OpenAPI/검색광고 API/키워드DB) → 배지로 실시간 표시 → 엄격모드(불통이면 실행 차단). 키워드 리스트 페이지에서 받아오기→정렬(조회량)→등급(A/B/C)→제외/복원. 분석 파이프라인은 이 리스트를 화이트리스트로 사용.
+
+
+---
+
+1) 서버 — 타입 & 계약(최종)
+
+// server/types.ts
+export type VolumeMode = 'pending'|'fallback'|'partial'|'searchads';
+export type Top3Item = { text: string; volume: number; raw_volume: number; rank: number };
+export type KeywordEntry = { blog_id: string; top3: Top3Item[] };
+export type BlogEntry = { blog_id: string; blog_url: string; gathered_posts: number; base_rank: number };
+export type Counters = {
+  discovered_blogs: number; blogs: number; posts: number;
+  selected_keywords: number; searched_keywords: number; hit_blogs: number;
+  volumes_mode: VolumeMode; volumes_requested?: number; volumes_ok?: number; volumes_fail?: number; volumes_http?: Record<number, number>; volumes_reason?: string;
+};
+export type Results = { blogs: BlogEntry[]; keywords: KeywordEntry[]; posts: any[]; counters: Counters; warnings: string[]; errors: string[] };
+
+export type HealthOpen = { ok: boolean; http: Record<number, number>; reason?: string };
+export type HealthSearchAds = { mode: Exclude<VolumeMode,'pending'>; stats: { requested: number; ok: number; fail: number; http: Record<number,number> }, reason?: string };
+export type HealthKeywordsDB = { ok: boolean; count?: number; reason?: string };
+export type HealthResponse = { openapi: HealthOpen; searchads: HealthSearchAds; keywordsdb: HealthKeywordsDB };
+
+
+---
+
+2) 서버 — 헬스체크
+
+// server/services/health.ts
+import { getVolumes } from './searchad';
+import { naverBlogSearch } from './naver_openapi';
+import { keywordsCount, pingKeywordsDB } from '../store/keywords';
+import type { HealthOpen, HealthSearchAds, HealthKeywordsDB } from '../types';
+
+export async function checkOpenAPI(): Promise<HealthOpen> {
+  const http: Record<number,number> = {};
+  try {
+    const res = await naverBlogSearch('헬스체크', 1); // 실제 호출
+    http[200] = 1;
+    return { ok: Array.isArray(res?.items), http };
+  } catch (e:any) {
+    const code = Number(e?.status || 500); http[code] = (http[code]||0)+1;
+    return { ok:false, http, reason:String(e?.message||e) };
+  }
+}
+
+export async function checkSearchAds(): Promise<HealthSearchAds> {
+  // 소량 샘플(키 3개)로 실제 호출하여 모드 판정
+  const sample = ['홍삼', '홍삼스틱', '면역'];
+  const v = await getVolumes(sample);
+  // getVolumes 내부에서 stats( requested/ok/fail/http ) 채워서 반환한다고 가정
+  const only2xx = Object.keys(v.stats.http||{}).every(c => +c>=200 && +c<300);
+  const mode = (v.stats.ok===0) ? 'fallback' : (v.stats.ok===v.stats.requested && only2xx ? 'searchads' : 'partial');
+  return { mode, stats: v.stats, reason: v.reason };
+}
+
+export async function checkKeywordsDB(): Promise<HealthKeywordsDB> {
+  try {
+    await pingKeywordsDB(); // SELECT 1 or pragma
+    const cnt = await keywordsCount();
+    return { ok:true, count: cnt };
+  } catch (e:any) {
+    return { ok:false, reason:String(e?.message||e) };
+  }
+}
+
+
+---
+
+3) 서버 — 라우트(헬스 + 게이트 + 키워드 API)
+
+// server/routes.ts (발췌)
+import { checkOpenAPI, checkSearchAds, checkKeywordsDB } from './services/health';
+import { startJob } from './services/jobs';
+import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded } from './services/keywords';
+import type { HealthResponse } from './types';
+
+app.get('/api/health', async (req,res)=>{
+  const open = await checkOpenAPI();
+  const sad  = await checkSearchAds();
+  const kdb  = await checkKeywordsDB();
+  const body: HealthResponse = { openapi: open, searchads: sad, keywordsdb: kdb };
+  res.type('application/json').status(200).send(body);
+});
+
+app.post('/api/serp/search', async (req,res)=>{
+  const { strict=true } = req.body || {};
+  const open = await checkOpenAPI();
+  const sad  = await checkSearchAds();
+  const kdb  = await checkKeywordsDB();
+  const health: HealthResponse = { openapi: open, searchads: sad, keywordsdb: kdb };
+
+  // ▶️ 엄격 모드: OpenAPI OK + SearchAds!=fallback + KeywordsDB OK 여야 통과
+  if (strict && (!open.ok || sad.mode==='fallback' || !kdb.ok)) {
+    return res.status(412).json({ error:'PRECONDITION_FAILED', health, hint: '엄격 모드: 세 서비스 모두 정상이어야 시작합니다.' });
+  }
+  const jobId = await startJob({ ...req.body, volumes_mode_preset: sad.mode });
+  return res.status(202).json({ jobId, health });
+});
+
+// 키워드 리스트 페이지용
+app.post('/api/keywords/refresh', async (req,res)=>{
+  const { base, limit=300, strict=true } = req.body || {};
+  const open = await checkOpenAPI();
+  const sad  = await checkSearchAds();
+  const kdb  = await checkKeywordsDB();
+  if (strict && (!open.ok || sad.mode==='fallback' || !kdb.ok)) {
+    return res.status(412).json({ error:'PRECONDITION_FAILED', health:{openapi:open, searchads:sad, keywordsdb:kdb} });
+  }
+  const r = await upsertKeywordsFromSearchAds(base, limit); // raw_volume/volume/grade 계산 포함
+  res.json({ ok:true, volumes_mode:r.mode, stats:r.stats, inserted:r.count });
+});
+
+app.get('/api/keywords', async (req,res)=>{
+  const excluded = req.query.excluded === 'true';
+  const items = await listKeywords({ excluded, orderBy:'raw_volume', dir:'desc' });
+  res.json({ items });
+});
+
+app.patch('/api/keywords/:id', async (req,res)=>{
+  await setKeywordExcluded(req.params.id, !!req.body.excluded);
+  res.json({ ok:true });
+});
+
+app.get('/api/keywords/excluded', async (req,res)=>{
+  const items = await listExcluded();
+  res.json({ items });
+});
+
+
+---
+
+4) 서버 — 키워드 스토어(개요)
+
+// server/store/keywords.ts (개요)
+export async function pingKeywordsDB(){ /* SELECT 1; 테이블 없으면 생성 */ }
+export async function keywordsCount(){ /* SELECT COUNT(*) FROM keywords */ }
+export async function upsertMany(rows: any[]){ /* INSERT OR UPDATE */ }
+export async function listKeywords(opts:{excluded:boolean,orderBy:'raw_volume'|'text',dir:'asc'|'desc'}){ /* ... */ }
+export async function setKeywordExcluded(id:string, excluded:boolean){ /* ... */ }
+export async function listExcluded(){ /* ... */ }
+
+> 필드: id, text, raw_volume, volume, grade(A/B/C), commerciality, difficulty, excluded, updated_at, source (인덱스: (excluded, raw_volume DESC)).
+
+
+
+
+---
+
+5) 클라이언트 — 상태 배지 + 키워드 페이지
+
+// client/src/components/HealthStatus.tsx
+import useSWR from 'swr';
+const f = (u:string)=>fetch(u).then(r=>r.json());
+export function HealthStatus({compact=false}:{compact?:boolean}){
+  const { data } = useSWR('/api/health', f, { refreshInterval: 15000 });
+  const open = data?.openapi?.ok ? 'OK' : 'Fail';
+  const sad  = data?.searchads?.mode ?? 'fallback';
+  const kdb  = data?.keywordsdb?.ok ? 'OK' : 'Fail';
+  return (
+    <div className="flex gap-2 items-center">
+      <span data-testid="api-open-status" className={`badge ${open==='OK'?'badge-success':'badge-error'}`}>OpenAPI {open}</span>
+      <span data-testid="api-searchads-status" className={`badge ${sad==='searchads'?'badge-success': sad==='partial'?'badge-warning':'badge-error'}`}>SearchAd {sad}</span>
+      <span data-testid="db-keywords-status" className={`badge ${kdb==='OK'?'badge-success':'badge-error'}`}>KeywordsDB {kdb}</span>
+    </div>
+  );
+}
+
+// client/src/pages/KeywordsPage.tsx (개요)
+import useSWR from 'swr';
+import { HealthStatus } from '../components/HealthStatus';
+
+export default function KeywordsPage(){
+  const [strict,setStrict] = useState(true);
+  const { data, mutate } = useSWR('/api/keywords?excluded=false', u=>fetch(u).then(r=>r.json()));
+  const refresh = async (base:string)=>{
+    const r = await fetch('/api/keywords/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base,limit:300,strict})});
+    if (r.status===412){ alert('엄격 모드: 연결 실패로 실행 차단'); return; }
+    await mutate();
+  };
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <HealthStatus />
+        <label className="flex items-center gap-2"><input data-testid="toggle-strict" type="checkbox" checked={strict} onChange={e=>setStrict(e.target.checked)} /> 엄격 모드</label>
+      </div>
+      <div className="flex gap-2">
+        <input data-testid="input-base" placeholder="기준 키워드 (예: 홍삼스틱)" />
+        <button data-testid="btn-fetch-keywords" onClick={()=>refresh((document.querySelector('[data-testid="input-base"]') as HTMLInputElement).value)}>키워드 받아오기</button>
+      </div>
+      <table data-testid="table-keywords" className="table">
+        <thead><tr>
+          <th>키워드</th><th>조회량(raw)</th><th>등급</th><th>상업성</th><th>난이도</th><th>제외</th>
+        </tr></thead>
+        <tbody>
+          {data?.items?.map((k:any)=> (
+            <tr key={k.id} data-testid={`keyword-row-${k.id}`}>
+              <td>{k.text}</td><td>{k.raw_volume}</td><td>{k.grade}</td><td>{k.commerciality}</td><td>{k.difficulty}</td>
+              <td><input data-testid={`exclude-toggle-${k.id}`} type="checkbox" checked={k.excluded} onChange={async e=>{ await fetch(`/api/keywords/${k.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({excluded:e.target.checked})}); await mutate(); }} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+
+---
+
+6) 분석 파이프라인 연계(요지)
+
+제목 토큰화(1~3그램, 2자 이상, 불용어 제거) → 키워드 테이블 조인(excluded=false만) → raw_volume/volume/grade 주입 → (volume,freq)로 TOP3 산출.
+
+SERP는 지정 키워드의 base_rank 기준으로 블로그 카드 필터(1~10만 표시).
+
+
+
+---
+
+7) 수락 기준 (최종)
+
+/api/health가 openapi.ok, searchads.mode, keywordsdb.ok를 반환하며, **엄격 모드(strict=true)**일 때 셋 중 하나라도 실패면 /api/serp/search와 /api/keywords/refresh가 412로 차단.
+
+키워드 페이지에서 받아오기 → 목록 표시(조회량 내림차순) → 제외 토글 → 제외 리스트 반영이 동작.
+
+결과 JSON은 계약 고정(blogs[].base_rank, keywords[].top3[*]={text,volume,raw_volume,rank}, counters.volumes_mode).
+
+화면 상단 요약 및 배지(HealthStatus)가 실시간(15s) 갱신.
+
+
+
+---
+
+8) 스모크 테스트(빠른)
+
+# 1) 헬스
+curl -s http://localhost:3000/api/health | jq
+
+# 2) 키워드 받아오기(엄격)
+curl -s -X POST http://localhost:3000/api/keywords/refresh \
+  -H 'Content-Type: application/json' \
+  -d '{"base":"홍삼스틱","limit":200,"strict":true}' | jq
+
+# 3) 목록
+curl -s 'http://localhost:3000/api/keywords?excluded=false' | jq '.items[:5]'
+
+# 4) 분석 시작(엄격)
+curl -s -X POST http://localhost:3000/api/serp/search \
+  -H 'Content-Type: application/json' \
+  -d '{"keyword":"홍삼스틱","blogs":10,"recent":10,"strict":true}' | jq
+
+
+---
+
+9) 로그 포맷(권장)
+
+HEALTH openapi=OK searchads=partial(12/18) keywordsdb=OK
+
+VOL mode=partial ok=12/18 http={200:2,400:1} reason=rate_limit
+
+FILTER base_rank cutoff: discovered=10 → hit=3
+
+
+
+---
+
+10) 엑셀/CSV 내보내기(요약)
+
+blogs.csv (블로그 1행): blog_id, blog_url, base_rank, gathered_posts, k1_text,k1_raw_volume,k1_rank, k2_*, k3_*
+
+keywords.csv (선택): keyword, raw_volume, grade, commerciality, difficulty, excluded, updated_at
+
+
+
+---
+
+> 이 팩만 넣으면: 시작 시 실시간 상태 배지, 실패 시 엄격 차단, 키워드 리스트 관리, 그리고 분석 파이프라인과 자연스럽게 연결됩니다.
+
+
+

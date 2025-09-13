@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, jsonb, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -57,6 +57,21 @@ export const extractedKeywords = pgTable("extracted_keywords", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Keywords management table for Unified Health Gate system
+export const managedKeywords = pgTable("managed_keywords", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  text: text("text").notNull().unique(),
+  raw_volume: integer("raw_volume").notNull().default(0), // Original SearchAd API volume
+  volume: integer("volume").notNull().default(0), // Processed/adjusted volume
+  grade: text("grade").notNull().default("C"), // A/B/C grade
+  commerciality: integer("commerciality").notNull().default(0), // 0-100 commercial intent
+  difficulty: integer("difficulty").notNull().default(0), // 0-100 SEO difficulty
+  excluded: boolean("excluded").notNull().default(false), // Excluded from analysis
+  source: text("source").notNull().default("searchads"), // searchads, manual, etc
+  updated_at: timestamp("updated_at").defaultNow(),
+  created_at: timestamp("created_at").defaultNow(),
+});
+
 // Insert schemas for new entities
 export const insertSerpJobSchema = createInsertSchema(serpJobs).omit({
   id: true,
@@ -79,6 +94,12 @@ export const insertExtractedKeywordSchema = createInsertSchema(extractedKeywords
   createdAt: true,
 });
 
+export const insertManagedKeywordSchema = createInsertSchema(managedKeywords).omit({
+  id: true,
+  created_at: true,
+  updated_at: true,
+});
+
 // Types for new entities
 export type SerpJob = typeof serpJobs.$inferSelect;
 export type InsertSerpJob = z.infer<typeof insertSerpJobSchema>;
@@ -88,6 +109,8 @@ export type AnalyzedPost = typeof analyzedPosts.$inferSelect;
 export type InsertAnalyzedPost = z.infer<typeof insertAnalyzedPostSchema>;
 export type ExtractedKeyword = typeof extractedKeywords.$inferSelect;
 export type InsertExtractedKeyword = z.infer<typeof insertExtractedKeywordSchema>;
+export type ManagedKeyword = typeof managedKeywords.$inferSelect;
+export type InsertManagedKeyword = z.infer<typeof insertManagedKeywordSchema>;
 
 // New API contract interface - matches specification document
 export interface SerpResultsData {
