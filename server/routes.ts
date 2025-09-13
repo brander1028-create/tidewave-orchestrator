@@ -9,6 +9,8 @@ import { z } from "zod";
 // Health Gate + Keywords Management imports
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore } from './store/keywords';
+// BFS Crawler imports
+import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler } from './services/bfs-crawler.js';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
@@ -579,6 +581,109 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('🚫 List excluded keywords failed:', error);
       res.status(500).json({ error: 'Failed to list excluded keywords', details: String(error) });
+    }
+  });
+
+  // BFS Keyword Crawl - Start massive crawl with 2000 seeds
+  app.post('/api/keywords/crawl', async (req, res) => {
+    try {
+      // Check if crawler already running
+      const existingCrawler = getGlobalCrawler();
+      if (existingCrawler && existingCrawler.status === 'running') {
+        return res.status(409).json({ 
+          error: 'Crawler already running',
+          progress: existingCrawler.getProgress()
+        });
+      }
+
+      // Parse parameters with defaults
+      const {
+        target = 10000,
+        maxHops = 3,
+        minVolume = 1000,
+        hasAdsOnly = true,
+        chunkSize = 10,
+        concurrency = 1
+      } = req.body;
+
+      console.log(`🚀 Starting BFS keyword crawl with target: ${target}`);
+      console.log(`⚙️ Config: minVolume=${minVolume}, hasAdsOnly=${hasAdsOnly}, chunk=${chunkSize}, concurrency=${concurrency}`);
+
+      // Load seeds from CSV
+      const seeds = loadSeedsFromCSV();
+      if (seeds.length === 0) {
+        return res.status(400).json({ error: 'No seeds found in CSV file' });
+      }
+
+      console.log(`🌱 Loaded ${seeds.length} seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
+
+      // Create and configure crawler
+      const crawler = createGlobalCrawler({
+        target,
+        maxHops,
+        minVolume,
+        hasAdsOnly,
+        chunkSize,
+        concurrency
+      });
+
+      // Initialize with seeds
+      crawler.initializeWithSeeds(seeds);
+
+      // Start crawling in background
+      crawler.crawl().catch(error => {
+        console.error('❌ BFS crawl failed:', error);
+      });
+
+      // Return initial status
+      const initialProgress = crawler.getProgress();
+      console.log(`✅ BFS crawl started - Frontier size: ${initialProgress.frontierSize}`);
+
+      res.json({
+        message: 'BFS keyword crawl started successfully',
+        config: { target, maxHops, minVolume, hasAdsOnly, chunkSize, concurrency },
+        seedsLoaded: seeds.length,
+        progress: initialProgress
+      });
+
+    } catch (error) {
+      console.error('❌ Failed to start BFS crawl:', error);
+      res.status(500).json({ error: 'Failed to start BFS crawl', details: String(error) });
+    }
+  });
+
+  // BFS Crawl Progress - Get current crawl status
+  app.get('/api/keywords/crawl/progress', async (req, res) => {
+    try {
+      const crawler = getGlobalCrawler();
+      if (!crawler) {
+        return res.json({ status: 'idle', message: 'No active crawl session' });
+      }
+
+      const progress = crawler.getProgress();
+      res.json(progress);
+    } catch (error) {
+      console.error('❌ Failed to get crawl progress:', error);
+      res.status(500).json({ error: 'Failed to get crawl progress' });
+    }
+  });
+
+  // BFS Crawl Stop - Stop current crawl session
+  app.post('/api/keywords/crawl/stop', async (req, res) => {
+    try {
+      const crawler = getGlobalCrawler();
+      if (!crawler) {
+        return res.status(404).json({ error: 'No active crawl session' });
+      }
+
+      crawler.stop();
+      clearGlobalCrawler();
+
+      console.log('🛑 BFS crawl stopped by user');
+      res.json({ message: 'BFS crawl stopped successfully' });
+    } catch (error) {
+      console.error('❌ Failed to stop BFS crawl:', error);
+      res.status(500).json({ error: 'Failed to stop BFS crawl' });
     }
   });
 

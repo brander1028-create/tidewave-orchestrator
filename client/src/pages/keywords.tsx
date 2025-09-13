@@ -23,6 +23,11 @@ type ManagedKeyword = {
   excluded: boolean;
   created_at: string;
   updated_at: string;
+  // 5-metrics fields
+  comp_idx?: string;
+  ad_depth?: number;
+  est_cpc_krw?: number;
+  score?: number;
 };
 
 type KeywordsResponse = {
@@ -162,6 +167,43 @@ export default function KeywordsPage() {
         variant: "destructive",
       });
     },
+  });
+
+  // BFS Crawl mutation
+  const crawlMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', '/api/keywords/crawl', {
+        target: 10000,
+        maxHops: 3,
+        minVolume: 1000,
+        hasAdsOnly: true,
+        chunkSize: 10,
+        concurrency: 1
+      });
+      return response.json();
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: "BFS 크롤링 시작",
+        description: `${data.seedsLoaded}개 시드로 최대 ${data.config.target}개 키워드 수집 시작`
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "크롤링 시작 실패",
+        description: error.message || "BFS 크롤링 시작에 실패했습니다.",
+        variant: "destructive"
+      });
+    }
+  });
+
+  // Crawl progress query (fixed circular reference)
+  const { data: crawlProgress } = useQuery({
+    queryKey: ['/api/keywords/crawl/progress'],
+    refetchInterval: 2000, // Poll every 2 seconds
+    enabled: crawlMutation.isPending
   });
 
   // Toggle keyword excluded status
@@ -459,12 +501,12 @@ export default function KeywordsPage() {
                   {/* 종합점수 */}
                   <TableCell className="text-center" data-testid={`kw-score-${keyword.id}`}>
                     <span className={`px-3 py-1 rounded-full text-sm font-bold ${
-                      keyword.score >= 80 ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
-                      keyword.score >= 60 ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
-                      keyword.score >= 40 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
+                      (keyword.score || 0) >= 80 ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                      (keyword.score || 0) >= 60 ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
+                      (keyword.score || 0) >= 40 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
                       'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
                     }`}>
-                      {keyword.score}
+                      {keyword.score || 0}
                     </span>
                   </TableCell>
                   
@@ -712,6 +754,37 @@ export default function KeywordsPage() {
                     <>
                       <Download className="mr-2 h-4 w-4" />
                       전체 키워드 가져오기
+                    </>
+                  )}
+                </Button>
+                
+                {/* 2,000개 시드 BFS 크롤링 버튼 */}
+                <Button
+                  onClick={() => {
+                    if (!((health as HealthResponse)?.openapi?.ok && (health as HealthResponse)?.searchads?.ok && (health as HealthResponse)?.keywordsdb?.ok)) {
+                      toast({
+                        title: "시스템 상태 확인",
+                        description: "모든 서비스가 정상 상태여야 BFS 크롤링을 시작할 수 있습니다.",
+                        variant: "destructive"
+                      });
+                      return;
+                    }
+                    
+                    crawlMutation.mutate();
+                  }}
+                  disabled={crawlMutation.isPending || !((health as HealthResponse)?.openapi?.ok && (health as HealthResponse)?.searchads?.ok && (health as HealthResponse)?.keywordsdb?.ok)}
+                  className="px-8 py-2 bg-blue-600 hover:bg-blue-700 text-white"
+                  data-testid="kw-crawl-bfs"
+                >
+                  {crawlMutation.isPending ? (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                      2K시드 BFS 크롤링 중...
+                    </>
+                  ) : (
+                    <>
+                      <TrendingUp className="mr-2 h-4 w-4" />
+                      2,000개 시드 BFS 크롤링
                     </>
                   )}
                 </Button>
