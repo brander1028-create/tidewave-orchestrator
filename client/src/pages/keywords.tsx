@@ -109,10 +109,39 @@ export default function KeywordsPage() {
     enabled: activeTab === "excluded",
   });
 
-  // Keywords refresh mutation
+  // Keywords refresh mutation (기존 유지)
   const refreshMutation = useMutation({
     mutationFn: async (params: { base: string; limit: number; strict: boolean }) => {
       const response = await apiRequest('POST', '/api/keywords/refresh', params);
+      return response.json() as Promise<RefreshResponse>;
+    },
+    onSuccess: (data) => {
+      setLastRefreshStats(data);
+      toast({
+        title: "키워드 새로고침 완료",
+        description: `${data.inserted}개 키워드가 ${data.volumes_mode} 모드로 추가되었습니다`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
+    },
+    onError: (error: any) => {
+      const message = error?.health ? "엄격 모드: 모든 서비스가 정상이어야 합니다" : "키워드 새로고침 실패";
+      toast({
+        title: "오류",
+        description: message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // 새로운 전체 키워드 가져오기 mutation (요구사항)
+  const refreshAllMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', '/api/keywords/refresh-all', {
+        minVolume: 1000,
+        hasAdsOnly: true,
+        mode: 'merge'
+      });
       return response.json() as Promise<RefreshResponse>;
     },
     onSuccess: (data) => {

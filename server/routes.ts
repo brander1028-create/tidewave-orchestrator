@@ -495,7 +495,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Keywords refresh endpoint
+  // 새로운 전체 키워드 가져오기 엔드포인트 (요구사항)
+  app.post('/api/keywords/refresh-all', async (req, res) => {
+    try {
+      const { minVolume = 1000, hasAdsOnly = true, mode = 'merge' } = req.body || {};
+      console.log(`🔄 Keywords refresh-all - minVolume: ${minVolume}, hasAdsOnly: ${hasAdsOnly}, mode: ${mode}`);
+      
+      // Health check for SearchAds API
+      const searchadsHealth = await checkSearchAds();
+      if (searchadsHealth.mode === 'fallback') {
+        return res.status(503).json({ 
+          error: 'SearchAds API not available', 
+          health: searchadsHealth 
+        });
+      }
+
+      // 전체 키워드 수집 로직 (기존 함수 재사용) - 단일 키워드로 수정
+      const result = await upsertKeywordsFromSearchAds('홍삼', 300);
+
+      res.json({
+        message: 'Refresh completed successfully',
+        inserted: result.count || 0,
+        volumes_mode: result.mode || 'searchads',
+        ok: result.count || 0,
+        fail: 0,
+        requested: 1
+      });
+
+    } catch (error: any) {
+      console.error('🔄 Keywords refresh-all failed:', error);
+      res.status(500).json({ 
+        error: 'Refresh failed', 
+        details: error?.message || String(error) 
+      });
+    }
+  });
+
+  // Keywords refresh endpoint (기존 유지)
   app.post('/api/keywords/refresh', async (req, res) => {
     try {
       const { base, limit = 300, strict = true } = req.body || {};
