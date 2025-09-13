@@ -11,7 +11,21 @@ function sign(ts: string, method: 'GET'|'POST', path: string, secret: string) {
   return crypto.createHmac('sha256', secret).update(`${ts}.${method}.${path}`).digest('base64');
 }
 
-export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Record<string, Vol>, mode: string }> {
+type SearchAdStats = {
+  requested: number;
+  ok: number;
+  fail: number;
+  http: Record<number, number>;
+};
+
+type SearchAdResult = {
+  volumes: Record<string, Vol>;
+  mode: 'fallback' | 'partial' | 'searchads';
+  stats: SearchAdStats;
+  reason?: string;
+};
+
+export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult> {
   let API_KEY = process.env.SEARCHAD_API_KEY!;
   const SECRET = process.env.SEARCHAD_SECRET_KEY!;
   const CUSTOMER = process.env.SEARCHAD_CUSTOMER_ID!;
@@ -34,12 +48,22 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
       fallbackVolumes[k.toLowerCase()] = { pc: 0, mobile: 0, total: 0 };
     });
     
-    return { volumes: fallbackVolumes, mode: 'fallback' };
+    return { 
+      volumes: fallbackVolumes, 
+      mode: 'fallback',
+      stats: { requested: 0, ok: 0, fail: 0, http: {} },
+      reason: 'Missing API credentials'
+    };
   }
 
   // 중복/공백 정리, 너무 짧은 토큰 제거
   const ks = Array.from(new Set(rawKeywords.map(k => k.trim()).filter(k => k.length >= 2)));
-  if (!ks.length) return { volumes: {}, mode: 'searchads' };
+  if (!ks.length) return { 
+    volumes: {}, 
+    mode: 'searchads', 
+    stats: { requested: 0, ok: 0, fail: 0, http: {} },
+    reason: 'No valid keywords provided'
+  };
 
   console.log(`🔍 Fetching search volumes for ${ks.length} keywords: ${ks.slice(0, 3).join(', ')}...`);
 
@@ -50,6 +74,14 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
   const out: Record<string, Vol> = {};
   let hasSuccessfulApiCall = false;
   let hasApiErrors = false;
+  
+  // Initialize stats tracking
+  const stats: SearchAdStats = {
+    requested: chunks.length,
+    ok: 0,
+    fail: 0,
+    http: {}
+  };
   
   for (const chunk of chunks) {
     try {
@@ -65,15 +97,21 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
       const qs = new URLSearchParams({ hintKeywords: chunk.join(','), showDetail: '1' });
       const res = await fetch(`${BASE}${PATH}?${qs.toString()}`, { method: 'GET', headers });
       
+      // Track HTTP status codes
+      const statusCode = res.status;
+      stats.http[statusCode] = (stats.http[statusCode] || 0) + 1;
+      
       if (!res.ok) {
         console.log(`⚠️ SearchAd API error for chunk ${chunk.join(',')}: ${res.status} ${res.statusText}`);
         hasApiErrors = true;
+        stats.fail++;
         continue;
       }
       
       const json = await res.json() as any;
       console.log(`📊 SearchAd API response for ${chunk.join(',')}: ${json.keywordList?.length || 0} keywords`);
       hasSuccessfulApiCall = true;
+      stats.ok++;
 
       for (const row of (json.keywordList ?? [])) {
         const key = String(row.relKeyword ?? row.keyword ?? '').trim().toLowerCase();
@@ -85,23 +123,40 @@ export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Reco
     } catch (error) {
       console.error(`❌ SearchAd API error for chunk ${chunk.join(',')}:`, error);
       hasApiErrors = true;
+      stats.fail++;
+      // Track 500 for network/parse errors
+      stats.http[500] = (stats.http[500] || 0) + 1;
     }
   }
   
-  // If any API errors occurred or no successful calls, return fallback mode
+  // Determine mode based on success/failure stats
+  const successRate = stats.requested > 0 ? stats.ok / stats.requested : 0;
+  let mode: 'fallback' | 'partial' | 'searchads';
+  let reason: string | undefined;
+  
   if (hasApiErrors || !hasSuccessfulApiCall || Object.keys(out).length === 0) {
+    mode = 'fallback';
+    reason = hasApiErrors ? 'API errors occurred' : 'No successful API calls';
     console.log(`🔄 SearchAd API failed (errors: ${hasApiErrors}, successful: ${hasSuccessfulApiCall}), falling back to frequency-based mode`);
-    console.log(`   📊 hasSuccessfulApiCall: ${hasSuccessfulApiCall}, hasApiErrors: ${hasApiErrors}, volumes found: ${Object.keys(out).length}`);
+    console.log(`   📊 Stats: ${stats.ok}/${stats.requested} success rate: ${(successRate * 100).toFixed(1)}%`);
+    
     const fallbackVolumes: Record<string, Vol> = {};
     ks.forEach(k => {
       fallbackVolumes[k.toLowerCase()] = { pc: 0, mobile: 0, total: 0 };
     });
-    return { volumes: fallbackVolumes, mode: 'fallback' };
+    return { volumes: fallbackVolumes, mode, stats, reason };
+  } else if (stats.fail > 0) {
+    mode = 'partial';
+    reason = `Partial success: ${stats.ok}/${stats.requested} chunks succeeded`;
+    console.log(`⚠️ SearchAd API partial success - ${stats.ok}/${stats.requested} chunks, using partial mode`);
+  } else {
+    mode = 'searchads';
+    console.log(`✅ SearchAd API full success - ${stats.ok}/${stats.requested} chunks`);
   }
   
-  console.log(`📊 Final volumes collected: ${Object.keys(out).length} keywords using SearchAd API`);
+  console.log(`📊 Final volumes collected: ${Object.keys(out).length} keywords using SearchAd API (${mode} mode)`);
   console.log(`📈 Sample volumes: ${Object.entries(out).slice(0, 3).map(([k, v]) => `${k}:${v.total}`).join(', ')}`);
-  console.log(`   ✅ hasSuccessfulApiCall: ${hasSuccessfulApiCall}, returning mode: 'searchads'`);
+  console.log(`📊 Final stats: requested=${stats.requested}, ok=${stats.ok}, fail=${stats.fail}, http=${JSON.stringify(stats.http)}`);
   
-  return { volumes: out, mode: 'searchads' };
+  return { volumes: out, mode, stats, reason };
 }
