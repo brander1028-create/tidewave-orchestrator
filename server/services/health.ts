@@ -1,6 +1,11 @@
 import { getVolumes } from './searchad';
 import { naverApi } from './naver-api';
+import { metaGet, metaSet } from '../store/meta';
+import { secretsFingerprint } from '../utils/secrets';
 import type { HealthOpen, HealthSearchAds, HealthKeywordsDB, SearchAdResponse, VolumeMode } from '../types';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+
+const NAG_ON_FAILURE = (process.env.NAG_ON_FAILURE || 'false') === 'true';
 
 /**
  * Check OpenAPI health by making a real test call
@@ -95,10 +100,63 @@ export async function checkAllServices() {
   ]);
   
   const overall = openapi.ok && searchads.mode !== 'fallback' && keywordsdb.ok;
-  console.log(`🏥 Overall health: ${overall ? 'HEALTHY' : 'DEGRADED'}`);
-  console.log(`   - OpenAPI: ${openapi.ok ? 'OK' : 'FAIL'}`);
-  console.log(`   - SearchAds: ${searchads.mode.toUpperCase()}`);
-  console.log(`   - KeywordsDB: ${keywordsdb.ok ? 'OK' : 'FAIL'}`);
+  console.log(`🏥 Health check complete - Overall: ${overall ? 'HEALTHY' : 'DEGRADED'}`);
   
   return { openapi, searchads, keywordsdb, overall };
+}
+
+/**
+ * Enhanced health check with prompt/banner logic
+ */
+export async function getHealthWithPrompt(db: NodePgDatabase<any>) {
+  const fp = secretsFingerprint();
+  const cache = (await metaGet<any>(db, 'secrets_state')) || {};
+  const now = Date.now();
+
+  // Get health status for all services
+  const openapi = await checkOpenAPI();
+  const searchads = await checkSearchAds();
+  const keywordsdb = await checkKeywordsDB();
+
+  // Check if all required keys are present
+  const keysPresent =
+    (process.env.NAVER_CLIENT_ID||'').trim().length > 0 &&
+    (process.env.NAVER_CLIENT_SECRET||'').trim().length > 0 &&
+    (process.env.SEARCHAD_API_KEY||'').trim().length > 0 &&
+    (process.env.SEARCHAD_CUSTOMER_ID||'').trim().length > 0 &&
+    (process.env.SEARCHAD_SECRET_KEY||'').trim().length > 0;
+
+  // Mark setup complete if everything is working
+  const allHealthy = openapi.ok && searchads.mode !== 'fallback' && keywordsdb.ok;
+  if (allHealthy) {
+    await metaSet(db, 'secrets_state', {
+      ...cache,
+      fingerprint: fp,
+      setup_complete: true,
+      verified_at: now
+    });
+  }
+
+  // Banner display conditions:
+  // 1) Keys missing (MISSING) or 2) Fingerprint changed (CHANGED)
+  // 3) User hasn't suppressed prompts (suppress_until)
+  const changed = cache.fingerprint && cache.fingerprint !== fp;
+  const suppressed = (cache.suppress_until || 0) > now;
+  const missing = !keysPresent;
+
+  // Optional: nag on failures (default false)
+  const failureNag = NAG_ON_FAILURE && (!openapi.ok || searchads.mode === 'fallback' || !keywordsdb.ok);
+
+  const should_prompt = !suppressed && (missing || changed || failureNag);
+
+  return {
+    openapi,
+    searchads,
+    keywordsdb,
+    ui: {
+      setup_complete: !!cache.setup_complete || allHealthy,
+      should_prompt,
+      suppress_until: cache.suppress_until || 0
+    }
+  };
 }

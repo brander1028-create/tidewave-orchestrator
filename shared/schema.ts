@@ -72,6 +72,13 @@ export const managedKeywords = pgTable("managed_keywords", {
   created_at: timestamp("created_at").defaultNow(),
 });
 
+// App metadata table for persistent storage (API key state, etc)
+export const appMeta = pgTable("app_meta", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Insert schemas for new entities
 export const insertSerpJobSchema = createInsertSchema(serpJobs).omit({
   id: true,

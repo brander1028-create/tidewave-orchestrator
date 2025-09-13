@@ -7,8 +7,10 @@ import { extractTop3ByVolume } from "./services/keywords";
 import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 // Health Gate + Keywords Management imports
-import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices } from './services/health';
+import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded } from './store/keywords';
+import { metaSet, metaGet } from './store/meta';
+import { db } from './db';
 import type { HealthResponse } from './types';
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -272,23 +274,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // UNIFIED HEALTH GATE + KEYWORDS MANAGEMENT
   // ===========================================
 
-  // Health check endpoint
+  // Enhanced health check endpoint with prompt logic
   app.get('/api/health', async (req, res) => {
     try {
-      console.log('🏥 Running comprehensive health check...');
-      const openapi = await checkOpenAPI();
-      const searchads = await checkSearchAds();
-      const keywordsdb = await checkKeywordsDB();
-      
-      const healthResponse: HealthResponse = { openapi, searchads, keywordsdb };
-      
-      const overall = openapi.ok && searchads.mode !== 'fallback' && keywordsdb.ok;
-      console.log(`🏥 Health check complete - Overall: ${overall ? 'HEALTHY' : 'DEGRADED'}`);
-      
-      res.status(200).json(healthResponse);
+      const healthData = await getHealthWithPrompt(db);
+      res.status(200).json(healthData);
     } catch (error) {
       console.error('🏥 Health check failed:', error);
       res.status(500).json({ error: 'Health check failed', details: String(error) });
+    }
+  });
+
+  // Suppress API key prompts endpoint
+  app.post('/api/secrets/suppress', async (req, res) => {
+    try {
+      const days = Math.min(90, Math.max(1, Number(req.body?.days || 30)));
+      
+      const cache = (await metaGet<any>(db, 'secrets_state')) || {};
+      cache.suppress_until = Date.now() + days * 24 * 60 * 60 * 1000;
+      await metaSet(db, 'secrets_state', cache);
+      
+      console.log(`🤐 API key prompts suppressed for ${days} days`);
+      res.json({ ok: true, suppress_until: cache.suppress_until });
+    } catch (error) {
+      console.error('Failed to suppress prompts:', error);
+      res.status(500).json({ error: 'Failed to suppress prompts', details: String(error) });
     }
   });
 
