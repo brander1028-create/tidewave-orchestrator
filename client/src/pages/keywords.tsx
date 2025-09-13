@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -58,7 +57,7 @@ export default function KeywordsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [refreshBase, setRefreshBase] = useState("");
   const [refreshLimit, setRefreshLimit] = useState(300);
-  const [orderBy, setOrderBy] = useState<'score' | 'raw_volume' | 'competition_idx' | 'ad_depth' | 'estimated_cpc' | 'text'>('score');
+  const [orderBy, setOrderBy] = useState<'score' | 'raw_volume' | 'comp_idx' | 'ad_depth' | 'est_cpc_krw' | 'text'>('score');
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc');
   const [activeTab, setActiveTab] = useState("manage");
   const [lastRefreshStats, setLastRefreshStats] = useState<RefreshResponse | null>(null);
@@ -377,16 +376,16 @@ export default function KeywordsPage() {
           {showToggle && (
             <div className="flex items-center space-x-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <Select value={orderBy} onValueChange={(value: 'score' | 'raw_volume' | 'competition_idx' | 'ad_depth' | 'estimated_cpc' | 'text') => setOrderBy(value)}>
+              <Select value={orderBy} onValueChange={(value: 'score' | 'raw_volume' | 'comp_idx' | 'ad_depth' | 'est_cpc_krw' | 'text') => setOrderBy(value)}>
                 <SelectTrigger className="w-32" data-testid="kw-sort-select">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="score">종합점수순</SelectItem>
                   <SelectItem value="raw_volume">조회량순</SelectItem>
-                  <SelectItem value="competition_idx">경쟁도순</SelectItem>
+                  <SelectItem value="comp_idx">경쟁도순</SelectItem>
                   <SelectItem value="ad_depth">광고깊이순</SelectItem>
-                  <SelectItem value="estimated_cpc">CPC순</SelectItem>
+                  <SelectItem value="est_cpc_krw">CPC순</SelectItem>
                   <SelectItem value="text">이름순</SelectItem>
                 </SelectContent>
               </Select>
@@ -439,11 +438,11 @@ export default function KeywordsPage() {
                   {/* 경쟁도 (낮음/중간/높음) */}
                   <TableCell className="text-center" data-testid={`kw-competition-${keyword.id}`}>
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      keyword.competition_idx === '낮음' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
-                      keyword.competition_idx === '중간' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
+                      keyword.comp_idx === '낮음' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                      keyword.comp_idx === '중간' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
                       'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
                     }`}>
-                      {keyword.competition_idx || '-'}
+                      {keyword.comp_idx || '-'}
                     </span>
                   </TableCell>
                   
@@ -454,7 +453,7 @@ export default function KeywordsPage() {
                   
                   {/* 예상CPC */}
                   <TableCell className="text-right font-mono text-sm" data-testid={`kw-cpc-${keyword.id}`}>
-                    {keyword.estimated_cpc ? `₩${keyword.estimated_cpc.toLocaleString()}` : '-'}
+                    {keyword.est_cpc_krw ? `₩${keyword.est_cpc_krw.toLocaleString()}` : '-'}
                   </TableCell>
                   
                   {/* 종합점수 */}
@@ -469,15 +468,24 @@ export default function KeywordsPage() {
                     </span>
                   </TableCell>
                   
-                  {/* 액션 (현재는 스위치, 나중에 [X]/[↩] 버튼으로 변경 예정) */}
+                  {/* 액션: [X] 제거 / [↩] 복원 버튼 (요구사항) */}
                   {showToggle && (
                     <TableCell className="text-center">
-                      <Switch
-                        checked={!keyword.excluded}
-                        onCheckedChange={() => handleToggleExcluded(keyword.id, keyword.excluded)}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleToggleExcluded(keyword.id, keyword.excluded)}
                         disabled={toggleMutation.isPending}
-                        data-testid={`kw-toggle-${keyword.id}`}
-                      />
+                        className="h-8 w-8 p-0 hover:bg-red-50 dark:hover:bg-red-900/20"
+                        data-testid={keyword.excluded ? `kw-restore-${keyword.id}` : `kw-remove-${keyword.id}`}
+                        title={keyword.excluded ? "복원" : "제거"}
+                      >
+                        {keyword.excluded ? (
+                          <span className="text-blue-600 dark:text-blue-400 font-bold">↩</span>
+                        ) : (
+                          <span className="text-red-600 dark:text-red-500 font-bold">✕</span>
+                        )}
+                      </Button>
                     </TableCell>
                   )}
                 </TableRow>
