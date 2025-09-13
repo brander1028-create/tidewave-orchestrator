@@ -333,6 +333,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Export SERP results as CSV (new format for Results View)
+  app.get("/api/serp/jobs/:jobId/export.csv", async (req, res) => {
+    try {
+      const job = await storage.getSerpJob(req.params.jobId);
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      if (job.status !== "completed") {
+        return res.status(400).json({ error: "Job not completed yet" });
+      }
+
+      // Get all discovered blogs and their TOP3 keywords
+      const allBlogs = await storage.getDiscoveredBlogs(job.id);
+      
+      // Collect all unique keywords for raw_volume lookup
+      const allKeywordTexts = new Set<string>();
+      for (const blog of allBlogs) {
+        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
+        top3Keywords.forEach(kw => allKeywordTexts.add(kw.keyword));
+      }
+      
+      // Get raw_volume mapping from keywords DB
+      const keywordVolumeMap = await getKeywordVolumeMap(Array.from(allKeywordTexts));
+      
+      // Build CSV content: blog_id, keyword, raw_volume, rank
+      let csv = "blog_id,keyword,raw_volume,rank\n";
+      
+      for (const blog of allBlogs) {
+        // Only include hit blogs (base_rank 1-10)
+        const hasHit = blog.baseRank && blog.baseRank >= 1 && blog.baseRank <= 10;
+        if (!hasHit) continue;
+        
+        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
+        
+        for (const keyword of top3Keywords) {
+          const raw_volume = keywordVolumeMap[keyword.keyword] || 0;
+          const rank = keyword.rank || 0;
+          
+          csv += `${sanitizeCsvField(blog.blogId)},${sanitizeCsvField(keyword.keyword)},${sanitizeCsvField(raw_volume)},${sanitizeCsvField(rank)}\n`;
+        }
+      }
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="serp-keywords-export.csv"');
+      res.send('\ufeff' + csv); // BOM for Excel UTF-8 support
+    } catch (error) {
+      console.error('Error exporting keywords CSV:', error);
+      res.status(500).json({ error: "Failed to export keywords data" });
+    }
+  });
+
   // ===========================================
   // UNIFIED HEALTH GATE + KEYWORDS MANAGEMENT
   // ===========================================
