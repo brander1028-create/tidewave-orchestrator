@@ -62,6 +62,8 @@ export default function KeywordsPage() {
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc');
   const [activeTab, setActiveTab] = useState("manage");
   const [lastRefreshStats, setLastRefreshStats] = useState<RefreshResponse | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ loading: boolean; result?: any }>({ loading: false });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
@@ -170,15 +172,83 @@ export default function KeywordsPage() {
     }
   };
 
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      const file = files[0];
+      if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
+        handleFileUpload(file);
+      } else {
+        toast({
+          title: "파일 형식 오류",
+          description: "CSV 파일만 업로드할 수 있습니다",
+          variant: "destructive",
+        });
+      }
+    }
+  };
+
+  const handleFileUpload = async (file: File) => {
+    setUploadProgress({ loading: true });
+    
+    try {
+      // Create FormData for multipart form upload
+      const formData = new FormData();
+      formData.append('file', file);
+
+      // Upload to backend API
+      const response = await fetch('/api/keywords/import', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      
+      setUploadProgress({ loading: false, result });
+      
+      toast({
+        title: "업로드 완료",
+        description: `파일 "${file.name}"이 성공적으로 업로드되었습니다`,
+      });
+      
+      // Invalidate queries to refresh data
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
+      
+    } catch (error) {
+      setUploadProgress({ loading: false });
+      const errorMessage = error instanceof Error ? error.message : "파일 업로드 중 오류가 발생했습니다";
+      toast({
+        title: "업로드 실패",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // TODO: Implement actual file upload
-    toast({
-      title: "기능 준비 중",
-      description: "CSV 업로드 기능이 곧 제공됩니다",
-    });
+    handleFileUpload(file);
     
     // Reset file input
     if (fileInputRef.current) {
@@ -405,19 +475,84 @@ export default function KeywordsPage() {
                 {/* CSV Import */}
                 <div className="space-y-4">
                   <h4 className="font-medium text-sm">데이터 가져오기</h4>
-                  <div className="space-y-2">
-                    <Button 
-                      onClick={handleCSVUpload}
-                      className="w-full"
-                      variant="outline"
-                      data-testid="button-csv-upload"
+                  <div className="space-y-3">
+                    {/* Drag and Drop Area */}
+                    <div
+                      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                        isDragOver
+                          ? 'border-primary bg-primary/5'
+                          : 'border-muted-foreground/25 hover:border-muted-foreground/50'
+                      }`}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      data-testid="dropzone-csv"
                     >
-                      <Upload className="mr-2 h-4 w-4" />
-                      CSV 업로드
-                    </Button>
-                    <p className="text-xs text-muted-foreground">
-                      CSV 파일에서 키워드를 가져옵니다
-                    </p>
+                      <Upload className={`mx-auto h-8 w-8 mb-2 ${
+                        isDragOver ? 'text-primary' : 'text-muted-foreground'
+                      }`} />
+                      <p className="text-sm font-medium mb-1">
+                        {isDragOver ? 'CSV 파일을 놓아주세요' : 'CSV 파일을 드래그하거나 클릭하여 업로드'}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        .csv 파일만 지원됩니다
+                      </p>
+                      <Button 
+                        onClick={handleCSVUpload}
+                        className="mt-3"
+                        variant="outline"
+                        size="sm"
+                        disabled={uploadProgress.loading}
+                        data-testid="button-csv-upload"
+                      >
+                        {uploadProgress.loading ? (
+                          <>
+                            <RefreshCw className="mr-2 h-3 w-3 animate-spin" />
+                            업로드 중...
+                          </>
+                        ) : (
+                          <>
+                            <FileText className="mr-2 h-3 w-3" />
+                            파일 선택
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    {/* Upload Result */}
+                    {uploadProgress.result && (
+                      <div className="rounded-lg border bg-card p-3 space-y-2">
+                        <h5 className="font-medium text-sm flex items-center space-x-2">
+                          <CheckCircle className="h-4 w-4 text-green-600" />
+                          <span>업로드 결과</span>
+                        </h5>
+                        <div className="grid grid-cols-3 gap-3 text-xs">
+                          <div className="space-y-1">
+                            <div className="text-muted-foreground">추가됨</div>
+                            <div className="font-medium text-green-600">{uploadProgress.result.inserted}</div>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-muted-foreground">업데이트됨</div>
+                            <div className="font-medium text-blue-600">{uploadProgress.result.updated}</div>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-muted-foreground">삭제됨</div>
+                            <div className="font-medium text-red-600">{uploadProgress.result.deleted}</div>
+                          </div>
+                        </div>
+                        {uploadProgress.result.warnings && uploadProgress.result.warnings.length > 0 && (
+                          <div className="space-y-1">
+                            <div className="text-muted-foreground text-xs">경고</div>
+                            <div className="text-xs text-yellow-600">
+                              {uploadProgress.result.warnings.map((warning: string, index: number) => (
+                                <div key={index}>{warning}</div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <input
                       ref={fileInputRef}
                       type="file"

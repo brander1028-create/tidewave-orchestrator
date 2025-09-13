@@ -102,6 +102,26 @@ export async function listKeywords(opts: {
 }
 
 /**
+ * Find a keyword by text
+ */
+export async function findKeywordByText(text: string): Promise<ManagedKeyword | undefined> {
+  const results = await db.select()
+    .from(managedKeywords)
+    .where(eq(managedKeywords.text, text))
+    .limit(1);
+  
+  return results[0] || undefined;
+}
+
+/**
+ * Delete all keywords (for replace mode)
+ */
+export async function deleteAllKeywords(): Promise<number> {
+  const result = await db.delete(managedKeywords);
+  return result.rowCount || 0;
+}
+
+/**
  * Set keyword excluded status
  */
 export async function setKeywordExcluded(id: string, excluded: boolean): Promise<void> {

@@ -8,12 +8,31 @@ import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 // Health Gate + Keywords Management imports
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
-import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap } from './store/keywords';
+import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany } from './store/keywords';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
+import multer from 'multer';
+import csv from 'csv-parser';
+import { Readable } from 'stream';
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  
+  // Configure multer for CSV file uploads
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: 10 * 1024 * 1024, // 10MB limit
+    },
+    fileFilter: (req, file, cb) => {
+      // Accept CSV files only
+      if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+        cb(null, true);
+      } else {
+        cb(new Error('Only CSV files are allowed'));
+      }
+    },
+  });
   
   // Start SERP analysis with keywords
   app.post("/api/serp/analyze", async (req, res) => {
@@ -649,25 +668,146 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/keywords/import", async (req, res) => {
+  app.post("/api/keywords/import", upload.single('file'), async (req, res) => {
     try {
       const mode = req.query.mode as string || 'replace';
       
       if (mode !== 'replace' && mode !== 'merge') {
         return res.status(400).json({ error: 'mode must be either "replace" or "merge"' });
       }
-      
-      // For now, return a placeholder response
-      // TODO: Implement actual CSV/XLSX import with multipart parsing
-      res.json({
-        inserted: 0,
-        updated: 0,
-        deleted: 0,
-        warnings: ['Import functionality coming soon']
+
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      // Parse CSV from buffer using fixed stream parsing
+      const results: any[] = [];
+      const warnings: string[] = [];
+      let inserted = 0, updated = 0, deleted = 0;
+
+      await new Promise<void>((resolve, reject) => {
+        // Fix: Use Readable.from() instead of new Readable()
+        const readable = Readable.from(req.file!.buffer);
+
+        readable
+          .pipe(csv())
+          .on('data', (data) => {
+            results.push(data);
+          })
+          .on('end', () => {
+            resolve();
+          })
+          .on('error', (error) => {
+            reject(error);
+          });
       });
+
+      console.log(`📝 CSV Import: Processing ${results.length} rows in ${mode} mode`);
+
+      // Handle replace mode first - delete all existing keywords
+      if (mode === 'replace') {
+        try {
+          deleted = await deleteAllKeywords();
+          console.log(`📝 CSV Import: Deleted ${deleted} existing keywords for replace mode`);
+        } catch (error) {
+          console.error('Failed to delete existing keywords in replace mode:', error);
+          warnings.push('Failed to delete existing keywords in replace mode');
+        }
+      }
+
+      // Collect keywords to be inserted/updated
+      const keywordsToUpsert: Array<{
+        text: string;
+        raw_volume: number;
+        volume: number;
+        grade: string;
+        commerciality: number;
+        difficulty: number;
+        source: string;
+      }> = [];
+
+      const keywordsToUpdateExcluded: Array<{ id: string; excluded: boolean }> = [];
+
+      // Process parsed CSV data
+      for (const row of results) {
+        const text = row.text?.trim();
+        const rawVolume = parseInt(row.raw_volume) || 0;
+        const volume = parseInt(row.volume) || rawVolume;
+        const grade = row.grade || 'C';
+        const excluded = row.excluded === 'true' || row.excluded === true;
+        const commerciality = parseInt(row.commerciality) || Math.min(100, Math.round((rawVolume / 1000) * 10));
+        const difficulty = parseInt(row.difficulty) || Math.min(100, Math.round((rawVolume / 500) * 8));
+
+        if (!text) {
+          warnings.push(`Skipping row with empty text: ${JSON.stringify(row)}`);
+          continue;
+        }
+
+        try {
+          // Fix: Use new findKeywordByText function for existence check
+          const existingKeyword = await findKeywordByText(text);
+          
+          if (existingKeyword && mode === 'merge') {
+            // Update existing keyword's excluded status only in merge mode
+            keywordsToUpdateExcluded.push({ id: existingKeyword.id, excluded });
+            updated++;
+          } else {
+            // Insert new keyword or replace existing one
+            keywordsToUpsert.push({
+              text,
+              raw_volume: rawVolume,
+              volume,
+              grade,
+              commerciality,
+              difficulty,
+              source: 'csv_import'
+            });
+            inserted++;
+          }
+        } catch (error) {
+          console.error(`Error processing keyword "${text}":`, error);
+          warnings.push(`Failed to process keyword "${text}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
+      // Batch insert/update keywords
+      if (keywordsToUpsert.length > 0) {
+        try {
+          console.log(`📝 CSV Import: Upserting ${keywordsToUpsert.length} keywords`);
+          await upsertMany(keywordsToUpsert);
+        } catch (error) {
+          console.error('Failed to upsert keywords:', error);
+          warnings.push('Failed to insert some keywords to database');
+        }
+      }
+
+      // Update excluded status for existing keywords in merge mode
+      if (keywordsToUpdateExcluded.length > 0) {
+        try {
+          console.log(`📝 CSV Import: Updating ${keywordsToUpdateExcluded.length} keyword exclusion statuses`);
+          for (const { id, excluded } of keywordsToUpdateExcluded) {
+            await setKeywordExcluded(id, excluded);
+          }
+        } catch (error) {
+          console.error('Failed to update keyword exclusion status:', error);
+          warnings.push('Failed to update some keyword exclusion statuses');
+        }
+      }
+
+      res.json({
+        inserted,
+        updated,
+        deleted,
+        warnings,
+        totalRows: results.length
+      });
+
     } catch (error) {
       console.error('Error importing keywords:', error);
-      res.status(500).json({ error: 'Failed to import keywords' });
+      res.status(500).json({ 
+        error: 'Failed to import keywords',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      });
     }
   });
 
