@@ -1,0 +1,129 @@
+1) 서버: 히스토리 API를 확실히 고정
+
+(이미 있다면 스킵, 그래도 다시 못 박기)
+
+// server/routes/history.ts
+import type { Express } from "express";
+export default function mountHistory(app: Express) {
+  app.get("/api/jobs/history", async (req, res) => {
+    const limit = Math.min(100, Number(req.query.limit ?? 50));
+    try {
+      // 최근 생성순으로 jobId와 요약만 반환
+      const items = await db.all(
+        "SELECT job_id as jobId, base_keyword as baseKeyword, created_at as createdAt, counters_json as counters, volumes_mode as volumesMode \
+         FROM serp_jobs ORDER BY created_at DESC LIMIT ?", [limit]
+      );
+      res.json({ items });
+    } catch (e:any) {
+      res.status(500).json({ error: "HISTORY_FAIL", reason: String(e?.message||e) });
+    }
+  });
+
+  app.get("/api/serp/jobs/:jobId/results", async (req, res) => {
+    const jobId = req.params.jobId;
+    const job = await loadJobResults(jobId); // 기존 로직
+    if (!job) return res.status(404).json({ error: "JOB_NOT_FOUND" });
+    res.json(job); // blogs/keywords/posts/counters 구조 (계약대로)
+  });
+}
+
+경로/응답 스키마를 확정: /api/jobs/history?limit=50 → {items:[{jobId,...}]}
+
+
+
+---
+
+2) 프론트: 쿼리 직렬화/링크 고정
+
+TanStack Query/SWR가 객체를 URL로 안 바꿔서 404 되는 케이스가 많습니다. 문자열 URL로 직접 쓰세요.
+
+// client/src/pages/history.tsx
+const fetcher = (u:string)=>fetch(u).then(r=>r.json());
+
+const { data, error, isLoading } = useSWR(
+  "/api/jobs/history?limit=50",             // ✅ 문자열로 직접
+  fetcher,
+  { revalidateOnFocus: true }
+);
+
+if (error) return <Empty msg="히스토리를 불러올 수 없습니다." />;
+if (isLoading) return <Spinner />;
+
+return (
+  <table data-testid="history-table">
+    <thead><tr>
+      <th>시각</th><th>기준 키워드</th><th>히트</th><th>요청/실제</th><th>모드</th>
+    </tr></thead>
+    <tbody>
+      {data.items.map((j:any)=>(
+        <tr key={j.jobId} data-testid={`history-row-${j.jobId}`}>
+          <td>{new Date(j.createdAt).toLocaleString()}</td>
+          <td><a href={`/results/${j.jobId}`}>{j.baseKeyword}</a></td>      {/* ✅ 링크 */}
+          <td>{j.counters?.hit_blogs ?? j.counters?.blogs ?? 0}</td>
+          <td>{j.counters?.selected_keywords}/{j.counters?.searched_keywords}</td>
+          <td>{j.volumesMode}</td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+);
+
+// client/src/pages/results/[jobId].tsx  (라우팅 예시)
+import { useParams } from "react-router-dom";
+const { jobId } = useParams();                       // ✅ path param 사용
+const { data, error, isLoading } = useSWR(
+  jobId ? `/api/serp/jobs/${jobId}/results` : null,  // ✅ 올바른 경로
+  fetcher
+);
+
+> 증상과 같은 “결과를 불러올 수 없습니다”는 대부분 잘못된 URL(예: /api/serp/results?jobId=…)을 쓰거나 test-job-1 같은 샘플 ID를 링크에 넣어 404가 나는 경우입니다. 위처럼 path param으로 고정하세요.
+
+
+
+
+---
+
+3) 결과 비어 보일 때 가드(사용자 메시지)
+
+히트(노출) 0이면 카드가 안 떠서 “없어 보임” → 안내 한 줄 + 샘플 표를 항상 노출.
+
+// ResultsView 요약부 아래
+const hit = (data?.blogs?.length ?? 0);
+if (hit === 0) {
+  return (
+    <div className="mt-4">
+      <Alert title="노출 블로그 없음">
+        지정 키워드 기준 1~10위에 노출된 블로그가 없어 카드가 숨김 처리되었습니다.
+      </Alert>
+      <MiniTable items={topRanks11to30(/* 서버가 제공하는 상위 순위 정보 없으면 base_rank 순 정렬 상위 5 */)} />
+    </div>
+  );
+}
+
+
+---
+
+4) 지금 30초 자가검증
+
+1. 브라우저 개발자도구 → Network
+
+GET /api/jobs/history?limit=50 → 200 + {items:[…jobId…]} 인지
+
+행 클릭 시 GET /api/serp/jobs/<jobId>/results → 200 인지
+
+
+
+2. 위 둘이 200인데 화면이 빈 칸이면 링크/라우팅이 틀렸을 확률 100% → 위 패치 반영.
+
+
+
+
+---
+
+5) 흔한 원인 요약(이번 케이스)
+
+쿼리 직렬화: useQuery(['history',{limit:50}], …) 처럼 객체 키를 쓰고 fetcher에서 그대로 /api/jobs/history 호출 → 서버에선 limit이 안 와서 기본 0/빈배열.
+
+잘못된 링크: /results?jobId=… 같은 쿼리 방식으로 라우트 → useParams()가 못 잡아 404.
+
+샘플 jobId 사용: test-job-1 링크 → DB에 실제 없음 → 404.

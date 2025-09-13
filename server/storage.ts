@@ -72,7 +72,14 @@ export class MemStorage implements IStorage {
       .where(eq(serpJobs.id, id))
       .limit(1);
     
-    return jobs[0] || undefined;
+    const job = jobs[0];
+    if (job) {
+      console.log(`🔍 getSerpJob(${id}): status=${job.status}, results type=${typeof job.results}, has results=${!!job.results}`);
+      if (job.results) {
+        console.log(`📋 getSerpJob(${id}): results preview=`, JSON.stringify(job.results).substring(0, 200) + '...');
+      }
+    }
+    return job || undefined;
   }
 
   async updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<SerpJob | undefined> {

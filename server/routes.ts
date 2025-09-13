@@ -130,6 +130,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Job not completed yet" });
       }
 
+      // If job has results JSON data, return it directly
+      if (job.results) {
+        console.log(`📊 Returning cached results for job ${req.params.jobId}`);
+        return res.json(job.results);
+      }
+
       // Get all discovered blogs
       const allBlogs = await storage.getDiscoveredBlogs(job.id);
       const allPosts = [];
