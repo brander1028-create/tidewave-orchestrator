@@ -1,0 +1,157 @@
+[요청] 키워드 DB 관리 화면 + 내보내기/업로드 + 분석 연동(현 구조 유지)
+
+현재 상태(유지)
+
+헬스게이트/결과(Results)/히스토리(History) 페이지 동작.
+
+결과 계약: /api/serp/jobs/:jobId/results → blogs/keywords/posts/counters (volumes_mode 포함).
+
+색상 규칙(빨강 10만↑, 노랑 5만5만, 랭크0=회색) 유지.
+
+
+
+---
+
+이번 작업 목표
+
+1. 키워드 DB 전용 페이지(/keywords/db) 추가: 총량·정렬·제외 토글.
+
+
+2. CSV 내보내기 / CSV·XLSX 업로드(교체/병합) 기능.
+
+
+3. 제목 키워드 추출에 DB를 사전으로 사용(excluded=false만 반영).
+
+
+
+
+---
+
+백엔드(필요 시 신설/보완)
+
+GET /api/keywords/stats → { total, lastUpdated, volumes_mode }
+
+GET /api/keywords?sort=raw_volume&order=desc&excluded=false&offset=0&limit=100
+
+응답 { items:[{id,text,raw_volume,volume,grade,excluded,updated_at}], total }
+
+
+PATCH /api/keywords/:id → { excluded: boolean } 저장
+
+GET /api/keywords/export.csv → 전체 덤프(헤더 포함: text,raw_volume,volume,grade,excluded,updated_at)
+
+POST /api/keywords/import?mode=replace|merge (multipart: CSV/XLSX)
+
+최소 컬럼: text, raw_volume (없으면 0처리)
+
+volume 없으면 규칙(≤1000→0)로 산출, grade는 A(≥100000)/B(≥50000)/C.
+
+결과 { inserted, updated, deleted, warnings:[] }
+
+
+
+> 스키마(있으면 재사용): keywords(id PK, text UNIQUE, raw_volume INT, volume INT, grade CHAR(1), excluded BOOL, updated_at TIMESTAMP, source TEXT)
+
+
+
+
+---
+
+프론트(/keywords/db)
+
+상단 요약(data-testid="kwdb-summary"):
+총 {total}개 · 마지막 갱신 {lastUpdated} · 모드 {volumes_mode}
+
+테이블(data-testid="kwdb-table"):
+
+컬럼: 키워드 | 조회량(raw) | 가중치(volume) | 등급 | 제외(토글) | 업데이트
+
+정렬 버튼 2개: 조회량 ↓(default), 조회량 ↑ → sort/order 파라미터로 재요청
+
+data-testid="kwdb-sort-desc", "kwdb-sort-asc"
+
+
+제외 토글: PATCH 후 행 회색 처리(data-testid="kwdb-exclude-<id>")
+
+페이지네이션 또는 무한스크롤
+
+
+우측 패널:
+
+CSV 다운로드(data-testid="kwdb-download") → /api/keywords/export.csv
+
+엑셀/CSV 업로드(drag&drop, mode=replace|merge) → /api/keywords/import
+업로드 결과 요약 표시(inserted/updated/deleted)
+
+
+색상 규칙(칩/표 공통):
+
+raw_volume ≥ 100000 빨강 / 50000~99999 노랑 / 1~49999 초록 / 0 회색
+
+
+
+
+---
+
+분석 연동(핵심)
+
+제목 토큰화(1~3그램, 2자↑, 불용어 제거) → keywords(excluded=false) 정확 일치 매핑 → raw_volume/volume/grade 주입 → (volume,freq)로 TOP3(동률은 raw_volume 큰 순).
+DB에 없는 토큰은 freq만으로 랭킹. 기존 volume 규칙(≤1000→0)은 유지.
+
+
+---
+
+테스트ID(필수)
+
+kwdb-summary, kwdb-table, kwdb-sort-desc, kwdb-sort-asc,
+kwdb-row-<id>, kwdb-exclude-<id>, kwdb-download, kwdb-upload.
+
+
+
+---
+
+수락 기준
+
+/keywords/db에서 총 개수 확인, 조회량 정렬(↑/↓), 제외 토글이 즉시 반영.
+
+CSV 다운로드로 전체 DB 저장, CSV/XLSX 업로드로 DB replace/merge 수행(결과 요약 노출).
+
+새 분석 시, 결과의 키워드 표가 조회량(raw) 내림차순 + 색상 규칙 + 미노출 rank=0 회색으로 표시.
+
+API 응답/프론트는 위 테스트ID로 자동 테스트 가능.
+
+
+
+---
+
+주의/가드(재발 방지)
+
+SearchAds 응답은 월간합 = monthlyPcQcCnt + monthlyMobileQcCnt(-1→0).
+
+volumes_mode=fallback일 땐 샘플/더미 값 렌더 금지(DB 캐시만 표시, 갱신은 보류).
+
+업로드 시 text 중복은 대소문자 무시 정확 일치로 병합, trim/공백 정리.
+
+
+
+---
+
+스모크(에이전트가 직접)
+
+1. CSV 10개 업로드(mode=replace) → 총 10개, 색·정렬 확인
+
+
+2. 2개 제외 토글 → 회색 처리·재분석 시 제외 반영
+
+
+3. 5개 업로드(mode=merge) → 총 15개
+
+
+4. 분석 실행 → 결과 키워드 표가 DB 기준 정렬·색상으로 표시
+
+
+
+
+---
+
+이 사양으로 구현해 주세요.

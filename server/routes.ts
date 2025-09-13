@@ -557,6 +557,150 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Keywords DB Management APIs
+  app.get("/api/keywords/stats", async (req, res) => {
+    try {
+      const includedKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
+      const excludedKeywords = await listKeywords({ excluded: true, orderBy: 'raw_volume', dir: 'desc' });
+      const total = includedKeywords.length + excludedKeywords.length;
+      
+      // Get last updated timestamp
+      const allKeywords = [...includedKeywords, ...excludedKeywords];
+      const lastUpdated = allKeywords.length > 0 
+        ? Math.max(...allKeywords.map(k => k.updated_at ? new Date(k.updated_at).getTime() : 0))
+        : Date.now();
+      
+      // Get volumes_mode from health or meta
+      const healthResponse = await getHealthWithPrompt(db);
+      const volumes_mode = healthResponse.searchads?.mode || 'fallback';
+      
+      res.json({
+        total,
+        lastUpdated: new Date(lastUpdated).toISOString(),
+        volumes_mode
+      });
+    } catch (error) {
+      console.error('Error getting keywords stats:', error);
+      res.status(500).json({ error: 'Failed to get keywords stats' });
+    }
+  });
+
+  app.get("/api/keywords", async (req, res) => {
+    try {
+      const {
+        sort = 'raw_volume',
+        order = 'desc',
+        excluded,
+        offset = '0',
+        limit = '100'
+      } = req.query;
+      
+      const offsetNum = parseInt(offset as string) || 0;
+      const limitNum = parseInt(limit as string) || 100;
+      
+      // Convert excluded query param to boolean filter
+      let excludedFilter: boolean = false;
+      if (excluded === 'true') excludedFilter = true;
+      else if (excluded === 'false') excludedFilter = false;
+      
+      // Get keywords from store with proper parameters
+      const keywords = await listKeywords({ 
+        excluded: excludedFilter, 
+        orderBy: sort === 'text' ? 'text' : 'raw_volume', 
+        dir: order === 'asc' ? 'asc' : 'desc' 
+      });
+      
+      // Apply pagination
+      const paginatedKeywords = keywords.slice(offsetNum, offsetNum + limitNum);
+      
+      res.json({
+        items: paginatedKeywords,
+        total: keywords.length
+      });
+    } catch (error) {
+      console.error('Error listing keywords:', error);
+      res.status(500).json({ error: 'Failed to list keywords' });
+    }
+  });
+
+  app.patch("/api/keywords/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { excluded } = req.body;
+      
+      if (typeof excluded !== 'boolean') {
+        return res.status(400).json({ error: 'excluded field must be boolean' });
+      }
+      
+      // Use existing function to set excluded status
+      await setKeywordExcluded(id, excluded);
+      
+      // Get updated keyword to return
+      const includedKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
+      const excludedKeywords = await listKeywords({ excluded: true, orderBy: 'raw_volume', dir: 'desc' });
+      const allKeywords = [...includedKeywords, ...excludedKeywords];
+      const updatedKeyword = allKeywords.find(k => k.id === id);
+      
+      if (!updatedKeyword) {
+        return res.status(404).json({ error: 'Keyword not found' });
+      }
+      
+      res.json(updatedKeyword);
+    } catch (error) {
+      console.error('Error updating keyword:', error);
+      res.status(500).json({ error: 'Failed to update keyword' });
+    }
+  });
+
+  app.get("/api/keywords/export.csv", async (req, res) => {
+    try {
+      const includedKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
+      const excludedKeywords = await listKeywords({ excluded: true, orderBy: 'raw_volume', dir: 'desc' });
+      const keywords = [...includedKeywords, ...excludedKeywords];
+      
+      // Create CSV content
+      const header = 'text,raw_volume,volume,grade,excluded,updated_at\n';
+      const rows = keywords.map(k => {
+        const excluded = k.excluded ? 'true' : 'false';
+        const updatedAt = k.updated_at ? new Date(k.updated_at).toISOString() : '';
+        return `"${k.text}",${k.raw_volume},${k.volume},"${k.grade}",${excluded},"${updatedAt}"`;
+      }).join('\n');
+      
+      const csvContent = header + rows;
+      
+      // Set headers for file download
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="keywords-export.csv"');
+      
+      res.send(csvContent);
+    } catch (error) {
+      console.error('Error exporting keywords:', error);
+      res.status(500).json({ error: 'Failed to export keywords' });
+    }
+  });
+
+  app.post("/api/keywords/import", async (req, res) => {
+    try {
+      const mode = req.query.mode as string || 'replace';
+      
+      if (mode !== 'replace' && mode !== 'merge') {
+        return res.status(400).json({ error: 'mode must be either "replace" or "merge"' });
+      }
+      
+      // For now, return a placeholder response
+      // TODO: Implement actual CSV/XLSX import with multipart parsing
+      res.json({
+        inserted: 0,
+        updated: 0,
+        deleted: 0,
+        warnings: ['Import functionality coming soon']
+      });
+    } catch (error) {
+      console.error('Error importing keywords:', error);
+      res.status(500).json({ error: 'Failed to import keywords' });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
