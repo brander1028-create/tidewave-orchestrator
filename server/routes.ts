@@ -514,36 +514,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // List keywords
-  app.get('/api/keywords', async (req, res) => {
-    try {
-      const excluded = req.query.excluded === 'true';
-      const orderBy = (req.query.orderBy as 'raw_volume' | 'text') || 'raw_volume';
-      const dir = (req.query.dir as 'asc' | 'desc') || 'desc';
-      
-      console.log(`📋 Listing keywords - Excluded: ${excluded}, Order: ${orderBy} ${dir}`);
-      
-      const items = await listKeywords({ excluded, orderBy, dir });
-      res.json({ items });
-    } catch (error) {
-      console.error('📋 List keywords failed:', error);
-      res.status(500).json({ error: 'Failed to list keywords', details: String(error) });
-    }
-  });
-
-  // Update keyword excluded status
-  app.patch('/api/keywords/:id', async (req, res) => {
-    try {
-      const { excluded } = req.body;
-      console.log(`🔄 Updating keyword ${req.params.id} - Excluded: ${excluded}`);
-      
-      await setKeywordExcluded(req.params.id, !!excluded);
-      res.json({ ok: true });
-    } catch (error) {
-      console.error('🔄 Update keyword failed:', error);
-      res.status(500).json({ error: 'Failed to update keyword', details: String(error) });
-    }
-  });
 
   // List excluded keywords
   app.get('/api/keywords/excluded', async (req, res) => {
