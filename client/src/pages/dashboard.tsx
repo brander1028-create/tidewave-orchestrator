@@ -3,6 +3,7 @@ import { Bell, Settings, User, Search } from "lucide-react";
 import KeywordInput from "@/components/keyword-input";
 import SerpProgress from "@/components/serp-progress";
 import SerpResults from "@/components/serp-results";
+import HealthStatus from "@/components/health-status";
 
 export default function Dashboard() {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
@@ -24,6 +25,11 @@ export default function Dashboard() {
               <h1 className="text-xl font-bold text-foreground">네이버 검색 순위 분석</h1>
             </div>
             <div className="flex items-center space-x-4">
+              {/* Health Status - Real-time monitoring badges */}
+              <HealthStatus />
+              
+              <div className="h-6 w-px bg-border" /> {/* Separator */}
+              
               <button 
                 className="p-2 text-muted-foreground hover:text-foreground transition-colors"
                 data-testid="button-notifications"
