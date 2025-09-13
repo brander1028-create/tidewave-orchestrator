@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { Bell, Settings, User, Search } from "lucide-react";
+import { Bell, Settings, User, Search, Database } from "lucide-react";
+import { Link } from "wouter";
 import KeywordInput from "@/components/keyword-input";
 import SerpProgress from "@/components/serp-progress";
 import SerpResults from "@/components/serp-results";
 import HealthStatus from "@/components/health-status";
+import { Button } from "@/components/ui/button";
 
 export default function Dashboard() {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
@@ -25,6 +27,14 @@ export default function Dashboard() {
               <h1 className="text-xl font-bold text-foreground">네이버 검색 순위 분석</h1>
             </div>
             <div className="flex items-center space-x-4">
+              {/* Navigation */}
+              <Link href="/keywords">
+                <Button variant="outline" size="sm" data-testid="link-keywords">
+                  <Database className="mr-2 h-4 w-4" />
+                  키워드 관리
+                </Button>
+              </Link>
+              
               {/* Health Status - Real-time monitoring badges */}
               <HealthStatus />
               
