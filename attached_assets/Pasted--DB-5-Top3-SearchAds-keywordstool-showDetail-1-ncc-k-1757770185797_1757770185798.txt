@@ -1,0 +1,51 @@
+[요청] 키워드 DB에 5지표 저장 + 종합점수 기반 Top3 선별로 변경
+
+목표
+- SearchAds(keywordstool: showDetail=1)와(옵션) /ncc/keywords를 이용해
+  각 키워드에 아래 5지표를 저장하고, 제목 분석 시 종합점수(score) 상위 3개를 선택.
+
+DB 스키마(ALTER)
+- keywords(
+    id PK, text UNIQUE,
+    raw_volume INT,           -- monthlyPcQcCnt+monthlyMobileQcCnt, -1->0
+    comp_idx TEXT, comp_score INT,  -- 낮음/중간/높음 → 20/60/100
+    ad_depth REAL, has_ads BOOL,    -- plAvgDepth, has_ads=(ad_depth>0)
+    est_cpc_krw INT NULL, est_cpc_source TEXT,  -- 'account'|'estimated'|'unknown'
+    score INT,                -- 0..100
+    grade CHAR(1), excluded BOOL, updated_at TIMESTAMP, source TEXT
+  )
+
+백엔드
+1) /api/keywords/refresh (및 refresh-all) 확장:
+   - keywordstool(showDetail=1) 응답에서 raw_volume/comp_idx/plAvgDepth(+CTR 있으면 저장) 파싱
+   - comp_score 매핑: 낮음=20, 중간=60, 높음=100
+   - ad_depth=plAvgDepth, has_ads=(ad_depth>0)
+   - est_cpc_krw/est_cpc_source:
+       * 기본: est_cpc_krw=NULL, est_cpc_source='unknown'
+       * (선택) 계정 CPC 연동 모드가 ON이면 /ncc/keywords로 bidAmt를 읽어 적용, source='account'
+       * 그렇지 않으면 추정치 산출(경쟁도·ad_depth·CTR 기반), source='estimated'
+   - score 계산: volume_norm·depth_norm·cpc_norm·comp_score 가중(0.35/0.35/0.20/0.10)
+   - 30일 캐시(갱신 주기), 429/5xx는 백오프, chunkSize=10, concurrency=1
+
+2) /api/keywords (리스트) 정렬 필드 추가:
+   - sort in {raw_volume, comp_score, ad_depth, est_cpc_krw, score}, order in {asc,desc}
+   - 기본: score DESC, 그 다음 raw_volume DESC
+
+3) 제목 분석 파이프라인 수정:
+   - 후보 키워드 매핑 시 keywords(excluded=false)에서 score/has_ads/est_cpc_krw 등을 함께 로드
+   - 기본 필터: has_ads=true(옵션 토글로 해제 가능)
+   - 최종 Top3 = score DESC (tie → raw_volume DESC)
+
+프론트
+- /keywords/db 테이블에 다음 컬럼 추가 및 정렬 버튼:
+  [키워드 | 조회량(raw_volume) | 경쟁도(comp_idx/score) | 광고깊이(ad_depth) | 예상CPC(est_cpc_krw) | 종합점수(score) | 제외]
+- 정렬 버튼: 조회량/경쟁도/광고깊이/예상CPC/종합점수 각각 ASC/DESC
+- 색상 규칙(기존 유지):
+  raw_volume: 10만↑ 빨강 / 5만~10만 노랑 / 그외 초록 / 0 회색
+  (칩/표에 score 배지도 함께 표시)
+- 결과 보기(키워드 표/칩)에 score 배지 추가: "상업성: 87"
+
+수락 기준
+- /api/keywords?sort=score&order=desc 가 동작하고 score가 0~100 범위로 채워짐
+- 제목 분석 결과의 Top3가 score 기준으로 선정되고, 칩/표에 score/est_cpc_krw/raw_volume/ rank가 일관 표기
+- refresh-all 수행 후 stats에 requested/ok/fail가 보고되고, 30일 이내 키워드는 기본 skip
