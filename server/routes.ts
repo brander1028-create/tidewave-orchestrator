@@ -6,6 +6,10 @@ import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
 import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
+// Health Gate + Keywords Management imports
+import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices } from './services/health';
+import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded } from './store/keywords';
+import type { HealthResponse } from './types';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -261,6 +265,164 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error exporting SERP CSV:', error);
       res.status(500).json({ error: "Failed to export data" });
+    }
+  });
+
+  // ===========================================
+  // UNIFIED HEALTH GATE + KEYWORDS MANAGEMENT
+  // ===========================================
+
+  // Health check endpoint
+  app.get('/api/health', async (req, res) => {
+    try {
+      console.log('🏥 Running comprehensive health check...');
+      const openapi = await checkOpenAPI();
+      const searchads = await checkSearchAds();
+      const keywordsdb = await checkKeywordsDB();
+      
+      const healthResponse: HealthResponse = { openapi, searchads, keywordsdb };
+      
+      const overall = openapi.ok && searchads.mode !== 'fallback' && keywordsdb.ok;
+      console.log(`🏥 Health check complete - Overall: ${overall ? 'HEALTHY' : 'DEGRADED'}`);
+      
+      res.status(200).json(healthResponse);
+    } catch (error) {
+      console.error('🏥 Health check failed:', error);
+      res.status(500).json({ error: 'Health check failed', details: String(error) });
+    }
+  });
+
+  // Enhanced SERP search with strict mode
+  app.post('/api/serp/search', async (req, res) => {
+    try {
+      const { strict = true } = req.body || {};
+      console.log(`🔒 SERP search request - Strict mode: ${strict}`);
+      
+      // Run health checks first
+      const openapi = await checkOpenAPI();
+      const searchads = await checkSearchAds();
+      const keywordsdb = await checkKeywordsDB();
+      const health: HealthResponse = { openapi, searchads, keywordsdb };
+
+      // ▶️ Strict mode validation: All services must be operational
+      if (strict && (!openapi.ok || searchads.mode === 'fallback' || !keywordsdb.ok)) {
+        console.log(`🔒 Strict mode BLOCKED - OpenAPI: ${openapi.ok}, SearchAds: ${searchads.mode}, KeywordsDB: ${keywordsdb.ok}`);
+        return res.status(412).json({ 
+          error: 'PRECONDITION_FAILED', 
+          health, 
+          hint: '엄격 모드: 세 서비스 모두 정상이어야 시작합니다.' 
+        });
+      }
+
+      // If validation passes, delegate to existing analyze endpoint logic
+      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10 } = req.body;
+      
+      if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
+        return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
+      }
+
+      // Create SERP analysis job with preset volume mode
+      const job = await storage.createSerpJob({
+        keywords,
+        minRank,
+        maxRank,
+        status: "pending",
+        currentStep: "discovering_blogs",
+        totalSteps: 3,
+        completedSteps: 0,
+        progress: 0
+      });
+
+      // Start analysis in background (reuse existing function)
+      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog);
+
+      console.log(`🔒 SERP analysis started with job ID: ${job.id}`);
+      return res.status(202).json({ jobId: job.id, health });
+      
+    } catch (error) {
+      console.error('🔒 SERP search failed:', error);
+      res.status(500).json({ error: 'SERP search failed', details: String(error) });
+    }
+  });
+
+  // Keywords refresh endpoint
+  app.post('/api/keywords/refresh', async (req, res) => {
+    try {
+      const { base, limit = 300, strict = true } = req.body || {};
+      console.log(`📝 Keywords refresh - Base: "${base}", Limit: ${limit}, Strict: ${strict}`);
+      
+      if (!base || typeof base !== 'string') {
+        return res.status(400).json({ error: 'Base keyword is required' });
+      }
+
+      // Health check for strict mode
+      const openapi = await checkOpenAPI();
+      const searchads = await checkSearchAds();
+      const keywordsdb = await checkKeywordsDB();
+      
+      if (strict && (!openapi.ok || searchads.mode === 'fallback' || !keywordsdb.ok)) {
+        console.log(`📝 Keywords refresh BLOCKED by strict mode`);
+        return res.status(412).json({ 
+          error: 'PRECONDITION_FAILED', 
+          health: { openapi, searchads, keywordsdb } 
+        });
+      }
+
+      const result = await upsertKeywordsFromSearchAds(base, limit);
+      console.log(`📝 Keywords refresh complete - Mode: ${result.mode}, Inserted: ${result.count}`);
+      
+      res.json({ 
+        ok: true, 
+        volumes_mode: result.mode, 
+        stats: result.stats, 
+        inserted: result.count 
+      });
+    } catch (error) {
+      console.error('📝 Keywords refresh failed:', error);
+      res.status(500).json({ error: 'Keywords refresh failed', details: String(error) });
+    }
+  });
+
+  // List keywords
+  app.get('/api/keywords', async (req, res) => {
+    try {
+      const excluded = req.query.excluded === 'true';
+      const orderBy = (req.query.orderBy as 'raw_volume' | 'text') || 'raw_volume';
+      const dir = (req.query.dir as 'asc' | 'desc') || 'desc';
+      
+      console.log(`📋 Listing keywords - Excluded: ${excluded}, Order: ${orderBy} ${dir}`);
+      
+      const items = await listKeywords({ excluded, orderBy, dir });
+      res.json({ items });
+    } catch (error) {
+      console.error('📋 List keywords failed:', error);
+      res.status(500).json({ error: 'Failed to list keywords', details: String(error) });
+    }
+  });
+
+  // Update keyword excluded status
+  app.patch('/api/keywords/:id', async (req, res) => {
+    try {
+      const { excluded } = req.body;
+      console.log(`🔄 Updating keyword ${req.params.id} - Excluded: ${excluded}`);
+      
+      await setKeywordExcluded(req.params.id, !!excluded);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error('🔄 Update keyword failed:', error);
+      res.status(500).json({ error: 'Failed to update keyword', details: String(error) });
+    }
+  });
+
+  // List excluded keywords
+  app.get('/api/keywords/excluded', async (req, res) => {
+    try {
+      console.log('🚫 Listing excluded keywords...');
+      const items = await listExcluded();
+      res.json({ items });
+    } catch (error) {
+      console.error('🚫 List excluded keywords failed:', error);
+      res.status(500).json({ error: 'Failed to list excluded keywords', details: String(error) });
     }
   });
 
