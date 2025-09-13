@@ -58,7 +58,7 @@ export default function KeywordsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [refreshBase, setRefreshBase] = useState("");
   const [refreshLimit, setRefreshLimit] = useState(300);
-  const [orderBy, setOrderBy] = useState<'raw_volume' | 'text'>('raw_volume');
+  const [orderBy, setOrderBy] = useState<'score' | 'raw_volume' | 'competition_idx' | 'ad_depth' | 'estimated_cpc' | 'text'>('score');
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc');
   const [activeTab, setActiveTab] = useState("manage");
   const [lastRefreshStats, setLastRefreshStats] = useState<RefreshResponse | null>(null);
@@ -95,12 +95,14 @@ export default function KeywordsPage() {
     enabled: activeTab === "manage",
   });
 
-  // Fetch excluded keywords  
+  // Fetch excluded keywords (정렬 추가)
   const { data: excludedKeywords, isLoading: excludedLoading } = useQuery({
-    queryKey: ['/api/keywords', 'excluded', true],
+    queryKey: ['/api/keywords', 'excluded', true, 'orderBy', orderBy, 'dir', orderDir],
     queryFn: async () => {
       const params = new URLSearchParams({
-        excluded: 'true'
+        excluded: 'true',
+        orderBy,
+        dir: orderDir
       });
       const response = await fetch(`/api/keywords?${params}`);
       if (!response.ok) throw new Error('Failed to fetch excluded keywords');
@@ -375,12 +377,16 @@ export default function KeywordsPage() {
           {showToggle && (
             <div className="flex items-center space-x-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <Select value={orderBy} onValueChange={(value: 'raw_volume' | 'text') => setOrderBy(value)}>
-                <SelectTrigger className="w-32" data-testid="select-order">
+              <Select value={orderBy} onValueChange={(value: 'score' | 'raw_volume' | 'competition_idx' | 'ad_depth' | 'estimated_cpc' | 'text') => setOrderBy(value)}>
+                <SelectTrigger className="w-32" data-testid="kw-sort-select">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="score">종합점수순</SelectItem>
                   <SelectItem value="raw_volume">조회량순</SelectItem>
+                  <SelectItem value="competition_idx">경쟁도순</SelectItem>
+                  <SelectItem value="ad_depth">광고깊이순</SelectItem>
+                  <SelectItem value="estimated_cpc">CPC순</SelectItem>
                   <SelectItem value="text">이름순</SelectItem>
                 </SelectContent>
               </Select>
@@ -407,30 +413,70 @@ export default function KeywordsPage() {
         <div className="border rounded-lg">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>키워드</TableHead>
-                <TableHead className="text-right">월간 조회량</TableHead>
-                <TableHead className="text-center">등록일</TableHead>
-                {showToggle && <TableHead className="text-center">상태 변경</TableHead>}
+              <TableRow data-testid="kw-table-header">
+                <TableHead className="w-[200px]">키워드</TableHead>
+                <TableHead className="text-right w-[120px]">조회량</TableHead>
+                <TableHead className="text-center w-[100px]">경쟁도</TableHead>
+                <TableHead className="text-center w-[100px]">광고깊이</TableHead>
+                <TableHead className="text-right w-[120px]">예상CPC</TableHead>
+                <TableHead className="text-center w-[100px] font-semibold">종합점수</TableHead>
+                {showToggle && <TableHead className="text-center w-[80px]">액션</TableHead>}
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody data-testid="kw-table">
               {filteredKeywords.map((keyword) => (
-                <TableRow key={keyword.id} data-testid={`row-keyword-${keyword.id}`}>
-                  <TableCell className="font-medium">{keyword.text}</TableCell>
-                  <TableCell className={`text-right font-mono ${getVolumeColor(keyword.raw_volume)}`}>
+                <TableRow key={keyword.id} data-testid={`kw-row-${keyword.id}`}>
+                  {/* 키워드 */}
+                  <TableCell className="font-medium" data-testid={`kw-text-${keyword.id}`}>
+                    {keyword.text}
+                  </TableCell>
+                  
+                  {/* 조회량 */}
+                  <TableCell className={`text-right font-mono ${getVolumeColor(keyword.raw_volume)}`} data-testid={`kw-volume-${keyword.id}`}>
                     {keyword.raw_volume.toLocaleString()}
                   </TableCell>
-                  <TableCell className="text-center text-sm text-muted-foreground">
-                    {new Date(keyword.created_at).toLocaleDateString()}
+                  
+                  {/* 경쟁도 (낮음/중간/높음) */}
+                  <TableCell className="text-center" data-testid={`kw-competition-${keyword.id}`}>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      keyword.competition_idx === '낮음' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                      keyword.competition_idx === '중간' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
+                      'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                    }`}>
+                      {keyword.competition_idx || '-'}
+                    </span>
                   </TableCell>
+                  
+                  {/* 광고깊이 */}
+                  <TableCell className="text-center font-mono" data-testid={`kw-ads-${keyword.id}`}>
+                    {keyword.ad_depth || '-'}
+                  </TableCell>
+                  
+                  {/* 예상CPC */}
+                  <TableCell className="text-right font-mono text-sm" data-testid={`kw-cpc-${keyword.id}`}>
+                    {keyword.estimated_cpc ? `₩${keyword.estimated_cpc.toLocaleString()}` : '-'}
+                  </TableCell>
+                  
+                  {/* 종합점수 */}
+                  <TableCell className="text-center" data-testid={`kw-score-${keyword.id}`}>
+                    <span className={`px-3 py-1 rounded-full text-sm font-bold ${
+                      keyword.score >= 80 ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                      keyword.score >= 60 ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
+                      keyword.score >= 40 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
+                      'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                    }`}>
+                      {keyword.score}
+                    </span>
+                  </TableCell>
+                  
+                  {/* 액션 (현재는 스위치, 나중에 [X]/[↩] 버튼으로 변경 예정) */}
                   {showToggle && (
                     <TableCell className="text-center">
                       <Switch
                         checked={!keyword.excluded}
                         onCheckedChange={() => handleToggleExcluded(keyword.id, keyword.excluded)}
                         disabled={toggleMutation.isPending}
-                        data-testid={`switch-keyword-${keyword.id}`}
+                        data-testid={`kw-toggle-${keyword.id}`}
                       />
                     </TableCell>
                   )}
@@ -438,7 +484,7 @@ export default function KeywordsPage() {
               ))}
               {filteredKeywords.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={showToggle ? 4 : 3} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={showToggle ? 7 : 6} className="text-center py-8 text-muted-foreground">
                     {searchTerm ? "검색 결과가 없습니다" : "키워드가 없습니다"}
                   </TableCell>
                 </TableRow>
