@@ -11,7 +11,7 @@ export default function HistoryPage() {
   const [, setLocation] = useLocation();
 
   const { data: history, isLoading, error } = useQuery<HistoryResponse>({
-    queryKey: ['/api/jobs/history', { limit: 50 }]
+    queryKey: ['/api/jobs/history?limit=50']
   });
 
   const handleRowClick = (jobId: string) => {

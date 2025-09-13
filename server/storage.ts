@@ -6,9 +6,12 @@ import {
   type AnalyzedPost, 
   type InsertAnalyzedPost, 
   type ExtractedKeyword, 
-  type InsertExtractedKeyword 
+  type InsertExtractedKeyword,
+  serpJobs
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { db } from "./db";
+import { desc, eq } from "drizzle-orm";
 
 export interface IStorage {
   // SERP Job operations
@@ -64,7 +67,12 @@ export class MemStorage implements IStorage {
   }
 
   async getSerpJob(id: string): Promise<SerpJob | undefined> {
-    return this.serpJobs.get(id);
+    // Use actual database query instead of memory storage
+    const jobs = await db.select().from(serpJobs)
+      .where(eq(serpJobs.id, id))
+      .limit(1);
+    
+    return jobs[0] || undefined;
   }
 
   async updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<SerpJob | undefined> {
@@ -82,9 +90,12 @@ export class MemStorage implements IStorage {
   }
 
   async listSerpJobs(limit: number = 50): Promise<SerpJob[]> {
-    return Array.from(this.serpJobs.values())
-      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0))
-      .slice(0, limit);
+    // Use actual database query instead of memory storage for history
+    const jobs = await db.select().from(serpJobs)
+      .orderBy(desc(serpJobs.createdAt))
+      .limit(limit);
+    
+    return jobs;
   }
 
   // Discovered blog operations
