@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, jsonb, boolean, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -68,6 +68,14 @@ export const managedKeywords = pgTable("managed_keywords", {
   difficulty: integer("difficulty").notNull().default(0), // 0-100 SEO difficulty
   excluded: boolean("excluded").notNull().default(false), // Excluded from analysis
   source: text("source").notNull().default("searchads"), // searchads, manual, etc
+  // 5개 지표 확장 필드
+  comp_idx: text("comp_idx"), // 경쟁도 텍스트: 낮음/중간/높음
+  comp_score: integer("comp_score").default(0), // 경쟁도 점수: 20/60/100
+  ad_depth: real("ad_depth").default(0), // plAvgDepth - 평균 광고 노출 깊이
+  has_ads: boolean("has_ads").notNull().default(false), // ad_depth > 0
+  est_cpc_krw: integer("est_cpc_krw"), // 예상 CPC (KRW, nullable)
+  est_cpc_source: text("est_cpc_source").default("unknown"), // account/estimated/unknown
+  score: integer("score").notNull().default(0), // 종합점수 0-100
   updated_at: timestamp("updated_at").defaultNow(),
   created_at: timestamp("created_at").defaultNow(),
 });
