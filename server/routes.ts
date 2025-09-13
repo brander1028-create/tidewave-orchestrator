@@ -239,6 +239,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get job history for recent jobs
+  app.get("/api/jobs/history", async (req, res) => {
+    try {
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+      console.log(`📋 Fetching job history with limit: ${limit}`);
+      
+      const jobs = await storage.listSerpJobs(limit);
+      
+      const historyItems = jobs.map(job => {
+        const baseKeyword = job.keywords && job.keywords.length > 0 ? job.keywords[0] : 'Unknown';
+        
+        // Extract counters from job results if available, or compute basic counters
+        let counters = {
+          discovered_blogs: 0,
+          hit_blogs: 0,
+          selected_keywords: job.keywords?.length || 0,
+          searched_keywords: 0,
+          volumes_mode: 'unknown'
+        };
+        
+        // If job is completed and has results, extract actual counters
+        if (job.status === 'completed' && job.results) {
+          const results = job.results as any;
+          if (results.counters) {
+            counters = {
+              discovered_blogs: results.counters.discovered_blogs || results.counters.blogs || 0,
+              hit_blogs: results.counters.hit_blogs || 0,
+              selected_keywords: results.counters.selected_keywords || job.keywords?.length || 0,
+              searched_keywords: results.counters.searched_keywords || 0,
+              volumes_mode: results.counters.volumes_mode || 'unknown'
+            };
+          }
+        }
+        
+        return {
+          jobId: job.id,
+          createdAt: job.createdAt?.toISOString() || new Date().toISOString(),
+          baseKeyword,
+          counters
+        };
+      });
+      
+      console.log(`📋 Returning ${historyItems.length} history items`);
+      res.json({ items: historyItems });
+    } catch (error) {
+      console.error('Error fetching job history:', error);
+      res.status(500).json({ error: "Failed to fetch job history" });
+    }
+  });
+
   // Helper function to sanitize CSV fields and prevent formula injection
   const sanitizeCsvField = (value: any): string => {
     const str = String(value ?? '');
