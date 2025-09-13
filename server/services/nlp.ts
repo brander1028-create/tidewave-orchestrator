@@ -1,7 +1,12 @@
+import { listKeywords } from '../store/keywords';
+
 export interface KeywordCandidate {
   keyword: string;
   frequency: number;
   score: number;
+  volume?: number;
+  grade?: string;
+  isFromDB?: boolean;
 }
 
 export class NLPService {
@@ -54,11 +59,28 @@ export class NLPService {
   }
 
   /**
-   * Extract keywords using simple n-gram (1-3) approach from titles
-   * This implements the specified simple n-gram keyword extraction
+   * Extract keywords using n-gram (1-3) approach from titles with keyword DB integration
+   * This implements n-gram keyword extraction enhanced with existing keyword database
    */
-  extractKeywords(titles: string[]): KeywordCandidate[] {
+  async extractKeywords(titles: string[]): Promise<KeywordCandidate[]> {
     console.log(`🔤 Starting n-gram keyword extraction from ${titles.length} titles`);
+    
+    // Get keyword volume map from database
+    console.log(`🔍 Fetching keywords from database...`);
+    const dbKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
+    const keywordVolumeMap: Record<string, { volume: number; grade: string }> = {};
+    
+    dbKeywords.forEach(keyword => {
+      // Normalize DB keyword text using the same cleanText logic for better matching
+      const normalizedText = this.cleanText(keyword.text);
+      keywordVolumeMap[normalizedText] = {
+        volume: keyword.raw_volume || keyword.volume || 0,
+        grade: keyword.grade || 'C'
+      };
+    });
+    
+    const dbKeywordCount = dbKeywords.length;
+    console.log(`📊 Loaded ${dbKeywordCount} keywords from database`);
     
     const keywordFreq = new Map<string, number>();
     
@@ -83,7 +105,7 @@ export class NLPService {
       });
     }
     
-    // Calculate relevance scores
+    // Calculate relevance scores with DB integration
     const candidates: KeywordCandidate[] = [];
     const totalTitles = titles.length;
     
@@ -94,17 +116,33 @@ export class NLPService {
           title.includes(keyword)
         ).length;
         
-        // Score based on frequency, length, and document frequency
-        const score = Math.round(
+        // Check if keyword exists in database
+        const dbKeywordInfo = keywordVolumeMap[keyword];
+        const isFromDB = !!dbKeywordInfo;
+        
+        // Base score calculation
+        let score = Math.round(
           (frequency * 10) + // Base frequency score
           (keyword.split(' ').length * 5) + // Length bonus
           (documentFreq / totalTitles * 20) // Document frequency bonus
         );
         
+        // Boost score for keywords found in database
+        if (isFromDB) {
+          const volumeBoost = Math.min(dbKeywordInfo.volume / 1000, 50); // Volume-based bonus (max 50)
+          const gradeBoost = dbKeywordInfo.grade === 'A' ? 30 : dbKeywordInfo.grade === 'B' ? 20 : 10;
+          score += Math.round(volumeBoost + gradeBoost);
+          
+          console.log(`🎯 DB keyword found: "${keyword}" (volume: ${dbKeywordInfo.volume}, grade: ${dbKeywordInfo.grade}, boost: +${Math.round(volumeBoost + gradeBoost)})`);
+        }
+        
         candidates.push({
           keyword,
           frequency,
           score,
+          volume: dbKeywordInfo?.volume,
+          grade: dbKeywordInfo?.grade,
+          isFromDB,
         });
       }
     }
