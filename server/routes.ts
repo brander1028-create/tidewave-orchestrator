@@ -797,15 +797,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         jobId,
         state,
         progress: {
-          collected: progress.totalCollected || 0,
-          requested: progress.totalRequested || 0,
-          ok: progress.totalSuccess || 0,
-          fail: progress.totalFailed || 0,
+          collected: progress.keywordsSaved || 0,
+          requested: progress.totalProcessed || 0,
+          ok: progress.keywordsSaved || 0,
+          fail: (progress.totalProcessed || 0) - (progress.keywordsSaved || 0),
           frontierSize: progress.frontierSize || 0,
           currentHop: progress.currentHop || 0
         },
-        config: progress.config || null,
-        message: progress.message || ''
+        config: null,
+        message: progress.estimatedTimeLeft || ''
       });
 
     } catch (error) {
@@ -950,6 +950,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error updating keyword:', error);
       res.status(500).json({ error: 'Failed to update keyword' });
+    }
+  });
+
+  // Process 2000 seeds from CSV (skip duplicates)
+  app.post('/api/keywords/process-seeds', async (req, res) => {
+    try {
+      console.log('🌱 Starting seed processing from CSV...');
+      
+      // Load all 2000 seeds from CSV
+      const seeds = loadSeedsFromCSV();
+      if (seeds.length === 0) {
+        return res.status(400).json({ error: 'No seeds found in CSV file' });
+      }
+      
+      console.log(`📂 Loaded ${seeds.length} seeds from CSV`);
+      
+      // Get existing keywords to check duplicates
+      const existingKeywords = await listKeywords();
+      const existingTexts = new Set(existingKeywords.map(k => normalizeKeyword(k.keyword)));
+      
+      // Filter out duplicates
+      const newSeeds = seeds.filter(seed => {
+        const normalized = normalizeKeyword(seed);
+        return !existingTexts.has(normalized);
+      });
+      
+      console.log(`🔍 Found ${newSeeds.length} new seeds (${seeds.length - newSeeds.length} duplicates skipped)`);
+      
+      if (newSeeds.length === 0) {
+        return res.json({
+          processed: 0,
+          inserted: 0,
+          updated: 0,
+          skipped: seeds.length,
+          message: 'All seeds already exist in database'
+        });
+      }
+      
+      // Process seeds with SearchAd API
+      console.log(`📊 Getting volumes for ${newSeeds.length} new seeds...`);
+      const volumeResults = await getVolumes(newSeeds);
+      
+      // Transform results for database insertion
+      const keywordsToInsert = [];
+      let inserted = 0;
+      let skipped = 0;
+      
+      for (const [keyword, data] of Object.entries(volumeResults.volumes)) {
+        if (data.raw_volume >= 1000) { // 조회량 1000+ 기준
+          keywordsToInsert.push({
+            keyword,
+            raw_volume: data.raw_volume,
+            competition_index: data.competition_index || '중간',
+            competition_score: compIdxToScore(data.competition_index || '중간'),
+            ad_depth: data.ad_depth || 0,
+            estimated_cpc: data.estimated_cpc || 0,
+            overall_score: calculateOverallScore(
+              data.raw_volume,
+              compIdxToScore(data.competition_index || '중간'),
+              data.ad_depth || 0,
+              data.estimated_cpc || 0
+            )
+          });
+          inserted++;
+        } else {
+          console.log(`⏭️  "${keyword}" volume ${data.raw_volume} < 1000 - skipping`);
+          skipped++;
+        }
+      }
+      
+      // Insert valid keywords into database
+      if (keywordsToInsert.length > 0) {
+        await upsertMany(keywordsToInsert);
+        console.log(`✅ Inserted ${keywordsToInsert.length} new keywords`);
+      }
+      
+      const response = {
+        processed: newSeeds.length,
+        inserted,
+        updated: 0,
+        skipped,
+        duplicates_skipped: seeds.length - newSeeds.length,
+        volumes_mode: volumeResults.volumesMode,
+        message: `Successfully processed ${inserted} new keywords from ${seeds.length} seeds`
+      };
+      
+      res.json(response);
+      
+    } catch (error) {
+      console.error('❌ Failed to process seeds:', error);
+      res.status(500).json({ error: 'Failed to process seeds from CSV' });
     }
   });
 
