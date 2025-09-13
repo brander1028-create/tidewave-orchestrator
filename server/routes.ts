@@ -11,7 +11,7 @@ import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHea
 import { getVolumes } from './services/searchad';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore } from './store/keywords';
 // BFS Crawler imports
-import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler } from './services/bfs-crawler.js';
+import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword } from './services/bfs-crawler.js';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
@@ -721,6 +721,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`🌱 Using ${seeds.length} seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
       }
 
+      // ✅ STEP: Process seeds FIRST (add to database, skip duplicates)
+      console.log(`📊 Processing ${seeds.length} seeds before BFS expansion...`);
+      const existingKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
+      const existingTexts = new Set(existingKeywords.map(k => normalizeKeyword(k.text)));
+      
+      const newSeeds = seeds.filter(seed => {
+        const normalized = normalizeKeyword(seed);
+        return !existingTexts.has(normalized);
+      });
+      
+      console.log(`🔍 Found ${newSeeds.length} new seeds (${seeds.length - newSeeds.length} duplicates skipped)`);
+      
+      let seedsProcessed = 0;
+      if (newSeeds.length > 0) {
+        const volumeResults = await getVolumes(newSeeds);
+        
+        const keywordsToInsert = [];
+        for (const [keyword, data] of Object.entries(volumeResults.volumes)) {
+          if (data.volumeMonthly >= 1000) { // 조회량 1000+ 기준만 저장
+            keywordsToInsert.push({
+              keyword,
+              raw_volume: data.volumeMonthly,
+              competition_index: data.compIdx || '중간',
+              competition_score: compIdxToScore(data.compIdx || '중간'),
+              ad_depth: data.adWordsCnt || 0,
+              estimated_cpc: data.cpc || 0,
+              overall_score: calculateOverallScore(
+                data.volumeMonthly,
+                compIdxToScore(data.compIdx || '중간'),
+                data.adWordsCnt || 0,
+                data.cpc || 0
+              )
+            });
+          }
+        }
+        
+        if (keywordsToInsert.length > 0) {
+          await upsertMany(keywordsToInsert);
+          seedsProcessed = keywordsToInsert.length;
+          console.log(`✅ Added ${seedsProcessed} new seed keywords to database`);
+        }
+      }
+
       // Create and configure crawler
       const crawler = createGlobalCrawler({
         target,
@@ -953,96 +996,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Process 2000 seeds from CSV (skip duplicates)
-  app.post('/api/keywords/process-seeds', async (req, res) => {
-    try {
-      console.log('🌱 Starting seed processing from CSV...');
-      
-      // Load all 2000 seeds from CSV
-      const seeds = loadSeedsFromCSV();
-      if (seeds.length === 0) {
-        return res.status(400).json({ error: 'No seeds found in CSV file' });
-      }
-      
-      console.log(`📂 Loaded ${seeds.length} seeds from CSV`);
-      
-      // Get existing keywords to check duplicates
-      const existingKeywords = await listKeywords();
-      const existingTexts = new Set(existingKeywords.map(k => normalizeKeyword(k.keyword)));
-      
-      // Filter out duplicates
-      const newSeeds = seeds.filter(seed => {
-        const normalized = normalizeKeyword(seed);
-        return !existingTexts.has(normalized);
-      });
-      
-      console.log(`🔍 Found ${newSeeds.length} new seeds (${seeds.length - newSeeds.length} duplicates skipped)`);
-      
-      if (newSeeds.length === 0) {
-        return res.json({
-          processed: 0,
-          inserted: 0,
-          updated: 0,
-          skipped: seeds.length,
-          message: 'All seeds already exist in database'
-        });
-      }
-      
-      // Process seeds with SearchAd API
-      console.log(`📊 Getting volumes for ${newSeeds.length} new seeds...`);
-      const volumeResults = await getVolumes(newSeeds);
-      
-      // Transform results for database insertion
-      const keywordsToInsert = [];
-      let inserted = 0;
-      let skipped = 0;
-      
-      for (const [keyword, data] of Object.entries(volumeResults.volumes)) {
-        if (data.raw_volume >= 1000) { // 조회량 1000+ 기준
-          keywordsToInsert.push({
-            keyword,
-            raw_volume: data.raw_volume,
-            competition_index: data.competition_index || '중간',
-            competition_score: compIdxToScore(data.competition_index || '중간'),
-            ad_depth: data.ad_depth || 0,
-            estimated_cpc: data.estimated_cpc || 0,
-            overall_score: calculateOverallScore(
-              data.raw_volume,
-              compIdxToScore(data.competition_index || '중간'),
-              data.ad_depth || 0,
-              data.estimated_cpc || 0
-            )
-          });
-          inserted++;
-        } else {
-          console.log(`⏭️  "${keyword}" volume ${data.raw_volume} < 1000 - skipping`);
-          skipped++;
-        }
-      }
-      
-      // Insert valid keywords into database
-      if (keywordsToInsert.length > 0) {
-        await upsertMany(keywordsToInsert);
-        console.log(`✅ Inserted ${keywordsToInsert.length} new keywords`);
-      }
-      
-      const response = {
-        processed: newSeeds.length,
-        inserted,
-        updated: 0,
-        skipped,
-        duplicates_skipped: seeds.length - newSeeds.length,
-        volumes_mode: volumeResults.volumesMode,
-        message: `Successfully processed ${inserted} new keywords from ${seeds.length} seeds`
-      };
-      
-      res.json(response);
-      
-    } catch (error) {
-      console.error('❌ Failed to process seeds:', error);
-      res.status(500).json({ error: 'Failed to process seeds from CSV' });
-    }
-  });
 
   app.get("/api/keywords/export.csv", async (req, res) => {
     try {
