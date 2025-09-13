@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { RefreshCw, Search, AlertTriangle, CheckCircle, Filter, TrendingUp, Database, ArrowLeft } from "lucide-react";
+import { RefreshCw, Search, AlertTriangle, CheckCircle, Filter, TrendingUp, Database, ArrowLeft, Download, Upload, FileText } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Navigation } from "@/components/navigation";
@@ -48,6 +48,12 @@ type HealthResponse = {
   keywordsdb: { ok: boolean };
 };
 
+type KeywordsStatsResponse = {
+  total: number;
+  lastUpdated: string;
+  volumes_mode: 'fallback' | 'partial' | 'searchads';
+};
+
 export default function KeywordsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [refreshBase, setRefreshBase] = useState("");
@@ -56,6 +62,7 @@ export default function KeywordsPage() {
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc');
   const [activeTab, setActiveTab] = useState("manage");
   const [lastRefreshStats, setLastRefreshStats] = useState<RefreshResponse | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
   // Fetch system health status
@@ -64,15 +71,21 @@ export default function KeywordsPage() {
     refetchInterval: 30000,
   });
 
+  // Fetch keywords statistics
+  const { data: keywordsStats } = useQuery({
+    queryKey: ['/api/keywords', 'stats'],
+    refetchInterval: 30000,
+  });
+
   // Fetch active keywords
   const { data: activeKeywords, isLoading: activeLoading, error: activeError } = useQuery({
-    queryKey: [`/api/keywords?excluded=false&orderBy=${orderBy}&dir=${orderDir}`],
+    queryKey: ['/api/keywords', { excluded: false, orderBy, dir: orderDir }],
     enabled: activeTab === "manage",
   });
 
   // Fetch excluded keywords  
   const { data: excludedKeywords, isLoading: excludedLoading } = useQuery({
-    queryKey: ['/api/keywords/excluded'],
+    queryKey: ['/api/keywords', { excluded: true }],
     enabled: activeTab === "excluded",
   });
 
@@ -89,6 +102,7 @@ export default function KeywordsPage() {
         description: `${data.inserted}개 키워드가 ${data.volumes_mode} 모드로 추가되었습니다`,
       });
       queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
     },
     onError: (error: any) => {
       const message = error?.health ? "엄격 모드: 모든 서비스가 정상이어야 합니다" : "키워드 새로고침 실패";
@@ -108,7 +122,7 @@ export default function KeywordsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/keywords/excluded'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
     },
     onError: () => {
       toast({
@@ -118,6 +132,59 @@ export default function KeywordsPage() {
       });
     },
   });
+
+  // CSV Download
+  const handleCSVDownload = async () => {
+    try {
+      const response = await fetch('/api/keywords/export.csv');
+      if (!response.ok) throw new Error('CSV 다운로드 실패');
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = 'keywords-export.csv';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      toast({
+        title: "다운로드 완료",
+        description: "키워드 데이터가 CSV 파일로 다운로드되었습니다",
+      });
+    } catch (error) {
+      toast({
+        title: "오류",
+        description: "CSV 다운로드에 실패했습니다",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // CSV Upload (placeholder)
+  const handleCSVUpload = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // TODO: Implement actual file upload
+    toast({
+      title: "기능 준비 중",
+      description: "CSV 업로드 기능이 곧 제공됩니다",
+    });
+    
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   const handleRefresh = () => {
     if (!refreshBase.trim()) {
@@ -273,6 +340,98 @@ export default function KeywordsPage() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="space-y-6">
+          {/* Keywords DB Statistics */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center space-x-2">
+                <Database className="h-5 w-5" />
+                <span>키워드 DB 현황</span>
+              </CardTitle>
+              <CardDescription>
+                현재 키워드 데이터베이스 통계 및 데이터 관리
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Statistics */}
+                <div className="space-y-4">
+                  <h4 className="font-medium text-sm">통계 정보</h4>
+                  {keywordsStats ? (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">총 키워드 수</span>
+                        <span className="font-mono text-lg">{(keywordsStats as KeywordsStatsResponse).total.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">조회량 모드</span>
+                        <Badge variant={(keywordsStats as KeywordsStatsResponse).volumes_mode === 'searchads' ? 'default' : 'secondary'}>
+                          {(keywordsStats as KeywordsStatsResponse).volumes_mode.toUpperCase()}
+                        </Badge>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">마지막 업데이트</span>
+                        <span className="text-sm font-mono">
+                          {new Date((keywordsStats as KeywordsStatsResponse).lastUpdated).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center py-4">
+                      <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground mr-2" />
+                      <span className="text-sm text-muted-foreground">통계 로딩 중...</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* CSV Export */}
+                <div className="space-y-4">
+                  <h4 className="font-medium text-sm">데이터 내보내기</h4>
+                  <div className="space-y-2">
+                    <Button 
+                      onClick={handleCSVDownload}
+                      className="w-full"
+                      variant="outline"
+                      data-testid="button-csv-download"
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      CSV 다운로드
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      모든 키워드를 CSV 파일로 내보냅니다
+                    </p>
+                  </div>
+                </div>
+
+                {/* CSV Import */}
+                <div className="space-y-4">
+                  <h4 className="font-medium text-sm">데이터 가져오기</h4>
+                  <div className="space-y-2">
+                    <Button 
+                      onClick={handleCSVUpload}
+                      className="w-full"
+                      variant="outline"
+                      data-testid="button-csv-upload"
+                    >
+                      <Upload className="mr-2 h-4 w-4" />
+                      CSV 업로드
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      CSV 파일에서 키워드를 가져옵니다
+                    </p>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".csv"
+                      onChange={handleFileChange}
+                      style={{ display: 'none' }}
+                      data-testid="input-csv-file"
+                    />
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Keywords Refresh Section */}
           <Card>
             <CardHeader>
