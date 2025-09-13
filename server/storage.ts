@@ -43,10 +43,9 @@ export class MemStorage implements IStorage {
 
   // SERP Job operations
   async createSerpJob(insertJob: InsertSerpJob): Promise<SerpJob> {
-    const id = randomUUID();
-    const job: SerpJob = {
+    // Let database generate ID automatically
+    const insertData = {
       ...insertJob,
-      id,
       status: insertJob.status || "pending",
       minRank: insertJob.minRank || 2,
       maxRank: insertJob.maxRank || 15,
@@ -59,11 +58,13 @@ export class MemStorage implements IStorage {
       totalSteps: insertJob.totalSteps || 3,
       completedSteps: insertJob.completedSteps || 0,
       errorMessage: insertJob.errorMessage || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
     };
-    this.serpJobs.set(id, job);
-    return job;
+    
+    // Store in database and return the inserted job with generated ID
+    const [createdJob] = await db.insert(serpJobs).values(insertData).returning();
+    console.log(`💾 Created SERP job ${createdJob.id} in database`);
+    
+    return createdJob;
   }
 
   async getSerpJob(id: string): Promise<SerpJob | undefined> {
@@ -83,17 +84,24 @@ export class MemStorage implements IStorage {
   }
 
   async updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<SerpJob | undefined> {
-    const job = this.serpJobs.get(id);
-    if (job) {
-      const updatedJob = {
-        ...job,
-        ...updates,
-        updatedAt: new Date(),
-      };
-      this.serpJobs.set(id, updatedJob);
-      return updatedJob;
-    }
-    return undefined;
+    // Update in database instead of memory
+    const updatedData = {
+      ...updates,
+      updatedAt: new Date(),
+    };
+    
+    await db.update(serpJobs)
+      .set(updatedData)
+      .where(eq(serpJobs.id, id));
+    
+    console.log(`📝 Updated SERP job ${id} in database`);
+    
+    // Return the updated job
+    const jobs = await db.select().from(serpJobs)
+      .where(eq(serpJobs.id, id))
+      .limit(1);
+    
+    return jobs[0] || undefined;
   }
 
   async listSerpJobs(limit: number = 50): Promise<SerpJob[]> {
