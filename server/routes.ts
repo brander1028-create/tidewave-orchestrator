@@ -112,7 +112,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get SERP job results with discovered blogs and keywords
+  // Get SERP job results in new API contract format
   app.get("/api/serp/jobs/:jobId/results", async (req, res) => {
     try {
       const job = await storage.getSerpJob(req.params.jobId);
@@ -120,35 +120,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Job not found" });
       }
 
-      const discoveredBlogs = await storage.getDiscoveredBlogs(job.id);
-      const results = [];
-
-      for (const blog of discoveredBlogs) {
-        const posts = await storage.getAnalyzedPosts(blog.id);
-        const topKeywords = await storage.getTopKeywordsByBlog(blog.id);
-        
-        results.push({
-          blog,
-          posts,
-          topKeywords
-        });
+      if (job.status !== "completed") {
+        return res.status(400).json({ error: "Job not completed yet" });
       }
 
-      // Add metadata for better UI handling
-      const totalPostsCount = results.reduce((sum, r) => sum + r.posts.length, 0);
-      const totalKeywordsCount = results.reduce((sum, r) => sum + r.topKeywords.length, 0);
-
-      res.json({
-        job,
-        results,
-        meta: {
-          isComplete: job.status === 'completed',
-          discoveredBlogsCount: discoveredBlogs.length,
-          totalPostsCount,
-          totalKeywordsCount,
-          isRealSearch: true // No fake seeds used
+      // Get all discovered blogs
+      const allBlogs = await storage.getDiscoveredBlogs(job.id);
+      const allPosts = [];
+      const allKeywords = [];
+      
+      // Filter blogs with TOP3 keywords that have SERP rank 1-10
+      const hitBlogs = [];
+      
+      for (const blog of allBlogs) {
+        const posts = await storage.getAnalyzedPosts(blog.id);
+        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id, 3); // Get TOP3
+        
+        // Check if any of TOP3 keywords has rank 1-10
+        const hasHit = top3Keywords.some(kw => kw.rank && kw.rank >= 1 && kw.rank <= 10);
+        
+        if (hasHit) {
+          hitBlogs.push({
+            blog_id: blog.blogId,
+            blog_url: blog.blogUrl,
+            gathered_posts: posts.length
+          });
+          
+          // Add keywords for this blog
+          allKeywords.push({
+            blog_id: blog.blogId,
+            top3: top3Keywords.map(kw => ({
+              text: kw.keyword,
+              volume: kw.volume || 0,
+              rank: kw.rank || 0
+            }))
+          });
         }
+        
+        // Add all posts
+        allPosts.push(...posts.map(post => ({
+          blog_id: blog.blogId,
+          post_url: post.url,
+          post_title: post.title,
+          published_at: post.publishedAt?.toISOString() || null
+        })));
+      }
+
+      // Calculate counters
+      const uniqueKeywords = new Set();
+      allKeywords.forEach(blogKw => {
+        blogKw.top3.forEach(kw => uniqueKeywords.add(kw.text));
       });
+
+      const response = {
+        blogs: hitBlogs,
+        keywords: allKeywords, 
+        posts: allPosts,
+        counters: {
+          blogs: allBlogs.length,
+          posts: allPosts.length,
+          selected_keywords: allBlogs.length * 3, // 블로그×3 (요청)
+          searched_keywords: uniqueKeywords.size, // 중복 제거 후 실제 질의
+          hit_blogs: hitBlogs.length
+        },
+        warnings: job.results?.warnings || [],
+        errors: job.results?.errors || []
+      };
+
+      res.json(response);
     } catch (error) {
       console.error('Error fetching SERP results:', error);
       res.status(500).json({ error: "Failed to fetch results" });

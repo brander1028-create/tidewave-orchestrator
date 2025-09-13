@@ -3,12 +3,13 @@ import { pgTable, text, varchar, integer, timestamp, jsonb } from "drizzle-orm/p
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// New schema for keyword-driven SERP analysis
+// New API contract schema - matching specification document
 export const serpJobs = pgTable("serp_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   keywords: text("keywords").array().notNull(), // Input keywords array
   minRank: integer("min_rank").notNull().default(2),
   maxRank: integer("max_rank").notNull().default(15),
+  postsPerBlog: integer("posts_per_blog").notNull().default(10),
   status: text("status").notNull().default("pending"), // pending, running, completed, failed, cancelled
   progress: integer("progress").default(0), // 0-100
   currentStep: text("current_step"), // discovering_blogs, analyzing_posts, checking_rankings
@@ -17,7 +18,7 @@ export const serpJobs = pgTable("serp_jobs", {
   completedSteps: integer("completed_steps").default(0),
   detailedProgress: jsonb("detailed_progress"), // { currentKeyword, processedKeywords, totalKeywords, currentBlog, etc }
   errorMessage: text("error_message"),
-  results: jsonb("results"), // final analysis results
+  results: jsonb("results"), // final analysis results in new contract format
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -27,6 +28,7 @@ export const discoveredBlogs = pgTable("discovered_blogs", {
   jobId: varchar("job_id").references(() => serpJobs.id).notNull(),
   seedKeyword: text("seed_keyword").notNull(), // Original keyword that led to this blog
   rank: integer("rank").notNull(), // Position in SERP (2-15)
+  blogId: text("blog_id").notNull(), // Blog ID from URL (e.g., "riche1862")
   blogName: text("blog_name").notNull(),
   blogUrl: text("blog_url").notNull(),
   postsAnalyzed: integer("posts_analyzed").default(0),
@@ -44,12 +46,13 @@ export const analyzedPosts = pgTable("analyzed_posts", {
 
 export const extractedKeywords = pgTable("extracted_keywords", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  postId: varchar("post_id").references(() => analyzedPosts.id).notNull(),
+  blogId: varchar("blog_id").references(() => discoveredBlogs.id).notNull(), // Link to blog instead of post
+  jobId: varchar("job_id").references(() => serpJobs.id).notNull(),
   keyword: text("keyword").notNull(),
-  searchVolume: integer("search_volume"), // From Naver DataLab
-  score: integer("score").notNull(), // Calculated relevance score
-  rank: integer("rank"), // t1=1, t2=2, t3=3 (top 3 keywords per post)
-  serpRank: integer("serp_rank"), // Position in Naver search results (1-10) or null
+  volume: integer("volume").default(0), // Monthly search volume from SearchAd API
+  frequency: integer("frequency").notNull().default(0), // N-gram frequency count
+  rank: integer("rank"), // SERP ranking 1-10 or 0 for not found
+  tier: integer("tier"), // 1=TIER1, 2=TIER2, 3=TIER3 based on volume
   createdAt: timestamp("created_at").defaultNow(),
 });
 
