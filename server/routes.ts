@@ -134,7 +134,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       for (const blog of allBlogs) {
         const posts = await storage.getAnalyzedPosts(blog.id);
-        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id, 3); // Get TOP3
+        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id); // Get TOP3
         
         // Check if any of TOP3 keywords has rank 1-10
         const hasHit = top3Keywords.some(kw => kw.rank && kw.rank >= 1 && kw.rank <= 10);
@@ -172,6 +172,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         blogKw.top3.forEach(kw => uniqueKeywords.add(kw.text));
       });
 
+      // Calculate searched_keywords from ALL blogs (not just hit blogs)
+      const allUniqueKeywords = new Set();
+      for (const blog of allBlogs) {
+        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
+        top3Keywords.forEach(kw => allUniqueKeywords.add(kw.keyword));
+      }
+
       const response = {
         blogs: hitBlogs,
         keywords: allKeywords, 
@@ -180,11 +187,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           blogs: allBlogs.length,
           posts: allPosts.length,
           selected_keywords: allBlogs.length * 3, // 블로그×3 (요청)
-          searched_keywords: uniqueKeywords.size, // 중복 제거 후 실제 질의
+          searched_keywords: allUniqueKeywords.size, // 모든 블로그의 TOP3 키워드 중복 제거 후 실제 질의
           hit_blogs: hitBlogs.length
         },
-        warnings: job.results?.warnings || [],
-        errors: job.results?.errors || []
+        warnings: [],
+        errors: []
       };
 
       res.json(response);
@@ -224,7 +231,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           csv += `${sanitizeCsvField(blog.blogName)},${sanitizeCsvField(blog.blogUrl)},${sanitizeCsvField(blog.seedKeyword)},${sanitizeCsvField(blog.rank)},${sanitizeCsvField("추가 떠있는 키워드 없음")},${sanitizeCsvField("")},${sanitizeCsvField("")}\n`;
         } else {
           for (const keyword of topKeywords) {
-            csv += `${sanitizeCsvField(blog.blogName)},${sanitizeCsvField(blog.blogUrl)},${sanitizeCsvField(blog.seedKeyword)},${sanitizeCsvField(blog.rank)},${sanitizeCsvField(keyword.keyword)},${sanitizeCsvField(keyword.searchVolume || '')},${sanitizeCsvField(keyword.serpRank || '')}\n`;
+            csv += `${sanitizeCsvField(blog.blogName)},${sanitizeCsvField(blog.blogUrl)},${sanitizeCsvField(blog.seedKeyword)},${sanitizeCsvField(blog.rank)},${sanitizeCsvField(keyword.keyword)},${sanitizeCsvField(keyword.volume || '')},${sanitizeCsvField(keyword.rank || '')}\n`;
           }
         }
       }
@@ -240,6 +247,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const httpServer = createServer(app);
   return httpServer;
+}
+
+// Helper function to extract blog ID from URL
+function extractBlogIdFromUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    
+    // Handle blog.naver.com/blogId format
+    if (urlObj.hostname === 'blog.naver.com') {
+      const pathParts = urlObj.pathname.split('/').filter(p => p);
+      if (pathParts.length > 0) {
+        return pathParts[0]; // First part is the blog ID
+      }
+    }
+    
+    // Handle m.blog.naver.com/blogId format  
+    if (urlObj.hostname === 'm.blog.naver.com') {
+      const pathParts = urlObj.pathname.split('/').filter(p => p);
+      if (pathParts.length > 0) {
+        return pathParts[0]; // First part is the blog ID
+      }
+    }
+    
+    // Fallback: use entire URL as ID if can't extract
+    return url.replace(/[^a-zA-Z0-9]/g, '').substring(0, 50);
+  } catch (error) {
+    // Fallback for invalid URLs
+    return url.replace(/[^a-zA-Z0-9]/g, '').substring(0, 50);
+  }
 }
 
 // Background SERP analysis job processing
@@ -292,10 +328,14 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         
         for (const result of serpResults) {
           if (!allDiscoveredBlogs.has(result.url)) {
+            // Extract blog ID from URL (e.g., riche1862 from blog.naver.com/riche1862)
+            const blogId = extractBlogIdFromUrl(result.url);
+            
             const blog = await storage.createDiscoveredBlog({
               jobId: job.id,
               seedKeyword: keyword,
               rank: result.rank,
+              blogId: blogId,
               blogName: result.title,
               blogUrl: result.url
             });
@@ -385,17 +425,16 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         console.log(`   🏆 Top 3 keywords for ${blog.blogName}: ${detail.map((d: any) => `${d.tier.toUpperCase()}: ${d.keyword} (${d.volume_total})`).join(', ')}`);
         
         // Save top keywords with volume data
-        const posts = await storage.getAnalyzedPosts(blog.id);
         for (const [keywordIndex, keywordDetail] of Array.from((detail as any[]).entries())) {
-          if (posts[keywordIndex]) {
-            await storage.createExtractedKeyword({
-              postId: posts[keywordIndex].id,
-              keyword: keywordDetail.keyword,
-              searchVolume: keywordDetail.volume_total || null,
-              score: keywordDetail.volume_total || 0, // Use search volume as score
-              rank: keywordIndex + 1 // 1, 2, 3 for tier1, tier2, tier3
-            });
-          }
+          await storage.createExtractedKeyword({
+            jobId: job.id,
+            blogId: blog.id,
+            keyword: keywordDetail.keyword,
+            volume: keywordDetail.volume_total || null,
+            frequency: keywordDetail.frequency || 0,
+            rank: null, // Will be set by SERP check later
+            tier: keywordIndex + 1 // 1, 2, 3 for tier1, tier2, tier3
+          });
         }
         
         await storage.updateSerpJob(jobId, {
@@ -477,12 +516,12 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
             
             if (serpRank) {
               // Update the keyword with SERP ranking
-              const extractedKeywords = await storage.getExtractedKeywords(keyword.postId);
+              const extractedKeywords = await storage.getExtractedKeywords(blog.id);
               const targetKeyword = extractedKeywords.find(k => k.keyword === keyword.keyword);
               
               if (targetKeyword) {
-                // Update in storage (would need to implement updateExtractedKeyword method)
-                // For now, we'll store in the results
+                // TODO: Update keyword rank in storage
+                console.log(`Found SERP rank ${serpRank} for keyword "${keyword.keyword}"`);
               }
             }
             

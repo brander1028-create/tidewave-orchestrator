@@ -80,12 +80,24 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
 
   if (!data) return null;
 
-  const { job, results } = data;
-  const blogsWithKeywords = results.filter(r => r.topKeywords.length > 0);
-  const blogsWithoutKeywords = results.filter(r => r.topKeywords.length === 0);
+  // Handle new API contract format
+  const { blogs = [], keywords = [], posts = [], counters = {}, warnings = [], errors = [] } = data;
+  
+  // Filter hit blogs (blogs with TOP3 keywords that have SERP rank 1-10)
+  const blogsWithKeywords = blogs.map((blog: any) => {
+    const blogKeywords = keywords.find((k: any) => k.blog_id === blog.blog_id)?.top3 || [];
+    const blogPosts = posts.filter((p: any) => p.blog_id === blog.blog_id);
+    return {
+      blog,
+      posts: blogPosts,
+      topKeywords: blogKeywords
+    };
+  });
+  
+  const blogsWithoutKeywords: any[] = []; // In new format, only hit blogs are returned
 
-  // Show collecting state if job is running and no results yet
-  if (isJobRunning && results.length === 0) {
+  // Show collecting state if job is running and no blogs yet
+  if (isJobRunning && blogs.length === 0) {
     return (
       <Card className="shadow-sm">
         <CardContent className="pt-6">
@@ -96,9 +108,9 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
               <p className="text-muted-foreground">
                 실제 네이버 검색 결과에서 블로그들을 분석하고 있습니다. (가짜 데이터 사용 안함)
               </p>
-              {data?.meta && (
+              {counters && (
                 <div className="text-sm text-muted-foreground">
-                  현재까지: {data.meta.discoveredBlogsCount}개 블로그, {data.meta.totalPostsCount}개 포스트 발견
+                  현재까지: {counters.blogs}개 블로그, {counters.posts}개 포스트 발견
                 </div>
               )}
             </div>
@@ -115,12 +127,10 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
           <div>
             <CardTitle>분석 결과</CardTitle>
             <div className="text-sm text-muted-foreground mt-1">
-              총 {results.length}개 블로그 발견 • {blogsWithKeywords.length}개 블로그에서 상위 키워드 노출
-              {data?.meta?.isRealSearch && (
-                <div className="text-xs text-green-600 font-medium mt-1">
-                  ✓ 실제 네이버 검색 결과 사용 (가짜 데이터 없음)
-                </div>
-              )}
+              요청키워드 = {counters.selected_keywords} • 실제 질의 = {counters.searched_keywords} • 히트 블로그 = {counters.hit_blogs}
+            </div>
+            <div className="text-xs text-green-600 font-medium mt-1">
+              ✓ 실제 네이버 검색 결과 사용 (가짜 데이터 없음)
             </div>
           </div>
           <Button 
@@ -134,7 +144,7 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
         </div>
       </CardHeader>
       <CardContent>
-        {results.length === 0 ? (
+        {blogs.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
             <TrendingUp className="w-12 h-12 mx-auto mb-4 opacity-50" />
             <h3 className="text-lg font-medium mb-2">분석 결과가 없습니다</h3>
@@ -152,23 +162,23 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                 <div className="space-y-4">
                   {blogsWithKeywords.map((result, index) => (
                     <div
-                      key={result.blog.id}
+                      key={result.blog.blog_id}
                       className="p-4 border border-border rounded-lg hover:bg-muted/50 transition-colors"
                       data-testid={`blog-result-${index}`}
                     >
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex-1">
                           <h4 className="font-medium text-foreground">
-                            {result.blog.blogName}
+                            {result.blog.blog_id}
                           </h4>
                           <p className="text-sm text-muted-foreground">
-                            "{result.blog.seedKeyword}" 검색 시 {result.blog.rank}위
+                            {result.posts.length}개 포스트 수집
                           </p>
                         </div>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => window.open(result.blog.blogUrl, '_blank')}
+                          onClick={() => window.open(result.blog.blog_url, '_blank')}
                           data-testid={`button-visit-blog-${index}`}
                         >
                           <ExternalLink className="h-4 w-4" />
@@ -189,18 +199,22 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                             
                             return (
                               <Badge
-                                key={keyword.id}
+                                key={keywordIndex}
                                 className={`flex items-center gap-2 ${tierClass} font-medium`}
-                                data-testid={`keyword-${result.blog.id}-${keywordIndex}`}
+                                data-testid={`keyword-${result.blog.blog_id}-${keywordIndex}`}
                               >
                                 <span className="font-bold">TIER{tierNum}</span>
-                                <span>{keyword.keyword}</span>
+                                <span>{keyword.text}</span>
                                 <span className="text-xs font-normal">
-                                  ({keyword.searchVolume ? keyword.searchVolume.toLocaleString() : '0'})
+                                  ({keyword.volume ? keyword.volume.toLocaleString() : '0'})
                                 </span>
-                                {keyword.serpRank && (
+                                {keyword.rank && keyword.rank > 0 ? (
                                   <span className="text-xs font-normal">
-                                    • {keyword.serpRank}위
+                                    • {keyword.rank}위
+                                  </span>
+                                ) : (
+                                  <span className="text-xs font-normal text-muted-foreground">
+                                    • 미노출
                                   </span>
                                 )}
                               </Badge>
@@ -228,14 +242,14 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                 <div className="space-y-2">
                   {blogsWithoutKeywords.map((result, index) => (
                     <div
-                      key={result.blog.id}
+                      key={result.blog.blog_id}
                       className="p-3 border border-border rounded-lg bg-muted/20"
                       data-testid={`blog-no-keywords-${index}`}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex-1">
                           <span className="font-medium text-foreground">
-                            {result.blog.blogName}
+                            {result.blog.blog_id}
                           </span>
                           <span className="text-sm text-muted-foreground ml-2">
                             ("{result.blog.seedKeyword}" {result.blog.rank}위)
@@ -244,7 +258,7 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => window.open(result.blog.blogUrl, '_blank')}
+                          onClick={() => window.open(result.blog.blog_url, '_blank')}
                         >
                           <ExternalLink className="h-4 w-4" />
                         </Button>

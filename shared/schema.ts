@@ -87,3 +87,35 @@ export type AnalyzedPost = typeof analyzedPosts.$inferSelect;
 export type InsertAnalyzedPost = z.infer<typeof insertAnalyzedPostSchema>;
 export type ExtractedKeyword = typeof extractedKeywords.$inferSelect;
 export type InsertExtractedKeyword = z.infer<typeof insertExtractedKeywordSchema>;
+
+// New API contract interface - matches specification document
+export interface SerpResultsData {
+  blogs: {
+    blog_id: string;
+    blog_url: string;
+    gathered_posts: number;
+  }[];
+  keywords: {
+    blog_id: string;
+    top3: {
+      text: string;
+      volume: number;
+      rank: number;
+    }[];
+  }[];
+  posts: {
+    blog_id: string;
+    title: string;
+    content: string;
+    url: string;
+  }[];
+  counters: {
+    blogs: number;
+    posts: number;
+    selected_keywords: number;
+    searched_keywords: number;
+    hit_blogs: number;
+  };
+  warnings: string[];
+  errors: string[];
+}

@@ -26,7 +26,7 @@ export interface IStorage {
   
   // Extracted keyword operations
   createExtractedKeyword(keyword: InsertExtractedKeyword): Promise<ExtractedKeyword>;
-  getExtractedKeywords(postId: string): Promise<ExtractedKeyword[]>;
+  getExtractedKeywords(blogId: string): Promise<ExtractedKeyword[]>;
   getTopKeywordsByBlog(blogId: string): Promise<ExtractedKeyword[]>;
 }
 
@@ -45,6 +45,7 @@ export class MemStorage implements IStorage {
       status: insertJob.status || "pending",
       minRank: insertJob.minRank || 2,
       maxRank: insertJob.maxRank || 15,
+      postsPerBlog: insertJob.postsPerBlog || 10,
       progress: insertJob.progress || 0,
       results: insertJob.results || null,
       currentStep: insertJob.currentStep || null,
@@ -122,39 +123,36 @@ export class MemStorage implements IStorage {
     const keyword: ExtractedKeyword = {
       ...insertKeyword,
       id,
-      searchVolume: insertKeyword.searchVolume || null,
+      volume: insertKeyword.volume || null,
+      frequency: insertKeyword.frequency || 0,
       rank: insertKeyword.rank || null,
-      serpRank: insertKeyword.serpRank || null,
+      tier: insertKeyword.tier || null,
       createdAt: new Date(),
     };
     this.extractedKeywords.set(id, keyword);
     return keyword;
   }
 
-  async getExtractedKeywords(postId: string): Promise<ExtractedKeyword[]> {
+  async getExtractedKeywords(blogId: string): Promise<ExtractedKeyword[]> {
     return Array.from(this.extractedKeywords.values())
-      .filter(keyword => keyword.postId === postId)
-      .sort((a, b) => b.score - a.score);
+      .filter(keyword => keyword.blogId === blogId)
+      .sort((a, b) => (b.volume || 0) - (a.volume || 0) || b.frequency - a.frequency);
   }
 
   async getTopKeywordsByBlog(blogId: string): Promise<ExtractedKeyword[]> {
-    // Get all posts for this blog
-    const posts = await this.getAnalyzedPosts(blogId);
-    const postIds = posts.map(p => p.id);
-    
-    // Get all keywords for these posts
-    const allKeywords = Array.from(this.extractedKeywords.values())
-      .filter(keyword => postIds.includes(keyword.postId))
-      .filter(keyword => keyword.rank && keyword.rank <= 3) // Only top 3 per post
+    // Get all keywords for this blog, ordered by volume then frequency
+    const blogKeywords = Array.from(this.extractedKeywords.values())
+      .filter(keyword => keyword.blogId === blogId)
       .sort((a, b) => {
-        // Sort by search volume first, then by score
-        if (b.searchVolume !== a.searchVolume) {
-          return (b.searchVolume || 0) - (a.searchVolume || 0);
-        }
-        return b.score - a.score;
+        // Sort by volume first (higher is better), then frequency
+        const volumeA = a.volume || 0;
+        const volumeB = b.volume || 0;
+        if (volumeB !== volumeA) return volumeB - volumeA;
+        return b.frequency - a.frequency;
       });
     
-    return allKeywords;
+    // Return top 3 keywords
+    return blogKeywords.slice(0, 3);
   }
 }
 
