@@ -614,66 +614,60 @@ export default function KeywordsPage() {
             </CardContent>
           </Card>
 
-          {/* Keywords Refresh Section */}
+          {/* 간소화된 키워드 가져오기 섹션 (요구사항) */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <RefreshCw className="h-5 w-5" />
-                <span>키워드 새로고침</span>
+                <span>키워드 관리</span>
               </CardTitle>
               <CardDescription>
-                SearchAds API에서 새로운 키워드와 조회량 데이터를 가져옵니다
+                SearchAds API에서 전체 키워드를 가져와 종합점수 기반으로 관리합니다
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">기준 키워드</label>
-                  <Input
-                    placeholder="예: 홍삼"
-                    value={refreshBase}
-                    onChange={(e) => setRefreshBase(e.target.value)}
-                    data-testid="input-refresh-base"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">최대 키워드 수</label>
-                  <Input
-                    type="number"
-                    min="50"
-                    max="1000"
-                    value={refreshLimit}
-                    onChange={(e) => setRefreshLimit(Number(e.target.value))}
-                    data-testid="input-refresh-limit"
-                  />
-                </div>
-                <div className="flex items-end">
-                  <Button
-                    onClick={handleRefresh}
-                    disabled={refreshMutation.isPending || !((health as HealthResponse)?.openapi?.ok && (health as HealthResponse)?.searchads?.ok && (health as HealthResponse)?.keywordsdb?.ok)}
-                    className="w-full"
-                    data-testid="button-refresh-keywords"
-                  >
-                    {refreshMutation.isPending ? (
-                      <>
-                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                        새로고침 중...
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="mr-2 h-4 w-4" />
-                        새로고침
-                      </>
-                    )}
-                  </Button>
-                </div>
+              <div className="flex justify-center">
+                <Button
+                  onClick={() => {
+                    const healthData = health as HealthResponse;
+                    const isSystemHealthy = healthData?.openapi?.ok && 
+                                           healthData?.searchads?.ok && 
+                                           healthData?.keywordsdb?.ok;
+                    
+                    if (!isSystemHealthy) {
+                      toast({
+                        title: "시스템 상태 불량", 
+                        description: "모든 서비스가 정상이어야 키워드를 가져올 수 있습니다",
+                        variant: "destructive",
+                      });
+                      return;
+                    }
+                    
+                    refreshAllMutation.mutate();
+                  }}
+                  disabled={refreshAllMutation.isPending || !((health as HealthResponse)?.openapi?.ok && (health as HealthResponse)?.searchads?.ok && (health as HealthResponse)?.keywordsdb?.ok)}
+                  className="px-8 py-2"
+                  data-testid="kw-refresh-all"
+                >
+                  {refreshAllMutation.isPending ? (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                      전체 키워드 가져오는 중...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="mr-2 h-4 w-4" />
+                      전체 키워드 가져오기
+                    </>
+                  )}
+                </Button>
               </div>
 
-              {refreshMutation.isError && (
+              {refreshAllMutation.isError && (
                 <Alert variant="destructive">
                   <AlertTriangle className="h-4 w-4" />
                   <AlertDescription>
-                    키워드 새로고침에 실패했습니다. 시스템 상태를 확인해주세요.
+                    전체 키워드 가져오기에 실패했습니다. 시스템 상태를 확인해주세요.
                   </AlertDescription>
                 </Alert>
               )}
@@ -682,7 +676,7 @@ export default function KeywordsPage() {
                 <div className="rounded-lg border bg-card p-4 space-y-3">
                   <h4 className="font-medium text-sm flex items-center space-x-2">
                     <CheckCircle className="h-4 w-4 text-green-600" />
-                    <span>마지막 새로고침 결과</span>
+                    <span>마지막 가져오기 결과</span>
                   </h4>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div className="space-y-1">
@@ -703,7 +697,7 @@ export default function KeywordsPage() {
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <div className="text-muted-foreground">HTTP 상태</div>
+                      <div className="text-muted-foreground">API 응답</div>
                       <div className="text-xs">
                         {Object.entries(lastRefreshStats.stats.http).map(([code, count]) => (
                           <div key={code} className="font-mono">{code}: {count}</div>
