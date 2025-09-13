@@ -123,14 +123,17 @@ export type InsertManagedKeyword = z.infer<typeof insertManagedKeywordSchema>;
 export interface SerpResultsData {
   blogs: {
     blog_id: string;
+    blog_name: string; // Added for UI display
     blog_url: string;
+    base_rank?: number; // Added for rank badge display
     gathered_posts: number;
   }[];
   keywords: {
     blog_id: string;
     top3: {
       text: string;
-      volume: number;
+      volume: number; // For ranking weight calculation
+      raw_volume: number; // For display purposes (0 allowed)
       rank: number;
     }[];
   }[];
@@ -141,12 +144,33 @@ export interface SerpResultsData {
     url: string;
   }[];
   counters: {
-    blogs: number;
+    discovered_blogs: number; // Total blogs found during discovery
+    blogs: number; // Existing field (total blogs analyzed)
     posts: number;
     selected_keywords: number;
     searched_keywords: number;
-    hit_blogs: number;
+    hit_blogs: number; // Blogs with rank 1-10
+    volumes_mode: string; // "searchads", "partial", "fallback"
   };
   warnings: string[];
   errors: string[];
+}
+
+// History item for job listing
+export interface HistoryItem {
+  jobId: string;
+  createdAt: string; // ISO date string
+  baseKeyword: string; // First keyword from job
+  counters: {
+    discovered_blogs: number;
+    hit_blogs: number;
+    selected_keywords: number;
+    searched_keywords: number;
+    volumes_mode: string;
+  };
+}
+
+// History response
+export interface HistoryResponse {
+  items: HistoryItem[];
 }
