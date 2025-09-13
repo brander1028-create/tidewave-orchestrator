@@ -15,6 +15,7 @@ export interface IStorage {
   createSerpJob(job: InsertSerpJob): Promise<SerpJob>;
   getSerpJob(id: string): Promise<SerpJob | undefined>;
   updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<SerpJob | undefined>;
+  listSerpJobs(limit?: number): Promise<SerpJob[]>; // Added for history
   
   // Discovered blog operations
   createDiscoveredBlog(blog: InsertDiscoveredBlog): Promise<DiscoveredBlog>;
@@ -78,6 +79,12 @@ export class MemStorage implements IStorage {
       return updatedJob;
     }
     return undefined;
+  }
+
+  async listSerpJobs(limit: number = 50): Promise<SerpJob[]> {
+    return Array.from(this.serpJobs.values())
+      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0))
+      .slice(0, limit);
   }
 
   // Discovered blog operations
