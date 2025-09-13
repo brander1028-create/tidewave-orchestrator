@@ -16,15 +16,32 @@ interface BlogResult {
 }
 
 interface SerpResultsData {
-  job: SerpJob;
-  results: BlogResult[];
-  meta?: {
-    isComplete: boolean;
-    discoveredBlogsCount: number;
-    totalPostsCount: number;
-    totalKeywordsCount: number;
-    isRealSearch: boolean;
+  blogs: Array<{
+    blog_id: string;
+    blog_url: string;
+    gathered_posts: number;
+    base_rank?: number;
+  }>;
+  keywords: Array<{
+    blog_id: string;
+    top3: ExtractedKeyword[];
+  }>;
+  posts: Array<{
+    blog_id: string;
+    url: string;
+    title: string;
+    published_at?: string;
+  }>;
+  counters: {
+    blogs: number;
+    posts: number;
+    selected_keywords: number;
+    searched_keywords: number;
+    hit_blogs: number;
+    volumes_mode?: string;
   };
+  warnings: string[];
+  errors: string[];
 }
 
 export default function SerpResults({ jobId }: SerpResultsProps) {
@@ -80,8 +97,22 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
 
   if (!data) return null;
 
-  // Handle new API contract format
-  const { blogs = [], keywords = [], posts = [], counters = {}, warnings = [], errors = [] } = data;
+  // Handle new API contract format with proper defaults
+  const { 
+    blogs = [], 
+    keywords = [], 
+    posts = [], 
+    counters = {
+      blogs: 0,
+      posts: 0,
+      selected_keywords: 0,
+      searched_keywords: 0,
+      hit_blogs: 0,
+      volumes_mode: 'fallback'
+    }, 
+    warnings = [], 
+    errors = [] 
+  } = data;
   
   // Filter hit blogs (blogs with TOP3 keywords that have SERP rank 1-10)
   const blogsWithKeywords = blogs.map((blog: any) => {
@@ -129,8 +160,19 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
             <div className="text-sm text-muted-foreground mt-1">
               요청키워드 = {counters.selected_keywords} • 실제 질의 = {counters.searched_keywords} • 히트 블로그 = {counters.hit_blogs}
             </div>
-            <div className="text-xs text-green-600 font-medium mt-1">
-              ✓ 실제 네이버 검색 결과 사용 (가짜 데이터 없음)
+            <div className="flex gap-2 mt-1">
+              <div className="text-xs text-green-600 font-medium">
+                ✓ 실제 네이버 검색 결과 사용 (가짜 데이터 없음)
+              </div>
+              {counters.volumes_mode && (
+                <Badge 
+                  variant={counters.volumes_mode === 'searchads' ? 'default' : 'secondary'}
+                  className="text-xs"
+                  data-testid={`badge-volumes-mode-${counters.volumes_mode}`}
+                >
+                  {counters.volumes_mode === 'searchads' ? '🔍 SearchAd API' : '📊 빈도기반'}
+                </Badge>
+              )}
             </div>
           </div>
           <Button 
@@ -164,13 +206,24 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                     <div
                       key={result.blog.blog_id}
                       className="p-4 border border-border rounded-lg hover:bg-muted/50 transition-colors"
-                      data-testid={`blog-result-${index}`}
+                      data-testid={`card-blog-${result.blog.blog_id}`}
                     >
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex-1">
-                          <h4 className="font-medium text-foreground">
-                            {result.blog.blog_id}
-                          </h4>
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-medium text-foreground">
+                              {result.blog.blog_id}
+                            </h4>
+                            {result.blog.base_rank && (
+                              <Badge 
+                                variant="outline" 
+                                className="text-xs bg-blue-50 text-blue-700 border-blue-200"
+                                data-testid={`badge-base-rank-${result.blog.base_rank}`}
+                              >
+                                지정키워드 {result.blog.base_rank}위
+                              </Badge>
+                            )}
+                          </div>
                           <p className="text-sm text-muted-foreground">
                             {result.posts.length}개 포스트 수집
                           </p>
@@ -204,7 +257,7 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                                 data-testid={`keyword-${result.blog.blog_id}-${keywordIndex}`}
                               >
                                 <span className="font-bold">TIER{tierNum}</span>
-                                <span>{keyword.text}</span>
+                                <span>{keyword.keyword}</span>
                                 <span className="text-xs font-normal">
                                   ({keyword.volume ? keyword.volume.toLocaleString() : '0'})
                                 </span>
