@@ -12,12 +12,21 @@ function sign(ts: string, method: 'GET'|'POST', path: string, secret: string) {
 }
 
 export async function getVolumes(rawKeywords: string[]): Promise<Record<string, Vol>> {
-  const API_KEY = process.env.SEARCHAD_API_KEY!;
+  let API_KEY = process.env.SEARCHAD_API_KEY!;
   const SECRET = process.env.SEARCHAD_SECRET_KEY!;
   const CUSTOMER = process.env.SEARCHAD_CUSTOMER_ID!;
 
+  // Clean up API key if it has Korean text prefix
+  if (API_KEY && API_KEY.includes('엑세스라이선스')) {
+    API_KEY = API_KEY.replace(/^.*엑세스라이선스/, '').trim();
+    console.log(`🧹 Cleaned API key from Korean prefix, length: ${API_KEY.length}`);
+  }
+
   if (!API_KEY || !SECRET || !CUSTOMER) {
     console.log(`🔑 SearchAd API credentials not found, returning empty volumes`);
+    console.log(`   - API_KEY: ${API_KEY ? 'present' : 'missing'} (length: ${API_KEY?.length || 0})`);
+    console.log(`   - SECRET: ${SECRET ? 'present' : 'missing'} (length: ${SECRET?.length || 0})`);
+    console.log(`   - CUSTOMER: ${CUSTOMER ? 'present' : 'missing'} (value: ${CUSTOMER})`);
     return {};
   }
 
