@@ -136,14 +136,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const posts = await storage.getAnalyzedPosts(blog.id);
         const top3Keywords = await storage.getTopKeywordsByBlog(blog.id); // Get TOP3
         
-        // Check if any of TOP3 keywords has rank 1-10
-        const hasHit = top3Keywords.some(kw => kw.rank && kw.rank >= 1 && kw.rank <= 10);
+        // Check if base keyword rank is 1-10 (지정 키워드 기준)
+        const hasHit = blog.baseRank && blog.baseRank >= 1 && blog.baseRank <= 10;
         
         if (hasHit) {
           hitBlogs.push({
             blog_id: blog.blogId,
             blog_url: blog.blogUrl,
-            gathered_posts: posts.length
+            gathered_posts: posts.length,
+            base_rank: blog.baseRank
           });
           
           // Add keywords for this blog
@@ -403,7 +404,13 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         
         console.log(`Analyzing posts for blog: ${blog.blogName} (${index + 1}/${discoveredBlogs.length})`);
         
-        // Scrape recent posts using HTTP + RSS approach
+        // Step 2.1: Check base keyword rank (지정 키워드 랭크)
+        const baseKeyword = keywords[0]; // Use first keyword as base keyword
+        console.log(`   🎯 Checking base keyword "${baseKeyword}" rank for blog: ${blog.blogName}`);
+        const baseRank = await serpScraper.checkKeywordRankingInMobileNaver(baseKeyword, blog.blogUrl);
+        console.log(`   📊 Base keyword "${baseKeyword}" rank: ${baseRank || 'NA'} for ${blog.blogName}`);
+        
+        // Step 2.2: Scrape recent posts using HTTP + RSS approach
         const scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
         console.log(`   📄 Posts collected from ${blog.blogName}: ${scrapedPosts.length} posts`);
         
@@ -417,14 +424,14 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
           });
         }
 
-        // Extract top 3 keywords by search volume (with frequency fallback)
+        // Step 2.3: Extract top 3 keywords by search volume (with frequency fallback)
         const titles = scrapedPosts.map(post => post.title);
         console.log(`   🔤 Extracting volume-based keywords from ${titles.length} titles for ${blog.blogName}`);
         const { top3, detail } = await extractTop3ByVolume(titles);
         
         console.log(`   🏆 Top 3 keywords for ${blog.blogName}: ${detail.map((d: any) => `${d.tier.toUpperCase()}: ${d.keyword} (${d.volume_total})`).join(', ')}`);
         
-        // Save top keywords with volume data
+        // Save top keywords with volume data + base_rank
         for (const [keywordIndex, keywordDetail] of Array.from((detail as any[]).entries())) {
           await storage.createExtractedKeyword({
             jobId: job.id,
@@ -432,10 +439,13 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
             keyword: keywordDetail.keyword,
             volume: keywordDetail.volume_total || null,
             frequency: keywordDetail.frequency || 0,
-            rank: null, // Will be set by SERP check later
+            rank: null, // Will be set by SERP check later for TOP3 keywords
             tier: keywordIndex + 1 // 1, 2, 3 for tier1, tier2, tier3
           });
         }
+        
+        // Step 2.4: Store base_rank in blog record
+        await storage.updateDiscoveredBlog(blog.id, { baseRank: baseRank });
         
         await storage.updateSerpJob(jobId, {
           progress: Math.min(35 + ((index + 1) * (30 / discoveredBlogs.length)), 65)

@@ -19,6 +19,7 @@ export interface IStorage {
   // Discovered blog operations
   createDiscoveredBlog(blog: InsertDiscoveredBlog): Promise<DiscoveredBlog>;
   getDiscoveredBlogs(jobId: string): Promise<DiscoveredBlog[]>;
+  updateDiscoveredBlog(id: string, updates: Partial<DiscoveredBlog>): Promise<DiscoveredBlog | undefined>;
   
   // Analyzed post operations
   createAnalyzedPost(post: InsertAnalyzedPost): Promise<AnalyzedPost>;
@@ -85,6 +86,7 @@ export class MemStorage implements IStorage {
     const blog: DiscoveredBlog = {
       ...insertBlog,
       id,
+      baseRank: insertBlog.baseRank || null,
       postsAnalyzed: insertBlog.postsAnalyzed || 0,
       createdAt: new Date(),
     };
@@ -96,6 +98,16 @@ export class MemStorage implements IStorage {
     return Array.from(this.discoveredBlogs.values())
       .filter(blog => blog.jobId === jobId)
       .sort((a, b) => a.rank - b.rank);
+  }
+
+  async updateDiscoveredBlog(id: string, updates: Partial<DiscoveredBlog>): Promise<DiscoveredBlog | undefined> {
+    const blog = this.discoveredBlogs.get(id);
+    if (blog) {
+      const updatedBlog = { ...blog, ...updates };
+      this.discoveredBlogs.set(id, updatedBlog);
+      return updatedBlog;
+    }
+    return undefined;
   }
 
   // Analyzed post operations

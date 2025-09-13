@@ -1,0 +1,92 @@
+카드 노출 조건을 “지정 키워드 랭크”로 변경
+서버에서 블로그마다 base_rank(= 지정 키워드 “홍삼스틱”의 랭크) 계산·반환 → 1..10만 카드로 표시.
+파생 TOP3 키워드는 카드 안에서만 보여주고, 미노출은 rank=0으로.
+
+// server/services/jobs.ts (핵심 부분)
+for (const b of targets) {
+  const posts = await listRecentPosts(b);
+  const t3 = extractTop3(posts.map(p => p.title), volumes); // 아래 2) 참고
+  const baseRank = await serpRankOne(baseKeyword, b.id);     // ← 지정 키워드 랭크
+  job.blogs.push({ blog_id: b.id, blog_url: b.url, gathered_posts: posts.length, base_rank: baseRank });
+
+  // TOP3 각각의 rank(파생 키워드 기준)도 계산
+  const t3WithRank = await rankEach(t3, b.id);  // [{text, volume, rank}]
+  job.keywords.push({ blog_id: b.id, top3: t3WithRank });
+}
+
+// 최종 필터: 지정 키워드(base_rank) 히트 블로그만
+job.blogs = job.blogs.filter(b => b.base_rank && b.base_rank >= 1 && b.base_rank <= 10);
+job.keywords = job.keywords.filter(k => job.blogs.some(b => b.blog_id === k.blog_id));
+
+
+프론트는 카드 헤더에 base_rank 배지(예: “홍삼스틱 2위”)를 붙이고, 칩은 text(volume) + rank(0이면 “미노출”)로 그대로 표시.
+
+조회량: 검색광고 API 강제 사용 + 모드 노출
+현재 전부 0이면 Fallback일 가능성 ↑. 검색광고 API는 OpenAPI와 키가 다릅니다(예: X-API-KEY, X-Customer, X-Signature, X-Timestamp).
+
+참고: 보여주신 tlSF… / r7UC… 형태는 **오픈API(Client ID/Secret)**로 보입니다. 검색광고 API 키/고객ID/서명키가 별도로 필요합니다.
+
+환경변수 예:
+NAVER_SEARCHAD_API_KEY, NAVER_SEARCHAD_CUSTOMER_ID, NAVER_SEARCHAD_API_SECRET
+
+서버 카운터에 volumes_mode 추가: "searchads" or "fallback" (샘플 3개 키워드와 값도 로그에 찍기).
+
+임계: 월간조회수 ≤1000 ⇒ 0으로 치환(표시는 하되 랭킹 가중치는 0).
+
+// volumes.ts 요지
+export async function getVolumes(keywords: string[]): Promise<Record<string, number>> {
+  if (!hasSearchAdsKeys()) return Object.fromEntries(keywords.map(k=>[k,0]));
+  // … Search Ads API 호출 (pc+mobile 합, 429/401 재시도)
+}
+
+
+카운터 정확화 & 노출 기준 정리
+
+selected_keywords = (발견된 블로그 수) × 3
+
+searched_keywords = 중복 제거 후 실제 질의 수 ← 이미 수정하셨다 했으니 유지
+
+hit_blogs = base_rank ∈ 1..10 블로그 수 ← 지정 키워드 기준으로 변경
+
+응답(JSON)엔 blogs[].base_rank를 포함하고, blogs 배열엔 히트 블로그만 남김.
+
+응답 예:
+
+{
+  "blogs":[{"blog_id":"riche1862","blog_url":"...","gathered_posts":9,"base_rank":2}],
+  "keywords":[{"blog_id":"riche1862","top3":[
+    {"text":"홍삼스틱","volume":12345,"rank":2},
+    {"text":"간 부담","volume":0,"rank":0},
+    {"text":"도움되는 선택","volume":0,"rank":0}
+  ]}],
+  "posts":[...],
+  "counters":{"blogs":10,"posts":37,"selected_keywords":30,"searched_keywords":18,"hit_blogs":4,"volumes_mode":"searchads"},
+  "warnings":[], "errors":[]
+}
+
+
+UI 자잘한 것 정리
+
+슬라이더 범위: 요청이 2–6이라면 컴포넌트에 min=2 max=6 step=1. 이 슬라이더는 표시 컷오프(예: 카드에서 rank≤N만 표시) 로만 쓰고, 서버 필터는 base_rank≤10을 유지하면 혼선 없음.
+
+data-testid 추가:
+
+data-testid="rank-cutoff-slider"
+
+data-testid="counter-requested"|"counter-searched"|"counter-hits"
+
+data-testid="blog-card-<blog_id>"
+
+data-testid="chip-<blog_id>-<kw>"
+
+빠른 자가 점검 (10초 체크)
+
+결과 JSON에서 counters.volumes_mode가 searchads인가? (아니면 키 누락)
+
+blogs[0].base_rank가 숫자로 오나? (없으면 필터 로직 안탐)
+
+화면 상단 요약에 요청 30 · 실제 N · 히트 M이 뜨나?
+
+카드가 지정 키워드 기준으로만 나타나나? (파생 키워드 히트는 카드 표시 여부에 영향 없음)
+
+이 4가지만 맞으면 API는 인식된 것이고, 이제부터는 “내가 원하는 규칙”대로 동작합니다.
