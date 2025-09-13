@@ -81,13 +81,31 @@ export default function KeywordsPage() {
 
   // Fetch active keywords
   const { data: activeKeywords, isLoading: activeLoading, error: activeError } = useQuery({
-    queryKey: ['/api/keywords', { excluded: false, orderBy, dir: orderDir }],
+    queryKey: ['/api/keywords', 'excluded', false, 'orderBy', orderBy, 'dir', orderDir],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        excluded: 'false',
+        orderBy,
+        dir: orderDir
+      });
+      const response = await fetch(`/api/keywords?${params}`);
+      if (!response.ok) throw new Error('Failed to fetch active keywords');
+      return response.json();
+    },
     enabled: activeTab === "manage",
   });
 
   // Fetch excluded keywords  
   const { data: excludedKeywords, isLoading: excludedLoading } = useQuery({
-    queryKey: ['/api/keywords', { excluded: true }],
+    queryKey: ['/api/keywords', 'excluded', true],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        excluded: 'true'
+      });
+      const response = await fetch(`/api/keywords?${params}`);
+      if (!response.ok) throw new Error('Failed to fetch excluded keywords');
+      return response.json();
+    },
     enabled: activeTab === "excluded",
   });
 

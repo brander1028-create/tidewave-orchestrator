@@ -2,33 +2,39 @@ import { db } from '../db';
 import { managedKeywords } from '../../shared/schema';
 import { eq, sql, desc, asc } from 'drizzle-orm';
 import type { ManagedKeyword, InsertManagedKeyword } from '../../shared/schema';
-import type { SearchAdResponse } from '../types';
-import { getVolumes } from '../services/searchad';
+import { getVolumes, type SearchAdResult } from '../services/searchad';
+
+/**
+ * Convert compIdx string to numeric score (0-100)
+ */
+export function compIdxToScore(idx?: string | null): number {
+  if (!idx) return 60; // default medium
+  const normalized = idx.toLowerCase();
+  if (normalized.includes('낮음') || normalized.includes('low') || normalized === '0') return 100;
+  if (normalized.includes('높음') || normalized.includes('high') || normalized === '2') return 20;
+  return 60; // medium/중간/1
+}
+
+/**
+ * Calculate overall score (0-100) based on 5 metrics
+ * Formula: volume_norm(35%) + comp_score(35%) + depth_norm(20%) + cpc_norm(10%)
+ */
+export function calculateOverallScore(raw_volume: number, comp_score: number, ad_depth: number, est_cpc: number): number {
+  const volumeNorm = Math.min(100, Math.round(raw_volume / 1000));
+  const depthNorm = ad_depth <= 0 ? 100 : Math.max(0, 100 - Math.round(ad_depth * 10));
+  const cpcNorm = est_cpc <= 0 ? 50 : Math.max(0, 100 - Math.round(est_cpc / 20));
+  
+  return Math.round(volumeNorm * 0.35 + comp_score * 0.35 + depthNorm * 0.20 + cpcNorm * 0.10);
+}
 
 /**
  * Ping Keywords DB to test connection
+ * Note: Table creation is handled by Drizzle schema and migrations
  */
 export async function pingKeywordsDB(): Promise<void> {
   await db.execute(sql`SELECT 1`);
   
-  // Ensure the managed_keywords table exists
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS managed_keywords (
-      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-      text TEXT NOT NULL UNIQUE,
-      raw_volume INTEGER NOT NULL DEFAULT 0,
-      volume INTEGER NOT NULL DEFAULT 0,
-      grade TEXT NOT NULL DEFAULT 'C',
-      commerciality INTEGER NOT NULL DEFAULT 0,
-      difficulty INTEGER NOT NULL DEFAULT 0,
-      excluded BOOLEAN NOT NULL DEFAULT false,
-      source TEXT NOT NULL DEFAULT 'searchads',
-      updated_at TIMESTAMP DEFAULT NOW(),
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-  
-  // Create index for performance
+  // Create index for performance if not exists
   await db.execute(sql`
     CREATE INDEX IF NOT EXISTS idx_managed_keywords_excluded_volume 
     ON managed_keywords (excluded, raw_volume DESC)
@@ -62,6 +68,14 @@ export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Pro
           commerciality: keyword.commerciality || 0,
           difficulty: keyword.difficulty || 0,
           source: keyword.source || 'searchads',
+          // 5개 지표 필드 추가
+          comp_idx: keyword.comp_idx || null,
+          comp_score: keyword.comp_score || 0,
+          ad_depth: keyword.ad_depth || 0,
+          has_ads: keyword.has_ads || false,
+          est_cpc_krw: keyword.est_cpc_krw || null,
+          est_cpc_source: keyword.est_cpc_source || 'unknown',
+          score: keyword.score || 0,
         })
         .onConflictDoUpdate({
           target: managedKeywords.text,
@@ -71,6 +85,14 @@ export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Pro
             grade: keyword.grade || 'C',
             commerciality: keyword.commerciality || 0,
             difficulty: keyword.difficulty || 0,
+            // 5개 지표 필드 업데이트
+            comp_idx: keyword.comp_idx || null,
+            comp_score: keyword.comp_score || 0,
+            ad_depth: keyword.ad_depth || 0,
+            has_ads: keyword.has_ads || false,
+            est_cpc_krw: keyword.est_cpc_krw || null,
+            est_cpc_source: keyword.est_cpc_source || 'unknown',
+            score: keyword.score || 0,
             updated_at: sql`NOW()`,
           }
         });
@@ -182,7 +204,7 @@ export async function upsertKeywordsFromSearchAds(
   
   // Get related keywords from SearchAds API using base keyword
   const relatedKeywords = await generateRelatedKeywords(baseKeyword, limit);
-  const result = await getVolumes(relatedKeywords) as SearchAdResponse;
+  const result = await getVolumes(relatedKeywords);
   
   // Process and grade the keywords
   const keywordsToUpsert: Partial<InsertManagedKeyword>[] = [];
@@ -200,6 +222,31 @@ export async function upsertKeywordsFromSearchAds(
     const commerciality = Math.min(100, Math.round((raw_volume / 1000) * 10));
     const difficulty = Math.min(100, Math.round((raw_volume / 500) * 8));
     
+    // 5개 지표 처리
+    const comp_idx = volumeData.compIdx || null;
+    const comp_score = compIdxToScore(comp_idx);
+    const ad_depth = volumeData.plAvgDepth || 0;
+    const has_ads = ad_depth > 0;
+    
+    // CPC 추정 (PC와 Mobile 평균)
+    let est_cpc_krw: number | null = null;
+    let est_cpc_source = 'unknown';
+    
+    if (volumeData.avePcCpc && volumeData.avePcCpc > 0) {
+      est_cpc_krw = Math.round(volumeData.avePcCpc);
+      est_cpc_source = 'account';
+    } else if (volumeData.aveMobileCpc && volumeData.aveMobileCpc > 0) {
+      est_cpc_krw = Math.round(volumeData.aveMobileCpc);
+      est_cpc_source = 'account';
+    } else {
+      // Fallback 추정
+      est_cpc_krw = Math.max(100, Math.round(raw_volume / 1000 * 150));
+      est_cpc_source = 'estimated';
+    }
+    
+    // 종합점수 계산 (0-100)
+    const score = calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
+    
     keywordsToUpsert.push({
       text,
       raw_volume,
@@ -207,7 +254,15 @@ export async function upsertKeywordsFromSearchAds(
       grade,
       commerciality,
       difficulty,
-      source: 'searchads'
+      source: 'searchads',
+      // 5개 지표
+      comp_idx,
+      comp_score,
+      ad_depth,
+      has_ads,
+      est_cpc_krw,
+      est_cpc_source,
+      score
     });
   }
   

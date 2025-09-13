@@ -8,7 +8,7 @@ import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 // Health Gate + Keywords Management imports
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
-import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany } from './store/keywords';
+import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore } from './store/keywords';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
@@ -724,6 +724,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         commerciality: number;
         difficulty: number;
         source: string;
+        // 5개 지표 필드 추가
+        comp_idx?: string | null;
+        comp_score: number;
+        ad_depth: number;
+        has_ads: boolean;
+        est_cpc_krw?: number | null;
+        est_cpc_source: string;
+        score: number;
       }> = [];
 
       const keywordsToUpdateExcluded: Array<{ id: string; excluded: boolean }> = [];
@@ -737,6 +745,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const excluded = row.excluded === 'true' || row.excluded === true;
         const commerciality = parseInt(row.commerciality) || Math.min(100, Math.round((rawVolume / 1000) * 10));
         const difficulty = parseInt(row.difficulty) || Math.min(100, Math.round((rawVolume / 500) * 8));
+
+        // 5개 지표 필드 파싱
+        const comp_idx = row.comp_idx || row.compIdx || null;
+        const comp_score = parseInt(row.comp_score || row.compScore) || compIdxToScore(comp_idx);
+        const ad_depth = parseFloat(row.ad_depth || row.adDepth) || 0;
+        const has_ads = (row.has_ads || row.hasAds) === 'true' || (row.has_ads || row.hasAds) === true || ad_depth > 0;
+        const est_cpc_krw = parseInt(row.est_cpc_krw || row.estCpcKrw) || null;
+        const est_cpc_source = row.est_cpc_source || row.estCpcSource || (est_cpc_krw ? 'csv' : 'unknown');
+        const score = parseInt(row.score) || calculateOverallScore(rawVolume, comp_score, ad_depth, est_cpc_krw || 0);
 
         if (!text) {
           warnings.push(`Skipping row with empty text: ${JSON.stringify(row)}`);
@@ -760,7 +777,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
               grade,
               commerciality,
               difficulty,
-              source: 'csv_import'
+              source: 'csv_import',
+              // 5개 지표 필드
+              comp_idx,
+              comp_score,
+              ad_depth,
+              has_ads,
+              est_cpc_krw,
+              est_cpc_source,
+              score
             });
             inserted++;
           }

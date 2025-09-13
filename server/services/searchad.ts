@@ -4,21 +4,30 @@ import fetch from 'node-fetch';
 const BASE = 'https://api.naver.com';
 const PATH = '/keywordstool';
 
-type Vol = { pc: number; mobile: number; total: number; compIdx?: string };
+export type Vol = { 
+  pc: number; 
+  mobile: number; 
+  total: number; 
+  compIdx?: string;
+  plAvgDepth?: number;
+  plClickRate?: number;
+  avePcCpc?: number;
+  aveMobileCpc?: number;
+};
 
 function sign(ts: string, method: 'GET'|'POST', path: string, secret: string) {
   // Naver SearchAd: signature = HMAC-SHA256( `${ts}.${method}.${path}` )
   return crypto.createHmac('sha256', secret).update(`${ts}.${method}.${path}`).digest('base64');
 }
 
-type SearchAdStats = {
+export type SearchAdStats = {
   requested: number;
   ok: number;
   fail: number;
   http: Record<number, number>;
 };
 
-type SearchAdResult = {
+export type SearchAdResult = {
   volumes: Record<string, Vol>;
   mode: 'fallback' | 'partial' | 'searchads';
   stats: SearchAdStats;
@@ -118,7 +127,16 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
         const pc = Number(row.monthlyPcQcCnt ?? 0);
         const mobile = Number(row.monthlyMobileQcCnt ?? 0);
         if (!key) continue;
-        out[key] = { pc, mobile, total: pc + mobile, compIdx: row.compIdx };
+        out[key] = { 
+          pc, 
+          mobile, 
+          total: pc + mobile, 
+          compIdx: row.compIdx,
+          plAvgDepth: Number(row.plAvgDepth ?? 0),
+          plClickRate: Number(row.plClickRate ?? 0),
+          avePcCpc: Number(row.avePcCpc ?? 0),
+          aveMobileCpc: Number(row.aveMobileCpc ?? 0)
+        };
       }
     } catch (error) {
       console.error(`❌ SearchAd API error for chunk ${chunk.join(',')}:`, error);
