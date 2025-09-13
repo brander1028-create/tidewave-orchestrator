@@ -14,7 +14,7 @@ import { Separator } from "@/components/ui/separator";
 import { RefreshCw, Search, AlertTriangle, CheckCircle, Filter, TrendingUp, Database, ArrowLeft } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import HealthStatus from "@/components/health-status";
+import { Navigation } from "@/components/navigation";
 
 // Types for keywords API
 type ManagedKeyword = {
@@ -269,26 +269,7 @@ export default function KeywordsPage() {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-card border-b border-border sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center space-x-3">
-              <Link href="/">
-                <Button variant="ghost" size="sm" data-testid="link-dashboard">
-                  <ArrowLeft className="mr-2 h-4 w-4" />
-                  대시보드
-                </Button>
-              </Link>
-              <div className="h-6 w-px bg-border" />
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <Database className="text-primary-foreground h-4 w-4" />
-              </div>
-              <h1 className="text-xl font-bold text-foreground">키워드 관리</h1>
-            </div>
-            <HealthStatus />
-          </div>
-        </div>
-      </header>
+      <Navigation />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="space-y-6">
