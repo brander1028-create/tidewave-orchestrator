@@ -8,6 +8,7 @@ import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 // Health Gate + Keywords Management imports
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
+import { getVolumes } from './services/searchad';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore } from './store/keywords';
 // BFS Crawler imports
 import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler } from './services/bfs-crawler.js';
@@ -584,7 +585,100 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // BFS Keyword Crawl - Start massive crawl with 2000 seeds
+  // Expand Keywords - Add related keywords from seeds (single operation)
+  app.post('/api/keywords/expand', async (req, res) => {
+    try {
+      const { seeds, minVolume = 1000, hasAdsOnly = true, chunkSize = 10 } = req.body;
+      
+      if (!seeds || !Array.isArray(seeds) || seeds.length === 0) {
+        return res.status(400).json({ error: 'Seeds array is required' });
+      }
+
+      console.log(`🌱 Expanding keywords from ${seeds.length} seeds: ${seeds.slice(0, 3).join(', ')}...`);
+      console.log(`⚙️ Config: minVolume=${minVolume}, hasAdsOnly=${hasAdsOnly}, chunkSize=${chunkSize}`);
+
+      // Get volumes for all seeds
+      const volumeResult = await getVolumes(seeds);
+      const volumes = volumeResult.volumes;
+      
+      console.log(`📊 Got volumes for ${Object.keys(volumes).length}/${seeds.length} seeds`);
+
+      // Process and save keywords
+      const keywordsToUpsert: any[] = [];
+      let inserted = 0;
+      let updated = 0;
+      let duplicates = 0;
+
+      for (const [text, volumeData] of Object.entries(volumes)) {
+        const rawVolume = volumeData.total || 0;
+        const hasAds = (volumeData.plAvgDepth || 0) > 0;
+        
+        // Apply filters
+        if (rawVolume < minVolume) {
+          console.log(`⏭️ "${text}" volume ${rawVolume} < ${minVolume} - skipping`);
+          continue;
+        }
+        
+        if (hasAdsOnly && !hasAds) {
+          console.log(`⏭️ "${text}" has no ads - skipping`);
+          continue;
+        }
+
+        // Calculate score
+        const overallScore = calculateOverallScore(
+          rawVolume,
+          compIdxToScore(volumeData.compIdx || '중간'),
+          volumeData.plAvgDepth || 0,
+          volumeData.avePcCpc || 0
+        );
+
+        // Check if keyword already exists
+        const existingKeyword = await findKeywordByText(text);
+        
+        const keywordData = {
+          text,
+          raw_volume: rawVolume,
+          comp_idx: volumeData.compIdx || '중간',
+          ad_depth: volumeData.plAvgDepth || 0,
+          est_cpc_krw: volumeData.avePcCpc || 0,
+          score: overallScore,
+          excluded: false
+        };
+
+        keywordsToUpsert.push(keywordData);
+        
+        if (existingKeyword) {
+          updated++;
+          console.log(`🔄 Updated "${text}" (Vol: ${rawVolume.toLocaleString()}, Score: ${overallScore})`);
+        } else {
+          inserted++;
+          console.log(`✅ Added "${text}" (Vol: ${rawVolume.toLocaleString()}, Score: ${overallScore})`);
+        }
+      }
+
+      // Save all keywords
+      const savedCount = await upsertMany(keywordsToUpsert);
+      
+      console.log(`📝 Expand operation completed: ${inserted} new, ${updated} updated`);
+
+      res.json({
+        inserted,
+        updated,
+        duplicates,
+        stats: {
+          requested: seeds.length,
+          ok: Object.keys(volumes).length,
+          fail: seeds.length - Object.keys(volumes).length
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Failed to expand keywords:', error);
+      res.status(500).json({ error: 'Failed to expand keywords', details: String(error) });
+    }
+  });
+
+  // BFS Keyword Crawl - Start exhaustive crawl (updated)
   app.post('/api/keywords/crawl', async (req, res) => {
     try {
       // Check if crawler already running
@@ -598,24 +692,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Parse parameters with defaults
       const {
-        target = 10000,
+        mode = 'exhaustive',
+        seeds: userSeeds = [],
+        seedsCsv = '/mnt/data/seed_keywords_v2_ko.csv',
+        target = 20000,
         maxHops = 3,
         minVolume = 1000,
         hasAdsOnly = true,
         chunkSize = 10,
-        concurrency = 1
+        concurrency = 1,
+        stopIfNoNewPct = 0.5,
+        dailyCallBudget = 2000
       } = req.body;
 
-      console.log(`🚀 Starting BFS keyword crawl with target: ${target}`);
+      console.log(`🚀 Starting BFS keyword crawl (${mode} mode) with target: ${target}`);
       console.log(`⚙️ Config: minVolume=${minVolume}, hasAdsOnly=${hasAdsOnly}, chunk=${chunkSize}, concurrency=${concurrency}`);
 
-      // Load seeds from CSV
-      const seeds = loadSeedsFromCSV();
-      if (seeds.length === 0) {
-        return res.status(400).json({ error: 'No seeds found in CSV file' });
+      // Determine seeds to use
+      let seeds: string[];
+      if (userSeeds && userSeeds.length > 0) {
+        seeds = userSeeds;
+        console.log(`🌱 Using ${seeds.length} user-provided seeds: ${seeds.slice(0, 5).join(', ')}...`);
+      } else {
+        seeds = loadSeedsFromCSV();
+        if (seeds.length === 0) {
+          return res.status(400).json({ error: 'No seeds found in CSV file' });
+        }
+        console.log(`🌱 Using ${seeds.length} seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
       }
-
-      console.log(`🌱 Loaded ${seeds.length} seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
 
       // Create and configure crawler
       const crawler = createGlobalCrawler({
@@ -635,13 +739,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error('❌ BFS crawl failed:', error);
       });
 
-      // Return initial status
+      // Return job ID and initial status
+      const jobId = 'crawl-' + Date.now();
       const initialProgress = crawler.getProgress();
-      console.log(`✅ BFS crawl started - Frontier size: ${initialProgress.frontierSize}`);
+      console.log(`✅ BFS crawl started - Job ID: ${jobId}, Frontier size: ${initialProgress.frontierSize}`);
 
       res.json({
+        jobId,
         message: 'BFS keyword crawl started successfully',
-        config: { target, maxHops, minVolume, hasAdsOnly, chunkSize, concurrency },
+        config: { mode, target, maxHops, minVolume, hasAdsOnly, chunkSize, concurrency },
         seedsLoaded: seeds.length,
         progress: initialProgress
       });
@@ -665,6 +771,71 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('❌ Failed to get crawl progress:', error);
       res.status(500).json({ error: 'Failed to get crawl progress' });
+    }
+  });
+
+  // BFS Crawl Status - Get specific job status (by job ID)
+  app.get('/api/keywords/crawl/:jobId/status', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const crawler = getGlobalCrawler();
+      
+      if (!crawler) {
+        return res.json({ 
+          state: 'idle', 
+          message: 'No active crawl session',
+          progress: { collected: 0, requested: 0, ok: 0, fail: 0 }
+        });
+      }
+
+      const progress = crawler.getProgress();
+      const state = crawler.status === 'running' ? 'running' : 
+                   crawler.status === 'completed' ? 'done' : 
+                   crawler.status === 'error' ? 'error' : 'idle';
+
+      res.json({
+        jobId,
+        state,
+        progress: {
+          collected: progress.totalCollected || 0,
+          requested: progress.totalRequested || 0,
+          ok: progress.totalSuccess || 0,
+          fail: progress.totalFailed || 0,
+          frontierSize: progress.frontierSize || 0,
+          currentHop: progress.currentHop || 0
+        },
+        config: progress.config || null,
+        message: progress.message || ''
+      });
+
+    } catch (error) {
+      console.error('❌ Failed to get crawl status:', error);
+      res.status(500).json({ error: 'Failed to get crawl status', details: String(error) });
+    }
+  });
+
+  // BFS Crawl Cancel - Stop specific job
+  app.post('/api/keywords/crawl/:jobId/cancel', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const crawler = getGlobalCrawler();
+      
+      if (!crawler) {
+        return res.json({ ok: false, message: 'No active crawl session to cancel' });
+      }
+
+      if (crawler.status === 'running') {
+        crawler.stop();
+        clearGlobalCrawler();
+        console.log(`🛑 BFS crawl job ${jobId} cancelled by user`);
+        res.json({ ok: true, message: 'Crawl job cancelled successfully' });
+      } else {
+        res.json({ ok: false, message: 'No running crawl to cancel' });
+      }
+
+    } catch (error) {
+      console.error('❌ Failed to cancel crawl:', error);
+      res.status(500).json({ error: 'Failed to cancel crawl', details: String(error) });
     }
   });
 

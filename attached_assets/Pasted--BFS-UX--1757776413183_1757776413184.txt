@@ -1,0 +1,127 @@
+원하는 건 내가 적은 시드로 연관을 추가하고, 원하면 그 시드로 BFS 크롤이죠. 그게 정답입니다. 아래처럼 고치라고 바로 보내세요.
+
+[요청] 키워드 수집 UX 재정의 — “시드 입력 → 연관 추가 / BFS 크롤 시작”
+1) 상단 카드 교체
+
+입력란(멀티라인): [시드 키워드 입력] (쉼표/줄바꿈 구분)
+
+버튼 두 개:
+
+[연관 키워드 추가] — 입력 시드만 단발성 확장(기존 DB에 없으면 업서트)
+
+[BFS 크롤 시작] — 입력 시드를 시작점으로 BFS(비웠을 경우에만 기본 2,000 CSV 사용)
+
+진행률/카운터 + volumes_mode 배지는 두 버튼 공용 UI 재사용
+
+2) 백엔드 엔드포인트 (간단/확실)
+
+연관 추가(단발)
+POST /api/keywords/expand
+
+{ "seeds": ["홍삼","면역","탈모샴푸"],
+  "minVolume": 1000, "hasAdsOnly": true, "chunkSize": 10 }
+
+
+→ { inserted, updated, duplicates, stats:{ requested, ok, fail } }
+
+BFS 크롤(장기)
+POST /api/keywords/crawl
+
+{ "mode":"exhaustive",
+  "seeds": ["홍삼","면역"],         // 비었으면 seedsCsv 사용
+  "seedsCsv": "/mnt/data/seed_keywords_v2_ko.csv",
+  "target": 20000, "minVolume": 1000, "hasAdsOnly": true,
+  "chunkSize": 10, "concurrency": 1, "maxHops": 3,
+  "stopIfNoNewPct": 0.5, "dailyCallBudget": 2000 }
+
+
+→ { jobId }
+
+상태 폴링/중지
+GET /api/keywords/crawl/:jobId/status → { state, progress, requested, ok, fail, collected }
+POST /api/keywords/crawl/:jobId/cancel → { ok:true }
+
+수집 필터/저장 규칙은 그대로: raw_volume≥1000 & has_ads(plAvgDepth>0)만 업서트, 5지표(조회량/경쟁도/광고깊이/예상CPC/null허용/score) 저장, score DESC가 기본 정렬.
+
+3) 프론트 핵심 패치 (버튼이 “안 눌리는” 문제 방지)
+
+버튼 핸들러 실제 호출 연결
+
+const [seedsText,setSeedsText] = useState('');
+const seeds = seedsText.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);
+
+async function onExpand() {
+  const body = { seeds, minVolume:1000, hasAdsOnly:true, chunkSize:10 };
+  const r = await fetch('/api/keywords/expand', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  if (!r.ok) { toast.error(await r.text()); return; }
+  const res = await r.json();
+  toast.success(`추가: ${res.inserted}, 갱신: ${res.updated}, 중복: ${res.duplicates}`);
+  queryClient.invalidateQueries({queryKey:['keywords']});
+}
+
+const [jobId,setJobId] = useState<string|null>(null);
+async function onCrawl() {
+  const body = {
+    mode:'exhaustive',
+    seeds,                         // 빈배열이면 서버가 seedsCsv 사용
+    seedsCsv:'/mnt/data/seed_keywords_v2_ko.csv',
+    target:20000, minVolume:1000, hasAdsOnly:true, chunkSize:10, concurrency:1, maxHops:3,
+    stopIfNoNewPct:0.5, dailyCallBudget:2000
+  };
+  const r = await fetch('/api/keywords/crawl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if (r.status===412) { toast.error('헬스체크 실패(오픈API/서치애즈). 엄격모드 해제 또는 키 확인.'); return; }
+  if (!r.ok) { toast.error(await r.text()); return; }
+  const {jobId} = await r.json(); setJobId(jobId);
+}
+
+useEffect(()=>{
+  if(!jobId) return;
+  const t = setInterval(async ()=>{
+    const r = await fetch(`/api/keywords/crawl/${jobId}/status`);
+    if (!r.ok) return;
+    const s = await r.json();
+    setProgress(s);                 // 진행률/카운터 표시
+    if (s.state==='done' || s.state==='error') clearInterval(t);
+  }, 1000);
+  return ()=>clearInterval(t);
+},[jobId]);
+
+
+URL 직렬화 실수 방지(아까 [object Object] 이슈 재발 방지):
+
+const {data} = useQuery({
+  queryKey:['keywords', excluded, sort, order, page, limit],
+  queryFn: async ({queryKey})=>{
+    const [_k, ex, s, o, p, l] = queryKey as [string, boolean, string, 'asc'|'desc', number, number];
+    const qs = new URLSearchParams({ excluded:String(ex), sort:s, order:o, offset:String(p*l), limit:String(l) });
+    const r = await fetch('/api/keywords?'+qs.toString());
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+});
+
+4) 테이블/액션 정리(이미 진행 중이니 확인만)
+
+컬럼: 키워드 | 조회량 | 경쟁도 | 광고깊이 | 예상CPC | 종합점수 | 액션
+
+액션: 활성 탭 = [X] 제거(excluded=true), 제외 탭 = [↩] 복원(excluded=false)
+
+정렬 기본 score DESC (ASC/DESC 토글)
+
+5) 왜 버튼 눌러도 “아무 일도 안 일어난 것처럼” 보였나 (원인 추정)
+
+onClick이 mutation 호출을 안 함(disabled 조건/return 조기탈출)
+
+엄격 모드 412인데 UI에서 토스트/표시 안 함 → 무반응처럼 보임
+
+POST 바디 스키마/경로가 서버 기대값과 다름
+
+상태 폴링 미구현 → jobId 받았는데도 진행률을 안 그림
+
+위 핸들러/폴링 코드가 들어가면 즉시 해소됩니다.
+
+한 줄 결론
+
+네가 맞아. 입력 시드 → 연관 추가와 입력 시드 → BFS 크롤이 핵심 플로우야.

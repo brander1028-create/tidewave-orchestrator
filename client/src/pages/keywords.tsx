@@ -1,8 +1,9 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -70,6 +71,158 @@ export default function KeywordsPage() {
   const [uploadProgress, setUploadProgress] = useState<{ loading: boolean; result?: any }>({ loading: false });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  
+  // New seed input and job management state
+  const [seedsText, setSeedsText] = useState('');
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [crawlProgress, setCrawlProgress] = useState<any>(null);
+  
+  // Parse seeds from text input (comma/newline separated)
+  const seeds = seedsText.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+  
+  // Expand Keywords Handler (single operation)
+  const onExpand = async () => {
+    if (seeds.length === 0) {
+      toast({
+        title: "시드 키워드 필요",
+        description: "연관 키워드를 추가할 시드를 입력해주세요.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      const body = { seeds, minVolume: 1000, hasAdsOnly: true, chunkSize: 10 };
+      const response = await fetch('/api/keywords/expand', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        toast({
+          title: "연관 키워드 추가 실패",
+          description: errorText,
+          variant: "destructive"
+        });
+        return;
+      }
+
+      const result = await response.json();
+      toast({
+        title: "연관 키워드 추가 완료",
+        description: `추가: ${result.inserted}, 갱신: ${result.updated}, 중복: ${result.duplicates}개`
+      });
+      
+      // Refresh keywords data
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
+    } catch (error) {
+      console.error('연관 키워드 추가 오류:', error);
+      toast({
+        title: "연관 키워드 추가 실패",
+        description: "네트워크 오류가 발생했습니다.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  // BFS Crawl Handler (long operation)
+  const onCrawl = async () => {
+    try {
+      const body = {
+        mode: 'exhaustive',
+        seeds: seeds.length > 0 ? seeds : [], // Use user seeds or empty for CSV
+        seedsCsv: '/mnt/data/seed_keywords_v2_ko.csv',
+        target: 20000,
+        minVolume: 1000,
+        hasAdsOnly: true,
+        chunkSize: 10,
+        concurrency: 1,
+        maxHops: 3,
+        stopIfNoNewPct: 0.5,
+        dailyCallBudget: 2000
+      };
+
+      const response = await fetch('/api/keywords/crawl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (response.status === 412) {
+        toast({
+          title: "시스템 상태 확인",
+          description: "헬스체크 실패(오픈API/서치애즈). 엄격모드 해제 또는 키 확인이 필요합니다.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        toast({
+          title: "BFS 크롤링 시작 실패",
+          description: errorText,
+          variant: "destructive"
+        });
+        return;
+      }
+
+      const result = await response.json();
+      setJobId(result.jobId);
+      
+      toast({
+        title: "BFS 크롤링 시작",
+        description: `시드 ${result.seedsLoaded}개로 최대 ${result.config.target}개 키워드 수집 시작`
+      });
+      
+      // Refresh keywords data
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
+    } catch (error) {
+      console.error('BFS 크롤링 시작 오류:', error);
+      toast({
+        title: "BFS 크롤링 시작 실패",
+        description: "네트워크 오류가 발생했습니다.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  // Job status polling effect
+  useEffect(() => {
+    if (!jobId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/keywords/crawl/${jobId}/status`);
+        if (!response.ok) return;
+
+        const status = await response.json();
+        setCrawlProgress(status);
+
+        // Stop polling if job is done or has error
+        if (status.state === 'done' || status.state === 'error') {
+          clearInterval(interval);
+          if (status.state === 'done') {
+            toast({
+              title: "BFS 크롤링 완료",
+              description: `총 ${status.progress.collected}개 키워드 수집 완료`
+            });
+          }
+          // Refresh keywords data
+          queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
+          queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
+        }
+      } catch (error) {
+        console.error('상태 폴링 오류:', error);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [jobId, queryClient, toast]);
 
   // Fetch system health status
   const { data: health } = useQuery({
@@ -200,7 +353,7 @@ export default function KeywordsPage() {
   });
 
   // Crawl progress query (fixed circular reference)
-  const { data: crawlProgress } = useQuery({
+  const { data: crawlProgressData } = useQuery({
     queryKey: ['/api/keywords/crawl/progress'],
     refetchInterval: 2000, // Poll every 2 seconds
     enabled: crawlMutation.isPending
@@ -710,128 +863,128 @@ export default function KeywordsPage() {
             </CardContent>
           </Card>
 
-          {/* 간소화된 키워드 가져오기 섹션 (요구사항) */}
+          {/* 새로운 시드 입력 기반 키워드 수집 시스템 */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
-                <RefreshCw className="h-5 w-5" />
-                <span>키워드 관리</span>
+                <Search className="h-5 w-5" />
+                <span>키워드 수집</span>
               </CardTitle>
               <CardDescription>
-                SearchAds API에서 전체 키워드를 가져와 종합점수 기반으로 관리합니다
+                시드 키워드를 입력하여 연관 키워드를 추가하거나 BFS 크롤링을 시작하세요
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex justify-center">
+              {/* 시드 입력란 (멀티라인) */}
+              <div className="space-y-2">
+                <label htmlFor="seeds-input" className="text-sm font-medium">
+                  시드 키워드 입력 (쉼표 또는 줄바꿈으로 구분)
+                </label>
+                <Textarea
+                  id="seeds-input"
+                  placeholder="홍삼, 면역력 강화&#10;탈모 샴푸&#10;비타민 D"
+                  value={seedsText}
+                  onChange={(e) => setSeedsText(e.target.value)}
+                  className="min-h-[100px] resize-vertical"
+                  data-testid="input-seeds"
+                />
+                {seeds.length > 0 && (
+                  <div className="text-xs text-muted-foreground">
+                    {seeds.length}개 시드: {seeds.slice(0, 3).join(', ')}{seeds.length > 3 ? '...' : ''}
+                  </div>
+                )}
+              </div>
+
+              {/* 두 개 버튼 */}
+              <div className="flex gap-3 justify-center">
                 <Button
-                  onClick={() => {
-                    const healthData = health as HealthResponse;
-                    const isSystemHealthy = healthData?.openapi?.ok && 
-                                           healthData?.searchads?.ok && 
-                                           healthData?.keywordsdb?.ok;
-                    
-                    if (!isSystemHealthy) {
-                      toast({
-                        title: "시스템 상태 불량", 
-                        description: "모든 서비스가 정상이어야 키워드를 가져올 수 있습니다",
-                        variant: "destructive",
-                      });
-                      return;
-                    }
-                    
-                    refreshAllMutation.mutate();
-                  }}
-                  disabled={refreshAllMutation.isPending || !((health as HealthResponse)?.openapi?.ok && (health as HealthResponse)?.searchads?.ok && (health as HealthResponse)?.keywordsdb?.ok)}
-                  className="px-8 py-2"
-                  data-testid="kw-refresh-all"
+                  onClick={onExpand}
+                  disabled={seeds.length === 0}
+                  className="px-6 py-2"
+                  variant="outline"
+                  data-testid="btn-expand-keywords"
                 >
-                  {refreshAllMutation.isPending ? (
-                    <>
-                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                      전체 키워드 가져오는 중...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="mr-2 h-4 w-4" />
-                      전체 키워드 가져오기
-                    </>
-                  )}
+                  <Search className="mr-2 h-4 w-4" />
+                  연관 키워드 추가
                 </Button>
                 
-                {/* 2,000개 시드 BFS 크롤링 버튼 */}
                 <Button
-                  onClick={() => {
-                    if (!((health as HealthResponse)?.openapi?.ok && (health as HealthResponse)?.searchads?.ok && (health as HealthResponse)?.keywordsdb?.ok)) {
-                      toast({
-                        title: "시스템 상태 확인",
-                        description: "모든 서비스가 정상 상태여야 BFS 크롤링을 시작할 수 있습니다.",
-                        variant: "destructive"
-                      });
-                      return;
-                    }
-                    
-                    crawlMutation.mutate();
-                  }}
-                  disabled={crawlMutation.isPending || !((health as HealthResponse)?.openapi?.ok && (health as HealthResponse)?.searchads?.ok && (health as HealthResponse)?.keywordsdb?.ok)}
-                  className="px-8 py-2 bg-blue-600 hover:bg-blue-700 text-white"
-                  data-testid="kw-crawl-bfs"
+                  onClick={onCrawl}
+                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white"
+                  data-testid="btn-crawl-bfs"
                 >
-                  {crawlMutation.isPending ? (
-                    <>
-                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                      2K시드 BFS 크롤링 중...
-                    </>
-                  ) : (
-                    <>
-                      <TrendingUp className="mr-2 h-4 w-4" />
-                      2,000개 시드 BFS 크롤링
-                    </>
+                  <TrendingUp className="mr-2 h-4 w-4" />
+                  BFS 크롤 시작
+                  {seeds.length === 0 && (
+                    <span className="ml-1 text-xs opacity-80">(2K시드)</span>
                   )}
                 </Button>
               </div>
 
-              {refreshAllMutation.isError && (
-                <Alert variant="destructive">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription>
-                    전체 키워드 가져오기에 실패했습니다. 시스템 상태를 확인해주세요.
-                  </AlertDescription>
-                </Alert>
-              )}
-              
-              {lastRefreshStats && (
+              {/* 진행률 표시 */}
+              {crawlProgress && (
                 <div className="rounded-lg border bg-card p-4 space-y-3">
                   <h4 className="font-medium text-sm flex items-center space-x-2">
-                    <CheckCircle className="h-4 w-4 text-green-600" />
-                    <span>마지막 가져오기 결과</span>
+                    <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+                    <span>BFS 크롤링 진행 중</span>
+                    <Badge variant="secondary">{crawlProgress.state}</Badge>
                   </h4>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div className="space-y-1">
-                      <div className="text-muted-foreground">모드</div>
-                      <Badge variant={lastRefreshStats.volumes_mode === 'searchads' ? 'default' : 'secondary'}>
-                        {lastRefreshStats.volumes_mode.toUpperCase()}
-                      </Badge>
+                      <div className="text-muted-foreground">수집됨</div>
+                      <div className="font-medium text-green-600">{crawlProgress.progress?.collected || 0}</div>
                     </div>
                     <div className="space-y-1">
-                      <div className="text-muted-foreground">추가된 키워드</div>
-                      <div className="font-medium">{lastRefreshStats.inserted}개</div>
+                      <div className="text-muted-foreground">요청됨</div>
+                      <div className="font-medium">{crawlProgress.progress?.requested || 0}</div>
                     </div>
                     <div className="space-y-1">
-                      <div className="text-muted-foreground">요청 성공률</div>
-                      <div className="font-medium text-green-600">
-                        {lastRefreshStats.stats.requested > 0 ? 
-                          Math.round((lastRefreshStats.stats.ok / lastRefreshStats.stats.requested) * 100) : 0}%
+                      <div className="text-muted-foreground">성공률</div>
+                      <div className="font-medium text-blue-600">
+                        {crawlProgress.progress?.requested > 0 ? 
+                          Math.round((crawlProgress.progress.ok / crawlProgress.progress.requested) * 100) : 0}%
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <div className="text-muted-foreground">API 응답</div>
+                      <div className="text-muted-foreground">홉/프론티어</div>
                       <div className="text-xs">
-                        {Object.entries(lastRefreshStats.stats.http).map(([code, count]) => (
-                          <div key={code} className="font-mono">{code}: {count}</div>
-                        ))}
+                        <div>홉: {crawlProgress.progress?.currentHop || 0}</div>
+                        <div>프론티어: {crawlProgress.progress?.frontierSize || 0}</div>
                       </div>
                     </div>
                   </div>
+                  {jobId && (
+                    <Button
+                      onClick={async () => {
+                        try {
+                          const response = await fetch(`/api/keywords/crawl/${jobId}/cancel`, {
+                            method: 'POST'
+                          });
+                          if (response.ok) {
+                            setJobId(null);
+                            setCrawlProgress(null);
+                            toast({ title: "크롤링 중단됨" });
+                          }
+                        } catch (error) {
+                          console.error('크롤링 중단 오류:', error);
+                        }
+                      }}
+                      variant="destructive"
+                      size="sm"
+                      data-testid="btn-cancel-crawl"
+                    >
+                      크롤링 중단
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {/* volumes_mode 배지 */}
+              {(health as HealthResponse)?.searchads?.mode && (
+                <div className="flex justify-center">
+                  <Badge variant={(health as HealthResponse)?.searchads?.mode === 'searchads' ? 'default' : 'secondary'}>
+                    {((health as HealthResponse)?.searchads?.mode || 'fallback').toUpperCase()} MODE
+                  </Badge>
                 </div>
               )}
             </CardContent>
