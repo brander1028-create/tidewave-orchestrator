@@ -11,7 +11,7 @@ function sign(ts: string, method: 'GET'|'POST', path: string, secret: string) {
   return crypto.createHmac('sha256', secret).update(`${ts}.${method}.${path}`).digest('base64');
 }
 
-export async function getVolumes(rawKeywords: string[]): Promise<Record<string, Vol>> {
+export async function getVolumes(rawKeywords: string[]): Promise<{ volumes: Record<string, Vol>, mode: string }> {
   let API_KEY = process.env.SEARCHAD_API_KEY!;
   const SECRET = process.env.SEARCHAD_SECRET_KEY!;
   const CUSTOMER = process.env.SEARCHAD_CUSTOMER_ID!;
@@ -23,16 +23,23 @@ export async function getVolumes(rawKeywords: string[]): Promise<Record<string, 
   }
 
   if (!API_KEY || !SECRET || !CUSTOMER) {
-    console.log(`🔑 SearchAd API credentials not found, returning empty volumes`);
+    console.log(`🔑 SearchAd API credentials not found, using fallback mode`);
     console.log(`   - API_KEY: ${API_KEY ? 'present' : 'missing'} (length: ${API_KEY?.length || 0})`);
     console.log(`   - SECRET: ${SECRET ? 'present' : 'missing'} (length: ${SECRET?.length || 0})`);
     console.log(`   - CUSTOMER: ${CUSTOMER ? 'present' : 'missing'} (value: ${CUSTOMER})`);
-    return {};
+    
+    // Return fallback volumes (all 0)
+    const fallbackVolumes: Record<string, Vol> = {};
+    rawKeywords.forEach(k => {
+      fallbackVolumes[k.toLowerCase()] = { pc: 0, mobile: 0, total: 0 };
+    });
+    
+    return { volumes: fallbackVolumes, mode: 'fallback' };
   }
 
   // 중복/공백 정리, 너무 짧은 토큰 제거
   const ks = Array.from(new Set(rawKeywords.map(k => k.trim()).filter(k => k.length >= 2)));
-  if (!ks.length) return {};
+  if (!ks.length) return { volumes: {}, mode: 'searchads' };
 
   console.log(`🔍 Fetching search volumes for ${ks.length} keywords: ${ks.slice(0, 3).join(', ')}...`);
 
@@ -75,6 +82,8 @@ export async function getVolumes(rawKeywords: string[]): Promise<Record<string, 
     }
   }
   
-  console.log(`✅ SearchAd API completed: ${Object.keys(out).length} keywords with volumes`);
-  return out;
+  console.log(`📊 Final volumes collected: ${Object.keys(out).length} keywords using SearchAd API`);
+  console.log(`📈 Sample volumes: ${Object.entries(out).slice(0, 3).map(([k, v]) => `${k}:${v.total}`).join(', ')}`);
+  
+  return { volumes: out, mode: 'searchads' };
 }

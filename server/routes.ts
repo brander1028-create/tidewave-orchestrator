@@ -180,6 +180,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         top3Keywords.forEach(kw => allUniqueKeywords.add(kw.keyword));
       }
 
+      // Get volumes_mode from first blog's analysis (or default to 'fallback')
+      let volumesMode = 'fallback';
+      if (allBlogs.length > 0) {
+        try {
+          const firstBlogPosts = await storage.getAnalyzedPosts(allBlogs[0].id);
+          const titles = firstBlogPosts.map(p => p.title);
+          const { volumesMode: firstBlogVolumesMode } = await extractTop3ByVolume(titles);
+          volumesMode = firstBlogVolumesMode;
+        } catch (e) {
+          console.log('⚠️ Could not determine volumes mode, defaulting to fallback');
+        }
+      }
+
       const response = {
         blogs: hitBlogs,
         keywords: allKeywords, 
@@ -189,7 +202,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           posts: allPosts.length,
           selected_keywords: allBlogs.length * 3, // 블로그×3 (요청)
           searched_keywords: allUniqueKeywords.size, // 모든 블로그의 TOP3 키워드 중복 제거 후 실제 질의
-          hit_blogs: hitBlogs.length
+          hit_blogs: hitBlogs.length, // base_rank 1-10 기준으로 변경됨
+          volumes_mode: volumesMode
         },
         warnings: [],
         errors: []
@@ -427,7 +441,7 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         // Step 2.3: Extract top 3 keywords by search volume (with frequency fallback)
         const titles = scrapedPosts.map(post => post.title);
         console.log(`   🔤 Extracting volume-based keywords from ${titles.length} titles for ${blog.blogName}`);
-        const { top3, detail } = await extractTop3ByVolume(titles);
+        const { top3, detail, volumesMode } = await extractTop3ByVolume(titles);
         
         console.log(`   🏆 Top 3 keywords for ${blog.blogName}: ${detail.map((d: any) => `${d.tier.toUpperCase()}: ${d.keyword} (${d.volume_total})`).join(', ')}`);
         

@@ -31,7 +31,11 @@ export async function extractTop3ByVolume(titles: string[]) {
   console.log(`📝 Generated ${candList.length} candidate keywords: ${candList.slice(0, 5).join(', ')}...`);
 
   // 2) 검색량 조회 (없으면 빈 객체)
-  const volMap = await getVolumes(candList);
+  const volumeResult = await getVolumes(candList);
+  const volMap = volumeResult.volumes;
+  const volumesMode = volumeResult.mode;
+  
+  console.log(`🔍 Volumes mode: ${volumesMode}`);
   const volumeKeywords = Object.keys(volMap);
   console.log(`📊 Got volumes for ${volumeKeywords.length} keywords`);
 
@@ -81,5 +85,5 @@ export async function extractTop3ByVolume(titles: string[]) {
   
   console.log(`✅ Top 3 keywords selected:`, detail.map(d => `${d.tier.toUpperCase()}: ${d.keyword} (${d.volume_total})`).join(', '));
   
-  return { top3, detail, allVolumes: volMap };
+  return { top3, detail, allVolumes: volMap, volumesMode };
 }
