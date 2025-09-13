@@ -124,6 +124,34 @@ export async function listExcluded(): Promise<ManagedKeyword[]> {
 }
 
 /**
+ * Get raw volume mapping for keywords (for results API)
+ */
+export async function getKeywordVolumeMap(keywordTexts: string[]): Promise<Record<string, number>> {
+  if (keywordTexts.length === 0) return {};
+  
+  const results = await db.select({
+    text: managedKeywords.text,
+    raw_volume: managedKeywords.raw_volume
+  })
+    .from(managedKeywords)
+    .where(sql`${managedKeywords.text} = ANY(${keywordTexts})`);
+    
+  const volumeMap: Record<string, number> = {};
+  for (const result of results) {
+    volumeMap[result.text] = result.raw_volume;
+  }
+  
+  // Fill missing keywords with 0
+  for (const text of keywordTexts) {
+    if (!(text in volumeMap)) {
+      volumeMap[text] = 0;
+    }
+  }
+  
+  return volumeMap;
+}
+
+/**
  * Fetch keywords from SearchAds API and store them
  */
 export async function upsertKeywordsFromSearchAds(

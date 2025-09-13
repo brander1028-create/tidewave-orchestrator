@@ -8,7 +8,7 @@ import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 // Health Gate + Keywords Management imports
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
-import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded } from './store/keywords';
+import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap } from './store/keywords';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
@@ -138,6 +138,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Filter blogs with TOP3 keywords that have SERP rank 1-10
       const hitBlogs = [];
       
+      // Collect all unique keywords for raw_volume lookup
+      const allKeywordTexts = new Set<string>();
+      for (const blog of allBlogs) {
+        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
+        top3Keywords.forEach(kw => allKeywordTexts.add(kw.keyword));
+      }
+      
+      // Get raw_volume mapping from keywords DB
+      const keywordVolumeMap = await getKeywordVolumeMap(Array.from(allKeywordTexts));
+      
       for (const blog of allBlogs) {
         const posts = await storage.getAnalyzedPosts(blog.id);
         const top3Keywords = await storage.getTopKeywordsByBlog(blog.id); // Get TOP3
@@ -148,17 +158,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (hasHit) {
           hitBlogs.push({
             blog_id: blog.blogId,
+            blog_name: blog.blogName, // Added for UI display
             blog_url: blog.blogUrl,
-            gathered_posts: posts.length,
-            base_rank: blog.baseRank
+            base_rank: blog.baseRank, // Added for rank badge
+            gathered_posts: posts.length
           });
           
-          // Add keywords for this blog
+          // Add keywords for this blog with raw_volume
           allKeywords.push({
             blog_id: blog.blogId,
             top3: top3Keywords.map(kw => ({
               text: kw.keyword,
-              volume: kw.volume || 0,
+              volume: kw.volume || 0, // For ranking weight
+              raw_volume: keywordVolumeMap[kw.keyword] || 0, // For display
               rank: kw.rank || 0
             }))
           });
@@ -208,7 +220,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         keywords: allKeywords, 
         posts: allPosts,
         counters: {
-          blogs: allBlogs.length,
+          discovered_blogs: allBlogs.length, // Total blogs found during discovery
+          blogs: allBlogs.length, // Existing field (total blogs analyzed)
           posts: allPosts.length,
           selected_keywords: allBlogs.length * 3, // 블로그×3 (요청)
           searched_keywords: allUniqueKeywords.size, // 모든 블로그의 TOP3 키워드 중복 제거 후 실제 질의
