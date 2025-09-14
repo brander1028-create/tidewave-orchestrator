@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Search, Plus, X, Shield, ShieldAlert, AlertTriangle } from "lucide-react";
+import { Search, Plus, X, Shield, ShieldAlert, AlertTriangle, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,6 +21,7 @@ const serpAnalysisSchema = z.object({
   maxRank: z.number().min(2).max(15),
   postsPerBlog: z.number().min(1, "최소 1개").max(20, "최대 20개"),
   strict: z.boolean().default(true),
+  titleExtract: z.boolean().default(true),
 }).refine((data) => data.minRank <= data.maxRank, {
   message: "최소 순위는 최대 순위보다 작거나 같아야 합니다",
   path: ["maxRank"],
@@ -52,6 +53,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
   const [rankRange, setRankRange] = useState<[number, number]>([2, 10]);
   const [postsPerBlog, setPostsPerBlog] = useState(10);
   const [strictMode, setStrictMode] = useState(true);
+  const [titleExtract, setTitleExtract] = useState(true);
   
   const form = useForm<SerpAnalysisFormData>({
     resolver: zodResolver(serpAnalysisSchema),
@@ -61,6 +63,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
       maxRank: 10,
       postsPerBlog: 10,
       strict: true,
+      titleExtract: true,
     },
   });
 
@@ -132,6 +135,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
       maxRank: rankRange[1],
       postsPerBlog,
       strict: strictMode,
+      titleExtract,
     });
   };
 
@@ -262,6 +266,29 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
             <p className="text-sm text-muted-foreground">
               각 블로그에서 최근 포스트를 몇 개까지 수집하여 키워드 분석할지 설정합니다.
             </p>
+          </div>
+
+          {/* 제목 키워드 추출 설정 */}
+          <div className="space-y-3 border-t border-border pt-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <Label className="flex items-center space-x-2">
+                  <FileText className="h-4 w-4 text-blue-600" />
+                  <span>제목에서 키워드 선별(Top4, 7:3)</span>
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  블로그 제목에서 조회량 기반 키워드를 자동 추출합니다
+                </p>
+              </div>
+              <Switch
+                checked={titleExtract}
+                onCheckedChange={(checked) => {
+                  setTitleExtract(checked);
+                  form.setValue("titleExtract", checked);
+                }}
+                data-testid="toggle-title-extract"
+              />
+            </div>
           </div>
 
           {/* 엄격 모드 설정 */}
