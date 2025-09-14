@@ -66,6 +66,23 @@ export async function keywordsCount(): Promise<number> {
 }
 
 /**
+ * Get keywords count by status (active vs excluded)
+ */
+export async function getKeywordsCounts(): Promise<{ total: number; active: number; excluded: number }> {
+  const [totalResult, activeResult, excludedResult] = await Promise.all([
+    db.select({ count: sql<number>`COUNT(*)` }).from(managedKeywords),
+    db.select({ count: sql<number>`COUNT(*)` }).from(managedKeywords).where(eq(managedKeywords.excluded, false)),
+    db.select({ count: sql<number>`COUNT(*)` }).from(managedKeywords).where(eq(managedKeywords.excluded, true))
+  ]);
+
+  return {
+    total: totalResult[0]?.count || 0,
+    active: activeResult[0]?.count || 0,
+    excluded: excludedResult[0]?.count || 0
+  };
+}
+
+/**
  * Upsert multiple keywords with volume data (배치 처리로 멈춤 방지)
  */
 export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Promise<number> {
