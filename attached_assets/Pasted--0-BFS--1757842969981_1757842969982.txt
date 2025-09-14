@@ -1,0 +1,177 @@
+왜 느리고, 왜 0으로 스킵되나?
+
+BFS 완료 메시지 여러 번
+
+글로벌 크롤러가 동시에 여러 번 끝 처리를 타고 있어요(중복 실행/좀비 세션).
+
+→ 한 세션만 돌도록 단일 실행 가드가 필요.
+
+SearchAds 400 / 429
+
+400: 서명/파라미터/청크 크기 오류(예: hintKeywords 길이/개수 초과, 쿼리 인코딩, 잘못된 서명 문자열).
+
+429: 레이트리밋. 현재 chunkSize=10, concurrency=1라도 재시도/백오프가 약하면 금방 막힘.
+
+에러가 나면 getVolumes가 fallback으로 내려가고, raw_volume=0 → minVolume(≥1000) 필터에 걸려 전부 스킵.
+
+바로 넣는 최소 패치 (3개)
+A) 단일 실행 가드 + 좀비 정리
+
+문제: 동시에 완료/재시작 → “완료!”가 여러 번.
+
+해결: createGlobalCrawler() 인스턴스에 completed 플래그와 CAS 가드 추가.
+
+// services/bfs-crawler.ts (예시)
+class Crawler {
+  status:'idle'|'running'|'completed'|'error' = 'idle';
+  private completed = false;
+
+  async crawl() {
+    if (this.status === 'running') return;
+    this.status = 'running';
+    try {
+      // ... 작업 ...
+      // 마지막 처리
+      if (!this.completed) {
+        this.completed = true;
+        this.status = 'completed';
+      }
+    } catch (e) {
+      this.status = 'error';
+      throw e;
+    }
+  }
+}
+// routes.ts /crawl 진입부
+const existing = getGlobalCrawler();
+if (existing) {
+  const stale = Date.now() - (existing.getProgress()?.lastUpdated||0) > 5*60*1000;
+  if (existing.status === 'running' && !stale) {
+    return res.status(409).json({ error:'Crawler already running', progress: existing.getProgress() });
+  }
+  clearGlobalCrawler(); // 좀비면 청소 후 새로 시작
+}
+
+B) SearchAds 호출: 적응형 청크 + 백오프 + 오류별 분기
+
+문제: 400/429가 나도 같은 청크로 연타 → 계속 실패/한도초과.
+
+해결: 400이면 청크 반으로 줄여 재시도, 429면 Retry-After/지수 백오프 후 같은 청크 다시 시도, 성공률에 따라 mode=searchads/partial/fallback 정확히 판정.
+
+// services/searchad.ts (핵심 로직 예시)
+async function getVolumes(keys:string[]) {
+  let i=0, ok=0, fail=0, http:Record<number,number>={}, chunk=10;
+  const out:Record<string, any> = {};
+
+  while (i < keys.length) {
+    const batch = keys.slice(i, i+chunk);
+    const {status, json} = await callKeywordTool(batch); // 서명: ts.ms + `${ts}.${METHOD}.${URI}`, URI=/keywordstool, 쿼리는 서명에 포함 X
+    http[status] = (http[status]||0)+1;
+
+    if (status === 200) {
+      // 합치기
+      for (const it of json.keywordList||[]) {
+        const k = (it.relKeyword||'').trim();
+        const pc = num(it.monthlyPcQcCnt), mo = num(it.monthlyMobileQcCnt);
+        out[k] = {
+          total: Math.max(0, pc)+Math.max(0, mo),
+          compIdx: it.compIdx||'중간',
+          plAvgDepth: num(it.plAvgDepth),
+          avePcCpc: num(it.monthlyAvePcClk) ? num(it.avePcCpc) : 0,
+          aveMobileCpc: num(it.monthlyAveMobileClk) ? num(it.aveMobileCpc) : 0
+        };
+      }
+      ok += batch.length; i += batch.length;               // ✅ 전진
+      // 성공률 높으면 chunk 다시 10까지 복원 가능(선택)
+      if (chunk < 10) chunk++;
+    } else if (status === 429) {
+      // 레이트리밋 → 대기 후 동일 청크 재시도
+      const ra = parseInt(json?.retryAfter||0) || 1000;
+      await sleep(ra * 1.5 + Math.random()*500);
+      // chunk 유지, i 그대로
+    } else if (status === 400) {
+      // 파라미터/규모 이슈 → 청크 반으로 줄여 재시도
+      fail += 0;              // 아직 확정 실패 아님
+      chunk = Math.max(3, Math.floor(chunk/2));
+      // i 그대로
+    } else {
+      // 그 외 오류 → 이 배치는 실패 처리 후 넘어감(로그 남기기)
+      fail += batch.length; i += batch.length;
+    }
+  }
+
+  // mode 판정
+  const requested = keys.length;
+  const only2xx = Object.keys(http).every(c => +c >=200 && +c <300);
+  const mode = ok===0 ? 'fallback' : (ok===requested && only2xx ? 'searchads' : 'partial');
+
+  return { volumes: out, mode, stats:{ requested, ok, fail, http } };
+}
+
+const num = (x:any)=> { const n=Number(x); return (Number.isFinite(n)&&n>0)? n:0; };
+
+
+실무 팁
+
+hintKeywords는 URL 인코딩 필수, 너무 긴 문자열/너무 많은 키(엔드포인트 제한) → 400 유발
+
+타임스탬프는 밀리초(ms), 서명 문자열은 ${ts}.${METHOD}.${URI} (쿼리 미포함)
+
+C) fallback/partial일 때 “전부 스킵” 금지 (임시 저장 → 후속 갱신)
+
+문제: minVolume 필터가 fallback에서도 적용되어 모두 0 → 스킵.
+
+해결: mode!=='searchads'이면 임시 보관 정책으로 전환:
+
+raw_volume=0, score는 빈도 기반으로 계산해 DB에 저장
+
+volumes_mode가 searchads/partial로 좋아질 때 **refresh-all(stale)**로 갱신
+
+// BFS seeds 처리부/expand 처리부 공통
+const vol = volumeResults.volumes;  const mode = volumeResults.mode;
+for (const [text, v] of Object.entries<any>(vol)) {
+  const raw = (v.total ?? 0);
+  const ad  = v.plAvgDepth ?? 0;
+  if (mode === 'searchads') {
+    if (raw < minVolume) continue;
+    if (hasAdsOnly && ad <= 0) continue;
+  }
+  // 저장 (fallback/partial이면 raw=0이라도 저장하고 score=freq 기반)
+  keywordsToInsert.push({
+    text, raw_volume: (mode==='searchads' ? raw : 0),
+    comp_idx: v.compIdx||'중간', comp_score: compIdxToScore(v.compIdx||'중간'),
+    ad_depth: ad, has_ads: ad>0,
+    est_cpc_krw: v.avePcCpc||v.aveMobileCpc||null, est_cpc_source: (v.avePcCpc||v.aveMobileCpc)?'account':'unknown',
+    score: (mode==='searchads' ? calculateOverallScore(raw, compIdxToScore(v.compIdx||'중간'), ad, v.avePcCpc||0) : Math.min(100, 40)) // 임시 점수
+  });
+}
+
+
+이렇게 하면 당장 DB는 채워지고, 나중에 **refresh-all(=stale 갱신)**이 SearchAds 회복된 시점에 조회량을 올바르게 채움. 사용자 입장에선 “계속 0이라 스킵”이 사라집니다.
+
+권장 런 모드(안전한 셋팅)
+
+concurrency=1, chunkSize 초기 8~10 → 400이 보이면 자동 3~5로 낮추기
+
+호출 간 지터: 200–600ms
+
+실패율 40%↑면 stopIfNoNewPct=0.5/hop 제한으로 자동 중단
+
+야간 배치(크론)으로 refresh-all { where:'stale' } 돌려 SearchAds 회복 시 갱신
+
+60초 점검 루틴
+
+POST /api/keywords/crawl → 409면 좀비 가드가 동작 중인지, 아니면 기존 러닝인지 확인
+
+GET /api/keywords/crawl/:jobId/status → requested/ok/fail/queue 증가/감소 흐름 확인
+
+서버 로그에서 400/429 비율과 청크 조정 로그가 보이는지
+
+/api/keywords?sort=score&order=desc에 새 키워드가 쌓이고(fallback이면 raw=0일 수 있음), 이후 refresh-all(stale)로 값이 살아나는지
+
+한 줄 결론
+
+완료 중복은 단일 실행 가드로 해결,
+
+느림/스킵은 SearchAds 적응형 호출 + fallback 시 임시저장으로 해결됩니다.
+위 3개 패치만 넣으면 속도·성공률이 즉시 나아지고, 0 스킵 문제도 사라집니다.
