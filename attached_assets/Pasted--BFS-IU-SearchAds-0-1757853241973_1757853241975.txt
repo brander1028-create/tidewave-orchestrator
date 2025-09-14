@@ -1,0 +1,210 @@
+[요청] BFS 확장 전면 개편 — 시드 업로드/확장(연도·시즌·지역·여행·모델·띄어쓰기/동의어/IU) + 적응형 SearchAds + 임시저장 + 단일 실행 가드 + 진행상황
+0) 목표
+
+CSV/XLSX 시드 업로드 or 수동 시드 입력으로 시작 → BFS가 실전 롱테일까지 확장:
+
+연도/명절/시즌: 2025 명절선물, 2025 추석, 설선물세트…
+
+지역/역 + 맛집: 잠실역 맛집, 강남역 맛집추천, 서울 맛집 추천 …
+
+여행(국내/해외 도시 + 의도): 파리 여행, 파리 맛집, 제주 여행 코스 …
+
+모델/시리즈: 샤오미 로봇청소기 m40/m30, 아이폰 17/17 프로/17pro, 갤럭시 s25 울트라 …
+
+띄어쓰기/동의어: 블루투스 이어폰 / 블루투스이어폰 / 무선 이어폰
+
+건강·영양 변형: 비타민D 1000IU/2000IU, 유기농 비타민D, 어린이/키즈 홍삼
+
+DB 중복과 무관하게 프론티어는 크게(확장 우선), 저장 단계에서만 업서트/중복 처리.
+
+SearchAds 적응형 호출(400/429 대응) + fallback 임시저장(0/보수점수) → “0개 수집” 방지.
+
+진행상황 실시간(요청/성공/실패/스킵/큐/방문/퍼센트) + 중지 버튼.
+
+단일 실행 가드(좀비/중복 방지) + 예산(분당/일간 호출 상한).
+
+1) 엔드포인트 (BFS 전용)
+업로드(신규)
+
+POST /api/uploads (multipart; CSV/XLSX) → { fileId, rows }
+
+스키마(헤더 1행): seed[, category] (UTF-8)
+
+BFS 시작(개선)
+
+POST /api/keywords/crawl
+
+{
+  "mode": "exhaustive",
+  "source": "file",              // "manual" | "file" | "builtin"
+  "seeds": [],                   // source=manual 시 사용
+  "seedsFileId": "<fileId>",     // source=file 시 사용
+  "seedsCsv": "/mnt/data/seed_keywords_v2_ko.csv",  // source=builtin
+  "target": 20000,
+  "minVolume": 1000,
+  "hasAdsOnly": true,
+  "chunkSize": 10,
+  "concurrency": 1,
+  "maxHops": 3,
+  "stopIfNoNewPct": 0.5,
+  "dailyCallBudget": 2000,
+  "strict": false                // Optimistic(LKG): 실패 시 다음 실행 1회만 재검
+}
+
+
+응답: { jobId, seedsLoaded, progress:{ frontierSize, requested, ok, fail, skipped, collected, pct } }
+
+상태/중지
+
+GET /api/keywords/crawl/:jobId/status → 진행 카운터(1초 폴링)
+
+POST /api/keywords/crawl/:jobId/cancel → { ok:true }
+
+2) 프론티어 초기화 (핵심 규칙)
+
+절대 DB 중복으로 프론티어에서 제거하지 말 것. (저장은 업서트로 해결)
+
+시드 소스:
+
+manual → seeds
+
+file → seedsFileId에서 읽은 seeds
+
+builtin → loadSeedsFromCSV(seedsCsv) (반드시 경로 인자 필요)
+
+빈 프론티어면 400 반환(즉시 done 방지)
+
+3) 시드 확장 Providers (동시 적용)
+
+프론티어 = seeds ∪ expandAll(seeds)
+※ 내부에서 정규화(lower + 한영숫자 + 공백1) 후 중복 제거.
+totalFrontierCap(예: 50,000)로 상한. 초과 시 균등 샘플링/우선순위 큐.
+
+3-1) Variants (형태/연령/의도/IU/붙임띄움)
+
+형태: 정/스틱/캡슐/젤리/분말/환/액기스
+
+연령: 어린이/키즈/성인/임산부/시니어
+
+의도(상업): 추천/가격/최저가/할인/쿠폰/구매/비교/효과/복용법/부작용 (상위 3~5개)
+
+비타민D: 1000IU/2000IU 등 단위 변형
+
+띄어쓰기/동의어: 블루투스 이어폰/블루투스이어폰/무선 이어폰, vitamin d/비타민D
+
+3-2) Temporal / Seasonal
+
+연도 x (명절/행사/기획전/선물세트/프로모션):
+
+예: 2025 추석, 2025 명절선물, 2025 선물세트, 2025 기획전
+
+3-3) Local Eateries
+
+도시/광역시/구/역 + 맛집/맛집 추천/핫플:
+
+예: 잠실역 맛집, 강남역 맛집추천, 서울 맛집, 부산 맛집 추천
+
+3-4) Travel
+
+국내외 도시 + 여행/맛집/일정/코스/호텔/가이드:
+
+예: 파리 여행, 파리 맛집, 제주 여행 코스, 오사카 맛집
+
+3-5) Models / Series
+
+브랜드+시리즈+모델토큰:
+
+샤오미 로봇청소기 m40/m30/s10/e10,
+
+아이폰 17/17 프로/17pro,
+
+갤럭시 s25/s25 울트라, 플립7/폴드7,
+
+블루투스 이어폰 (노캔/방수/게이밍) 등
+
+옵션: 네이버 자동완성(Suggest)/연관검색(Related) Provider도 붙일 수 있음(권장). 24h TTL 캐시 + rate-limit/백오프 필수.
+
+4) SearchAds 호출 — 적응형 + 임시저장
+적응형 호출(필수)
+
+chunkSize 시작 8~10
+
+429: Retry-After(없으면 1s) ×1.5 + 지터 후 같은 청크 재시도(최대 2회)
+
+400: 청크 반감(max(3, chunk/2)) 후 같은 구간 재시도
+
+모드 판정:
+
+ok==0 → fallback
+
+ok==requested && http={2xx만} → searchads
+
+그 외 partial
+
+임시저장(Phase 1 정책 유지)
+
+mode!=='searchads'일 때도 스킵 금지:
+
+raw_volume=0, score=보수치(예: 40)로 DB 저장
+
+후속 refresh(stale) 때 조회량 채움
+
+5) 단일 실행 가드 + 예산
+
+글로벌 크롤러에 completed 플래그 + lastUpdated 기반 stale(>5분) 청소
+
+러닝 중이면 /crawl → 409 + 현재 진행상황 반환
+
+예산(토큰/쿼터): dailyCallBudget=2000, perMinuteBudget=40
+
+초과 시 대기/중단
+
+6) 진행상황/로그
+
+상태 객체(GET /status):
+
+{ requested, ok, fail, skipped, frontierSize, visitedSize, collected, currentHop, pct, lastUpdated }
+
+
+UI: 요청/성공/실패/스킵/큐/퍼센트 라이브 업데이트 + [중지] 버튼
+
+로그 샘플:
+
+EXP seeds: in=2000 expanded=12000 frontier=9500
+
+VOL mode=partial ok=82/100 http={200:8,400:1} chunk=5
+
+CRAWL hop=1 requested=300 ok=240 fail=20 skipped=40 frontier=7000 pct=12%
+
+7) 수락 기준(필수 커버리지)
+
+프론티어 초기화: 최소 1,000+(47 X), 상태 응답의 frontierSize로 확인
+
+샘플 쿼리 커버리지(키워드 목록에서 query= 지원 시 또는 수동 점검):
+
+홍삼/비타민D 계열:
+홍삼 추천/홍삼 정/홍삼 스틱/어린이 홍삼/키즈 홍삼/비타민D 1000IU/2000IU/유기농 비타민D 다수 포함
+
+전자·모델: 블루투스 이어폰/블루투스이어폰/무선 이어폰, 샤오미 로봇청소기 m40/m30, 아이폰 17/17 프로/17pro
+
+시즌/명절: 2025 추석/2025 명절선물/선물세트
+
+지역/맛집: 잠실역 맛집/강남역 맛집추천/서울 맛집
+
+여행: 파리 여행/파리 맛집/제주 여행 코스
+
+적응형 호출 성능: /refresh-all 또는 BFS 중 로그에서 ok/requested ≥ 0.8(searchads or partial)
+
+임시저장: SearchAds 실패 시에도 수집 수 증가(“0개 수집” 금지)
+
+8) 운영 옵션(권장)
+
+헬스체크: Optimistic(LKG) — 최초 1회 or 수동(force)만 실측, 실행 중 오류 시 다음 실행 1회 재검
+
+캐시: Suggest/Related 결과 TTL 24h
+
+정규화: toLowerCase() + 한영숫자 + 공백 1개, 금칙어/스팸 필터
+
+참고: “제목→Top3(조회량70+종합30)”는 다음 단계에 적용(외부 API 호출 없이 DB 기반).
+
+지금은 BFS부터 위 수락 기준 도달하도록 먼저 완성해 주세요.
