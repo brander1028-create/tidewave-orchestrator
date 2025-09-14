@@ -1,0 +1,169 @@
+[업데이트 요청] 제목 키워드 선별 — 정규화 + 4-티어 확장 + Top4(조회량 70% + 종합 30%)
+
+(DB 기준, 외부 API 호출 금지 / BFS·확장 기본 minVolume=600, hasAdsOnly=true)
+
+0) 목적
+
+제목에서 뽑은 문구를 정규화하여 키워드 DB 기준으로만 점수 계산.
+
+하나의 문구에 대해 최대 4개 티어 후보(부모→자식) 생성 후, Top4를 선택.
+
+점수식(변경 없음):
+combined = 0.7 * volume_score + 0.3 * score
+
+volume_score = clamp01( log10(max(1, raw_volume)) / 5 ) * 100
+
+중요: 이 단계에서는 SearchAds/OpenAPI 호출 금지. DB(excluded=false)만 조회.
+임계: BFS/확장 기본 minVolume = 600, hasAdsOnly = true.
+
+1) 정규화(canonical) & 4-티어 생성
+1-1. 정규화 함수 canonicalize(text) (런타임)
+
+lower/trim/다중공백 1개
+
+특수문자/자모 제거, 로마자 통일: vitamin d → 비타민D
+
+단어사전 매핑(case/띄어쓰기/동의표기):
+
+비타민 d / 비타민d / vitamin d → 비타민D
+
+‘iu/mg/mcg/μg’ → 단위 표준화(대문자 IU/MG/MCG), 숫자 추출
+
+불용어 제거: 추천/후기/가격/최저가/할인/쿠폰/정보/제품/선택/비교/구매 등
+
+결과: { base, kind, dose, adj, norm_key }
+
+예) "유기농 비타민d 1000u"
+→ base=비타민, kind=비타민D, dose=1000IU, adj=유기농, norm_key='유기농비타민d1000iu'
+
+1-2. 티어 후보 generateTierCandidates(c)
+
+Tier1: base (예: 비타민)
+
+Tier2: kind (예: 비타민D)
+
+Tier3: kind + dose (예: 비타민D 1000IU)
+
+Tier4: adj + kind (예: 유기농 비타민D)
+
+DB 조회 규칙: 각 티어 후보 문자열을 두 가지 키로 조회
+
+text 정확 일치
+
+norm_key 일치(띄어쓰기/대소문자/하이픈 차이를 같은 키워드로 간주)
+
+norm_key = lower(removeSpaces(removeSymbols(text)))
+
+스키마에 norm_key(computed 또는 저장) + 인덱스 추가
+
+찾지 못하면 {raw_volume:0, score:0}로 계산.
+
+2) 선택 알고리즘 — Top4
+
+후보(최대 4개)에 대해:
+
+volume_score = clamp01(log10(max(1, raw_volume))/5)*100
+
+combined = round(0.7*volume_score + 0.3*score)
+
+정렬:
+
+combined DESC
+
+raw_volume DESC
+
+tier 깊이 ASC(부모 우선: Tier1→4)
+
+frequency DESC
+
+text ASC
+
+Top4 선택(부족하면 있는 만큼).
+
+결과 JSON에 tier와 계산된 점수 필드 포함.
+
+3) 코드 위치/시그니처(명확)
+3-1. 새 유틸 (서버)
+
+server/services/nlp/canonical.ts
+
+export type Canon = { base:string; kind?:string; dose?:string; adj?:string; norm_key:string };
+export function canonicalize(raw:string): Canon;
+export function generateTierCandidates(c:Canon): Array<{ text:string; tier:1|2|3|4 }>;
+export function normKey(s:string): string; // lower + remove spaces/symbols
+
+
+DB 보조: norm_key 인덱스 추가(이미 존재하면 스킵)
+
+ALTER TABLE managed_keywords ADD COLUMN IF NOT EXISTS norm_key TEXT;
+CREATE INDEX IF NOT EXISTS idx_keywords_norm ON managed_keywords(norm_key);
+
+3-2. 제목 선택 함수 교체
+
+server/services/nlp/extractTop3ByCombined.ts → extractTop4ByCombined.ts
+
+export async function extractTop4ByCombined(titles:string[]): Promise<{
+  top4: Array<{ text:string, tier:number, raw_volume:number, score:number, volume_score:number, combined_score:number }>,
+  detail: Array<{ text:string, tier:number, frequency:number, raw_volume:number, score:number, volume_score:number, combined_score:number }>
+}>;
+
+
+내부 흐름: 제목→토큰화→canonicalize→generateTierCandidates→DB 조회(text 또는 norm_key)→점수 계산→정렬→Top4.
+
+사용처 변경: processSerpAnalysisJob Step 2.3
+extractTop3ByVolume → extractTop4ByCombined
+
+3-3. API 응답 확장 (결과 보기 유지)
+
+/api/serp/jobs/:jobId/results의 keywords[*].top3 → **top4**로 변경(또는 top 배열)
+각 항목에 tier/raw_volume/score/volume_score/combined_score 포함.
+
+4) BFS/확장 기본값 조정
+
+minVolume 기본 600으로 낮춤, hasAdsOnly=true 유지.
+
+BFS 프론티어 생성 시 DB 중복과 무관하게(단, 프론티어 내부 중복만 제거) 변형(variants)도 함께 주입:
+
+형태: 정/스틱/캡슐/젤리/액/분말/환
+
+연령: 어린이/키즈/성인/임산부/시니어
+
+의도: 추천/후기/가격/할인/최저가/쿠폰/구매/비교/효능/복용법/부작용
+
+용량: /(\d{2,5})\s?(iu|mg|mcg|μg|ug)/i 표준화
+
+Phase 1 정책 유지: SearchAds 실패 시에도 임시 저장(raw_volume=0, score=40)으로 스킵 금지 → 이후 refresh-all(stale)로 보강.
+
+5) UI 표시(변경점만)
+
+블로그 카드/상세 칩에 tier 뱃지: T1/T2/T3/T4
+
+칩 정렬: 조회량(raw_volume) DESC (표시)
+
+결과 요약·자세히보기는 기존 포맷 유지(단, Top4로 변경)
+
+6) 수락 기준 (테스트)
+
+입력: "유기농 비타민d 1000u"
+
+후보 생성: 비타민(T1), 비타민D(T2), 비타민D 1000IU(T3), 유기농 비타민D(T4)
+
+DB 매칭: 띄어쓰기/대소문자 변형도 동일 키로 인식(norm_key)
+
+Top4가 combined 기준으로 정렬되어 반환(필드 포함).
+
+"홍삼 추천", "키즈홍삼" → 홍삼(T1), 홍삼(T1)/키즈 홍삼(T4) 체인 생성 및 점수 계산.
+
+BFS 기본 minVolume=600으로 롱테일까지 늘어남(상태 폴링에 카운터 증가).
+
+외부 API 호출 로그 없음(제목 선별 단계).
+
+성능: 10개 제목 기준 150ms 내외.
+
+7) 주의
+
+Excluded 키워드는 후보에서 제외.
+
+DB에 없는 후보는 raw=0, score=0으로 처리(선택: 임시 40) — 외부 호출 금지.
+
+norm_key는 새로 삽입될 때도 채우기(upsertMany 안에서 norm_key = normKey(text)).
