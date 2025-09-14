@@ -155,6 +155,200 @@ export function calculateOverallScore(
   return Math.round(score);
 }
 
+// ===== 시드 확장 Providers (명세서 3-1 ~ 3-5) =====
+
+// 3-1) Variants Provider: 형태/연령/의도/IU/붙임띄움
+function expandVariants(seed: string): string[] {
+  const variants: string[] = [];
+  
+  // 형태 변형
+  const forms = ['정', '스틱', '캡슐', '젤리', '분말', '환', '액기스'];
+  forms.forEach(form => {
+    if (!seed.includes(form)) {
+      variants.push(`${seed} ${form}`);
+    }
+  });
+  
+  // 연령 변형
+  const ages = ['어린이', '키즈', '성인', '임산부', '시니어'];
+  ages.forEach(age => {
+    if (!seed.includes(age)) {
+      variants.push(`${age} ${seed}`);
+    }
+  });
+  
+  // 상업적 의도 변형 (상위 5개)
+  const intents = ['추천', '가격', '최저가', '할인', '쿠폰'];
+  intents.forEach(intent => {
+    if (!seed.includes(intent)) {
+      variants.push(`${seed} ${intent}`);
+    }
+  });
+  
+  // 비타민D IU 변형
+  if (seed.includes('비타민d') || seed.includes('비타민D')) {
+    const ius = ['1000IU', '2000IU', '3000IU', '4000IU'];
+    ius.forEach(iu => {
+      if (!seed.includes(iu)) {
+        variants.push(`${seed} ${iu}`);
+      }
+    });
+  }
+  
+  // 띄어쓰기/동의어 변형
+  const spacingVariants: string[] = [];
+  if (seed.includes('블루투스 이어폰')) {
+    spacingVariants.push('블루투스이어폰', '무선 이어폰', '무선이어폰');
+  }
+  if (seed.includes('vitamin d')) {
+    spacingVariants.push('비타민D', '비타민 D');
+  }
+  
+  return [...variants, ...spacingVariants];
+}
+
+// 3-2) Temporal/Seasonal Provider: 연도 x 명절/행사
+function expandTemporal(seed: string): string[] {
+  const variants: string[] = [];
+  const currentYear = new Date().getFullYear();
+  
+  // 연도별 명절/행사 조합
+  const events = ['추석', '명절선물', '선물세트', '기획전', '할인', '세일', '설날', '크리스마스'];
+  
+  events.forEach(event => {
+    if (!seed.includes(event)) {
+      variants.push(`${currentYear} ${event} ${seed}`);
+      variants.push(`${seed} ${currentYear} ${event}`);
+      variants.push(`${currentYear} ${seed} ${event}`);
+    }
+  });
+  
+  return variants;
+}
+
+// 3-3) Local Eateries Provider: 도시/역 + 맛집
+function expandLocal(seed: string): string[] {
+  const variants: string[] = [];
+  
+  // 주요 지역/역
+  const locations = [
+    '잠실역', '강남역', '홍대', '신촌', '명동', '이태원', '건대',
+    '서울', '부산', '대구', '인천', '광주', '대전', '울산'
+  ];
+  
+  // 맛집 관련 키워드
+  const eateryTerms = ['맛집', '맛집 추천', '핫플', '맛있는 집', '유명한 집'];
+  
+  // 음식 관련 키워드면 지역 조합 생성
+  const foodKeywords = ['음식', '요리', '식당', '카페', '커피', '치킨', '피자', '한식', '중식', '일식', '양식'];
+  const isFoodRelated = foodKeywords.some(keyword => seed.includes(keyword));
+  
+  if (isFoodRelated) {
+    locations.forEach(location => {
+      eateryTerms.forEach(term => {
+        variants.push(`${location} ${term}`);
+        variants.push(`${location} ${seed} ${term}`);
+      });
+    });
+  }
+  
+  return variants;
+}
+
+// 3-4) Travel Provider: 국내외 도시 + 여행
+function expandTravel(seed: string): string[] {
+  const variants: string[] = [];
+  
+  // 국내외 주요 도시
+  const cities = [
+    '제주', '부산', '경주', '전주', '여수', '강릉', // 국내
+    '파리', '런던', '도쿄', '오사카', '방콕', '싱가포르', '뉴욕', '로마' // 해외
+  ];
+  
+  // 여행 관련 키워드
+  const travelTerms = ['여행', '맛집', '여행 코스', '일정', '호텔', '숙소', '관광', '투어'];
+  
+  cities.forEach(city => {
+    travelTerms.forEach(term => {
+      variants.push(`${city} ${term}`);
+      if (!seed.includes(city) && !seed.includes(term)) {
+        variants.push(`${city} ${seed} ${term}`);
+      }
+    });
+  });
+  
+  return variants;
+}
+
+// 3-5) Models/Series Provider: 브랜드+시리즈+모델
+function expandModels(seed: string): string[] {
+  const variants: string[] = [];
+  
+  // 브랜드별 모델 변형
+  const brandModels: { [key: string]: string[] } = {
+    '샤오미': ['로봇청소기 m40', '로봇청소기 m30', '로봇청소기 s10', '로봇청소기 e10'],
+    '아이폰': ['17', '17 프로', '17pro', '16', '16 프로', '15'],
+    '갤럭시': ['s25', 's25 울트라', '플립7', '폴드7', 's24', 's24 울트라'],
+    '블루투스': ['이어폰 노캔', '이어폰 방수', '이어폰 게이밍', '헤드폰', '스피커']
+  };
+  
+  // 시드에 포함된 브랜드 확인 후 모델 추가
+  Object.entries(brandModels).forEach(([brand, models]) => {
+    if (seed.includes(brand.toLowerCase()) || seed.includes(brand)) {
+      models.forEach(model => {
+        if (!seed.includes(model)) {
+          variants.push(`${brand} ${model}`);
+          variants.push(`${model}`);
+        }
+      });
+    }
+  });
+  
+  return variants;
+}
+
+// 통합 확장 함수: 모든 Provider 적용
+export function expandAllKeywords(seeds: string[]): string[] {
+  console.log(`🌱 EXP seeds: in=${seeds.length} - starting expansion...`);
+  
+  const allExpanded = new Set<string>();
+  
+  // 원본 시드 추가
+  seeds.forEach(seed => allExpanded.add(normalizeKeyword(seed)));
+  
+  // 각 시드에 대해 모든 확장자 적용
+  seeds.forEach(seed => {
+    const variants = expandVariants(seed);
+    const temporal = expandTemporal(seed);
+    const local = expandLocal(seed);
+    const travel = expandTravel(seed);
+    const models = expandModels(seed);
+    
+    // 모든 확장 결과 정규화 후 추가
+    [...variants, ...temporal, ...local, ...travel, ...models].forEach(expanded => {
+      const normalized = normalizeKeyword(expanded);
+      if (normalized.length > 1) { // 너무 짧은 키워드 제외
+        allExpanded.add(normalized);
+      }
+    });
+  });
+  
+  const expandedArray = Array.from(allExpanded);
+  console.log(`🌱 EXP seeds: in=${seeds.length} expanded=${expandedArray.length} frontier=${Math.min(expandedArray.length, 50000)}`);
+  
+  // 50,000개 상한 적용 (명세서 요구사항)
+  if (expandedArray.length > 50000) {
+    // 균등 샘플링으로 50,000개로 제한
+    const sampled = expandedArray
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 50000);
+    console.log(`🔄 Frontier capped at 50,000 (from ${expandedArray.length})`);
+    return sampled;
+  }
+  
+  return expandedArray;
+}
+
 // BFS 크롤러 클래스
 export class BFSKeywordCrawler {
   private frontier: Set<string> = new Set();
@@ -220,7 +414,7 @@ export class BFSKeywordCrawler {
     // 새로운 매개변수들은 추후 구현에서 활용 예정
   }
 
-  // 시드 키워드로 frontier 초기화 (Phase 3: 중복 크롤링 방지)
+  // 시드 키워드로 frontier 초기화 (명세서 2: 프론티어 = seeds ∪ expandAll(seeds))
   public async initializeWithSeeds(seeds: string[]) {
     console.log(`🌱 Initializing BFS crawler with ${seeds.length} seed keywords`);
     
@@ -231,16 +425,22 @@ export class BFSKeywordCrawler {
     
     console.log(`🔍 Normalized to ${normalizedSeeds.length} valid seeds`);
     
-    // 최근 30일 내 크롤링된 키워드 필터링 (Phase 3: 중복 방지)
-    const uncrawledSeeds = await storage.filterUncrawledKeywords(normalizedSeeds, 30);
+    // 명세서 핵심: "절대 DB 중복으로 프론티어에서 제거하지 말 것"
+    // 시드 확장: 프론티어 = seeds ∪ expandAll(seeds)
+    const expandedKeywords = expandAllKeywords(normalizedSeeds);
     
-    // frontier에 미크롤링 키워드만 추가
-    for (const seed of uncrawledSeeds) {
-      this.frontier.add(seed);
-    }
+    // 모든 확장된 키워드를 frontier에 추가 (DB 중복 무시)
+    expandedKeywords.forEach(keyword => {
+      this.frontier.add(keyword);
+    });
     
     this.progress.frontierSize = this.frontier.size;
-    console.log(`✅ Frontier initialized with ${this.frontier.size} new seeds (${normalizedSeeds.length - uncrawledSeeds.length} skipped as recently crawled)`);
+    console.log(`✅ Frontier initialized with ${this.frontier.size} expanded keywords (Original: ${normalizedSeeds.length})`);
+    
+    // 빈 프론티어면 400 반환 준비 (명세서 요구사항)
+    if (this.frontier.size === 0) {
+      throw new Error('Empty frontier after expansion - no valid keywords to crawl');
+    }
   }
 
   // 메인 크롤링 실행
@@ -389,14 +589,8 @@ export class BFSKeywordCrawler {
         
         console.log(`✅ Saved "${keyword}" (Vol: ${rawVolume.toLocaleString()}, Score: ${overallScore}) [${this.collected}/${this.maxTarget}]`);
         
-        // BFS 확장: 연관 키워드를 다음 frontier에 추가
-        const expandedKeywords = generateExpandedKeywords(keyword);
-        for (const expanded of expandedKeywords) {
-          const normalized = normalizeKeyword(expanded);
-          if (!this.visited.has(normalized) && !nextFrontier.has(normalized)) {
-            nextFrontier.add(normalized);
-          }
-        }
+        // 연관 키워드를 다음 frontier에 추가 (구현 필요 시)
+        // 현재는 시드 키워드만으로 진행
       }
       
       // 동시성 제어 - 잠시 대기
