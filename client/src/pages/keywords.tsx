@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Progress } from "@/components/ui/progress";
 import { RefreshCw, Search, AlertTriangle, CheckCircle, Filter, TrendingUp, Database, ArrowLeft, Download, Upload, FileText } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -1078,36 +1079,105 @@ export default function KeywordsPage() {
 
               {/* 진행률 표시 */}
               {crawlProgress && (
-                <div className="rounded-lg border bg-card p-4 space-y-3">
-                  <h4 className="font-medium text-sm flex items-center space-x-2">
-                    <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
-                    <span>BFS 크롤링 진행 중</span>
-                    <Badge variant="secondary">{crawlProgress.state}</Badge>
-                  </h4>
+                <div className="rounded-lg border bg-card p-4 space-y-4" data-testid="crawl-progress">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-sm flex items-center space-x-2">
+                      <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+                      <span>BFS 크롤링 진행 중</span>
+                      <Badge variant="secondary">{crawlProgress.state}</Badge>
+                    </h4>
+                    <div className="text-xs text-muted-foreground">
+                      홉 {crawlProgress.progress?.currentHop || 0} / {crawlProgress.config?.maxHops || 3}
+                    </div>
+                  </div>
+                  
+                  {/* 전체 진행률 바 */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">수집 진행률</span>
+                      <span className="font-mono">
+                        {(crawlProgress.progress?.collected || 0).toLocaleString()} / {(crawlProgress.config?.target || 20000).toLocaleString()}
+                      </span>
+                    </div>
+                    <Progress 
+                      value={Math.min(((crawlProgress.progress?.collected || 0) / (crawlProgress.config?.target || 20000)) * 100, 100)}
+                      className="h-2"
+                      data-testid="progress-collection"
+                    />
+                  </div>
+
+                  {/* 성공률 진행률 바 */}
+                  {crawlProgress.progress?.requested > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">API 성공률</span>
+                        <span className="font-mono">
+                          {Math.round((crawlProgress.progress.ok / crawlProgress.progress.requested) * 100)}%
+                        </span>
+                      </div>
+                      <Progress 
+                        value={Math.round((crawlProgress.progress.ok / crawlProgress.progress.requested) * 100)}
+                        className="h-2"
+                        data-testid="progress-success-rate"
+                      />
+                    </div>
+                  )}
+                  
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div className="space-y-1">
                       <div className="text-muted-foreground">수집됨</div>
-                      <div className="font-medium text-green-600">{crawlProgress.progress?.collected || 0}</div>
+                      <div className="font-medium text-green-600 font-mono" data-testid="text-collected">
+                        {(crawlProgress.progress?.collected || 0).toLocaleString()}
+                      </div>
                     </div>
                     <div className="space-y-1">
                       <div className="text-muted-foreground">요청됨</div>
-                      <div className="font-medium">{crawlProgress.progress?.requested || 0}</div>
-                    </div>
-                    <div className="space-y-1">
-                      <div className="text-muted-foreground">성공률</div>
-                      <div className="font-medium text-blue-600">
-                        {crawlProgress.progress?.requested > 0 ? 
-                          Math.round((crawlProgress.progress.ok / crawlProgress.progress.requested) * 100) : 0}%
+                      <div className="font-medium font-mono" data-testid="text-requested">
+                        {(crawlProgress.progress?.requested || 0).toLocaleString()}
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <div className="text-muted-foreground">홉/프론티어</div>
-                      <div className="text-xs">
-                        <div>홉: {crawlProgress.progress?.currentHop || 0}</div>
-                        <div>프론티어: {crawlProgress.progress?.frontierSize || 0}</div>
+                      <div className="text-muted-foreground">처리속도</div>
+                      <div className="font-medium text-blue-600 font-mono" data-testid="text-processing-speed">
+                        {crawlProgress.progress?.requested > 0 ? 
+                          `${Math.round(crawlProgress.progress.requested / ((Date.now() - new Date(crawlProgress.startedAt).getTime()) / 1000 / 60))}/분` : 
+                          '계산중...'}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-muted-foreground">프론티어</div>
+                      <div className="text-xs font-mono" data-testid="text-frontier">
+                        <div>큐: {(crawlProgress.progress?.frontierSize || 0).toLocaleString()}</div>
+                        <div>방문: {(crawlProgress.progress?.visitedSize || 0).toLocaleString()}</div>
                       </div>
                     </div>
                   </div>
+
+                  {/* 예상 완료 시간 */}
+                  {crawlProgress.progress?.collected > 0 && crawlProgress.config?.target && (
+                    <div className="text-xs text-muted-foreground border-t pt-2">
+                      <div className="flex justify-between">
+                        <span>예상 완료 시간:</span>
+                        <span className="font-mono">
+                          {(() => {
+                            const elapsedMs = Date.now() - new Date(crawlProgress.startedAt).getTime();
+                            const elapsedMin = elapsedMs / 1000 / 60;
+                            const rate = crawlProgress.progress.collected / elapsedMin;
+                            const remaining = crawlProgress.config.target - crawlProgress.progress.collected;
+                            const etaMin = remaining / rate;
+                            
+                            if (etaMin < 60) {
+                              return `약 ${Math.round(etaMin)}분`;
+                            } else {
+                              const hours = Math.floor(etaMin / 60);
+                              const mins = Math.round(etaMin % 60);
+                              return `약 ${hours}시간 ${mins}분`;
+                            }
+                          })()}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                   {jobId && (
                     <Button
                       onClick={async () => {
