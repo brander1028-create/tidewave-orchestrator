@@ -224,10 +224,11 @@ export default function KeywordsPage() {
     return () => clearInterval(interval);
   }, [jobId, queryClient, toast]);
 
-  // Fetch system health status
+  // Fetch system health status (optimized)
   const { data: health } = useQuery({
     queryKey: ['/api/health'],
-    refetchInterval: 30000,
+    refetchInterval: 300000, // Poll every 5 minutes (was 30 seconds)
+    refetchOnWindowFocus: false, // Disable auto-refresh on focus to save tokens
   });
 
   // Fetch keywords statistics

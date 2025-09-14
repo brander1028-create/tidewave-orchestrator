@@ -7,6 +7,8 @@ import { extractTop3ByVolume } from "./services/keywords";
 import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
+import { shouldPreflight, probeHealth, getOptimisticHealth, markHealthFail, markHealthGood } from './services/health-cache';
+import { getVolumesWithHealth } from './services/externals-health';
 import { getVolumes } from './services/searchad';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore, getKeywordsCounts } from './store/keywords';
 // BFS Crawler imports
@@ -423,35 +425,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // UNIFIED HEALTH GATE + KEYWORDS MANAGEMENT
   // ===========================================
 
-  // Enhanced health check endpoint with prompt logic
-  // TTL 캐시 (60초)
-  let healthCacheSimple: { data: any; ts: number } | null = null;
-  const HEALTH_CACHE_TTL = 60000; // 60초
+  // Optimistic health check endpoint with force parameter support
 
   app.get('/api/health', async (req, res) => {
     try {
-      const now = Date.now();
-      let cacheStatus = 'MISS';
+      const force = String(req.query.force || '').toLowerCase() === 'true';
+      const healthMode = process.env.HEALTH_MODE || 'optimistic';
       
-      // 캐시 확인
-      if (healthCacheSimple && (now - healthCacheSimple.ts < HEALTH_CACHE_TTL)) {
-        cacheStatus = 'HIT';
-        res.setHeader('X-Health-Cache', cacheStatus);
-        return res.status(200).json(healthCacheSimple.data);
-      }
+      // 사용자가 force=true일 때만 실제 검사, 기본은 낙관적 캐시 사용
+      const healthData = force ? 
+        await probeHealth(db) : 
+        await getOptimisticHealth(db);
       
-      // 얕은 헬스체크 (빠른 버전)
-      const healthData = {
-        openapi: { ok: true },
-        searchads: { ok: true, mode: await metaGet(db, 'searchads_mode') || 'searchads' },
-        keywordsdb: { ok: true, count: await getKeywordsCounts() }
-      };
-      
-      // 캐시 저장
-      healthCacheSimple = { data: healthData, ts: now };
+      // LKG 데이터가 없으면 첫 실행이므로 probe가 실행됨
+      const cacheAge = healthData.ts ? Math.round((Date.now() - healthData.ts) / 1000) : 0;
+      const cacheStatus = force ? 'FORCED' : (cacheAge < 60 ? 'FRESH' : 'CACHED');
       
       res.setHeader('X-Health-Cache', cacheStatus);
-      res.status(200).json(healthData);
+      res.setHeader('X-Health-Mode', healthMode);
+      res.setHeader('X-Health-Age', cacheAge.toString());
+      res.setHeader('X-Health-Degraded', healthData.degraded ? 'true' : 'false');
+      
+      // UI 및 프롬프트 로직을 위해 기존 형식 유지
+      const responseData = {
+        openapi: healthData.openapi,
+        searchads: healthData.searchads,
+        keywordsdb: healthData.keywordsdb,
+        ui: {
+          setup_complete: true, // 단순화
+          should_prompt: false, // 최적화된 버전에서는 프롬프트 최소화
+          suppress_until: 0
+        },
+        // 추가 메타데이터
+        _meta: {
+          mode: healthMode,
+          degraded: !!healthData.degraded,
+          cache_age_seconds: cacheAge,
+          last_ok_ts: healthData.last_ok_ts,
+          forced: force
+        }
+      };
+      
+      res.status(200).json(responseData);
     } catch (error) {
       console.error('🏥 Health check failed:', error);
       res.setHeader('X-Health-Cache', 'ERROR');
@@ -476,26 +491,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Enhanced SERP search with strict mode
+  // Enhanced SERP search with optimistic health checking
   app.post('/api/serp/search', async (req, res) => {
     try {
-      const { strict = true } = req.body || {};
+      const { strict = false } = req.body || {};
       console.log(`🔒 SERP search request - Strict mode: ${strict}`);
       
-      // Run health checks first
-      const openapi = await checkOpenAPI();
-      const searchads = await checkSearchAds();
-      const keywordsdb = await checkKeywordsDB();
-      const health: HealthResponse = { openapi, searchads, keywordsdb };
-
-      // ▶️ Strict mode validation: All services must be operational
-      if (strict && (!openapi.ok || searchads.mode === 'fallback' || !keywordsdb.ok)) {
-        console.log(`🔒 Strict mode BLOCKED - OpenAPI: ${openapi.ok}, SearchAds: ${searchads.mode}, KeywordsDB: ${keywordsdb.ok}`);
-        return res.status(412).json({ 
-          error: 'PRECONDITION_FAILED', 
-          health, 
-          hint: '엄격 모드: 세 서비스 모두 정상이어야 시작합니다.' 
-        });
+      // 1) 필요한 경우에만 프리플라이트
+      if (await shouldPreflight(db, strict)) {
+        const h = await probeHealth(db);
+        if (!h.openapi.ok || h.searchads.mode === 'fallback' || !h.keywordsdb.ok) {
+          return res.status(412).json({ 
+            error: 'PRECONDITION_FAILED', 
+            health: h,
+            hint: 'Health check failed - services not operational' 
+          });
+        }
       }
 
       // If validation passes, delegate to existing analyze endpoint logic
@@ -520,32 +531,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Start analysis in background (reuse existing function)
       processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog);
 
+      // 시작 성공 → 정상 기록
+      const h = await getOptimisticHealth(db);
+      await markHealthGood(db, h);
+
       console.log(`🔒 SERP analysis started with job ID: ${job.id}`);
-      return res.status(202).json({ jobId: job.id, health });
+      return res.status(202).json({ jobId: job.id, health: h });
       
-    } catch (error) {
+    } catch (error: any) {
+      // 3) 실행 중 오류 → degraded 마킹
+      await markHealthFail(db, error?.message);
       console.error('🔒 SERP search failed:', error);
       res.status(500).json({ error: 'SERP search failed', details: String(error) });
     }
   });
 
-  // 새로운 전체 키워드 가져오기 엔드포인트 (요구사항)
+  // 새로운 전체 키워드 가져오기 엔드포인트 (optimistic health)
   app.post('/api/keywords/refresh-all', async (req, res) => {
     try {
-      const { minVolume = 1000, hasAdsOnly = true, mode = 'merge' } = req.body || {};
+      const { minVolume = 1000, hasAdsOnly = true, mode = 'merge', strict = false } = req.body || {};
       console.log(`🔄 Keywords refresh-all - minVolume: ${minVolume}, hasAdsOnly: ${hasAdsOnly}, mode: ${mode}`);
       
-      // Health check for SearchAds API
-      const searchadsHealth = await checkSearchAds();
-      if (searchadsHealth.mode === 'fallback') {
-        return res.status(503).json({ 
-          error: 'SearchAds API not available', 
-          health: searchadsHealth 
-        });
+      // 1) 필요한 경우에만 프리플라이트
+      if (await shouldPreflight(db, strict)) {
+        const h = await probeHealth(db);
+        if (h.searchads.mode === 'fallback') {
+          return res.status(412).json({ 
+            error: 'PRECONDITION_FAILED', 
+            health: h
+          });
+        }
       }
 
       // 전체 키워드 수집 로직 (기존 함수 재사용) - 단일 키워드로 수정
       const result = await upsertKeywordsFromSearchAds('홍삼', 300);
+
+      // 성공 시 정상 상태 기록
+      const h = await getOptimisticHealth(db);
+      await markHealthGood(db, h);
 
       res.json({
         message: 'Refresh completed successfully',
@@ -557,6 +580,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
     } catch (error: any) {
+      await markHealthFail(db, error?.message);
       console.error('🔄 Keywords refresh-all failed:', error);
       res.status(500).json({ 
         error: 'Refresh failed', 
@@ -565,31 +589,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Keywords refresh endpoint (기존 유지)
+  // Keywords refresh endpoint (optimistic health)
   app.post('/api/keywords/refresh', async (req, res) => {
     try {
-      const { base, limit = 300, strict = true } = req.body || {};
+      const { base, limit = 300, strict = false } = req.body || {};
       console.log(`📝 Keywords refresh - Base: "${base}", Limit: ${limit}, Strict: ${strict}`);
       
       if (!base || typeof base !== 'string') {
         return res.status(400).json({ error: 'Base keyword is required' });
       }
 
-      // Health check for strict mode
-      const openapi = await checkOpenAPI();
-      const searchads = await checkSearchAds();
-      const keywordsdb = await checkKeywordsDB();
-      
-      if (strict && (!openapi.ok || searchads.mode === 'fallback' || !keywordsdb.ok)) {
-        console.log(`📝 Keywords refresh BLOCKED by strict mode`);
-        return res.status(412).json({ 
-          error: 'PRECONDITION_FAILED', 
-          health: { openapi, searchads, keywordsdb } 
-        });
+      // 1) 필요한 경우에만 프리플라이트
+      if (await shouldPreflight(db, strict)) {
+        const h = await probeHealth(db);
+        if (!h.openapi.ok || h.searchads.mode === 'fallback' || !h.keywordsdb.ok) {
+          console.log(`📝 Keywords refresh BLOCKED by health check`);
+          return res.status(412).json({ 
+            error: 'PRECONDITION_FAILED', 
+            health: h
+          });
+        }
       }
 
       const result = await upsertKeywordsFromSearchAds(base, limit);
       console.log(`📝 Keywords refresh complete - Mode: ${result.mode}, Inserted: ${result.count}`);
+      
+      // 성공 시 정상 상태 기록
+      const h = await getOptimisticHealth(db);
+      await markHealthGood(db, h);
       
       res.json({ 
         ok: true, 
@@ -597,7 +624,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         stats: result.stats, 
         inserted: result.count 
       });
-    } catch (error) {
+    } catch (error: any) {
+      await markHealthFail(db, error?.message);
       console.error('📝 Keywords refresh failed:', error);
       res.status(500).json({ error: 'Keywords refresh failed', details: String(error) });
     }
@@ -628,8 +656,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`🌱 Expanding keywords from ${seeds.length} seeds: ${seeds.slice(0, 3).join(', ')}...`);
       console.log(`⚙️ Config: minVolume=${minVolume}, hasAdsOnly=${hasAdsOnly}, chunkSize=${chunkSize}`);
 
-      // Get volumes for all seeds
-      const volumeResult = await getVolumes(seeds);
+      // Get volumes for all seeds (health-aware)
+      const volumeResult = await getVolumesWithHealth(db, seeds);
       const volumes = volumeResult.volumes;
       
       console.log(`📊 Got volumes for ${Object.keys(volumes).length}/${seeds.length} seeds`);
@@ -766,7 +794,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       let seedsProcessed = 0;
       if (newSeeds.length > 0) {
-        const volumeResults = await getVolumes(newSeeds);
+        const volumeResults = await getVolumesWithHealth(db, newSeeds);
         
         const keywordsToInsert: any[] = [];
         for (const [text, v] of Object.entries<any>(volumeResults.volumes)) {

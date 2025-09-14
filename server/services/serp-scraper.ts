@@ -1,5 +1,7 @@
 import fetch from 'node-fetch';
 import { naverApi } from './naver-api';
+import { searchBlogsWithHealth, checkKeywordRankingWithHealth } from './externals-health';
+import { db } from '../db';
 
 export interface SerpResult {
   url: string;
@@ -47,8 +49,8 @@ class SerpScraper {
     try {
       console.log(`📊 Checking ranking for "${keyword}" from blog: ${blogUrl}`);
       
-      // Try Naver API first if available
-      const rank = await naverApi.checkKeywordRanking(keyword, blogUrl);
+      // Try Naver API first if available (health-aware)
+      const rank = await checkKeywordRankingWithHealth(db, keyword, blogUrl);
       if (rank !== null) {
         console.log(`✅ Found blog "${blogUrl}" at rank ${rank} for keyword "${keyword}"`);
         return rank;
@@ -70,7 +72,7 @@ class SerpScraper {
    */
   private async tryNaverApi(keyword: string, minRank: number, maxRank: number): Promise<SerpResult[]> {
     try {
-      const searchResults = await naverApi.searchBlogs(keyword, 100); // Get more results to filter by rank
+      const searchResults = await searchBlogsWithHealth(db, keyword, 100); // Get more results to filter by rank (health-aware)
       const results: SerpResult[] = [];
       
       for (let i = 0; i < searchResults.length; i++) {

@@ -2,7 +2,8 @@ import { db } from '../db';
 import { managedKeywords } from '../../shared/schema';
 import { eq, sql, desc, asc, inArray } from 'drizzle-orm';
 import type { ManagedKeyword, InsertManagedKeyword } from '../../shared/schema';
-import { getVolumes, type SearchAdResult } from '../services/searchad';
+import { getVolumesWithHealth } from '../services/externals-health';
+import type { SearchAdResult } from '../services/searchad';
 
 /**
  * Convert compIdx string to numeric score (0-100)
@@ -281,7 +282,7 @@ export async function upsertKeywordsFromSearchAds(
   
   // Get related keywords from SearchAds API using base keyword
   const relatedKeywords = await generateRelatedKeywords(baseKeyword, limit);
-  const result = await getVolumes(relatedKeywords);
+  const result = await getVolumesWithHealth(db, relatedKeywords);
   
   // Process and grade the keywords
   const keywordsToUpsert: Partial<InsertManagedKeyword>[] = [];

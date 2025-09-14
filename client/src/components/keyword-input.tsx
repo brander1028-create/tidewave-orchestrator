@@ -64,11 +64,12 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
     },
   });
 
-  // Health status monitoring for strict mode
+  // Health status monitoring for strict mode (optimized)
   const { data: health, isLoading: healthLoading } = useQuery({
     queryKey: ['/api/health'],
-    refetchInterval: 30000,
+    refetchInterval: strictMode ? 120000 : false, // Poll every 2 minutes if strict mode, otherwise disabled
     enabled: strictMode, // Only fetch when strict mode is enabled
+    refetchOnWindowFocus: false, // Disable auto-refresh on focus
   });
 
   const startAnalysisMutation = useMutation({

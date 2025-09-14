@@ -1,4 +1,5 @@
-import { getVolumes } from './searchad';
+import { getVolumesWithHealth } from './externals-health';
+import { db } from '../db';
 
 export function canonicalize(s: string) {
   return s.replace(/[^0-9A-Za-z가-힣\s]/g, ' ')
@@ -30,8 +31,8 @@ export async function extractTop3ByVolume(titles: string[]) {
   const candList = Array.from(cands);
   console.log(`📝 Generated ${candList.length} candidate keywords: ${candList.slice(0, 5).join(', ')}...`);
 
-  // 2) 검색량 조회 (없으면 빈 객체)
-  const volumeResult = await getVolumes(candList);
+  // 2) 검색량 조회 (health-aware)
+  const volumeResult = await getVolumesWithHealth(db, candList);
   const volMap = volumeResult.volumes;
   const volumesMode = volumeResult.mode;
   

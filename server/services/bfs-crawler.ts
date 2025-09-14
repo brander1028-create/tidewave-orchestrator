@@ -1,8 +1,9 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { getVolumes } from './searchad.js';
+import { getVolumesWithHealth } from './externals-health.js';
 import { listKeywords, upsertMany } from '../store/keywords.js';
 import { nanoid } from 'nanoid';
+import { db } from '../db.js';
 
 // CSV에서 시드 키워드 로드
 export function loadSeedsFromCSV(): string[] {
@@ -175,8 +176,8 @@ export class BFSKeywordCrawler {
       const chunk = currentFrontierArray.slice(i, i + this.chunkSize);
       console.log(`📦 Processing chunk ${Math.floor(i/this.chunkSize) + 1}/${Math.ceil(currentFrontierArray.length/this.chunkSize)}: ${chunk.length} keywords`);
       
-      // 검색량 조회
-      const volumeResult = await getVolumes(chunk);
+      // 검색량 조회 (health-aware)
+      const volumeResult = await getVolumesWithHealth(db, chunk);
       const volumes = volumeResult.volumes;
       
       console.log(`📊 Got volumes for ${Object.keys(volumes).length}/${chunk.length} keywords`);

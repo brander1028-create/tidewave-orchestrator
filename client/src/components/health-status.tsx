@@ -109,12 +109,24 @@ export default function HealthStatus() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const queryClient = useQueryClient();
 
-  // Fetch health status with polling every 30 seconds
+  // Fetch health status with optimized polling (cached data)
   const { data: health, isLoading, error, refetch } = useQuery({
     queryKey: ['/api/health'],
-    refetchInterval: 30000, // Poll every 30 seconds
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: true,
+    refetchInterval: 300000, // Poll every 5 minutes (was 30 seconds) - uses cached data
+    refetchIntervalInBackground: false, // Don't poll in background to save tokens
+    refetchOnWindowFocus: false, // Don't auto-refresh on focus to save tokens
+  });
+
+  // Force health check with real API calls (for manual refresh)
+  const { refetch: forceRefetch } = useQuery({
+    queryKey: ['/api/health', 'force'],
+    queryFn: async () => {
+      const response = await fetch('/api/health?force=true');
+      if (!response.ok) throw new Error('Force health check failed');
+      return response.json();
+    },
+    enabled: false, // Only run when manually triggered
+    staleTime: 0, // Always fresh when forced
   });
 
   // Suppress prompts mutation
@@ -133,7 +145,20 @@ export default function HealthStatus() {
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await refetch();
+    try {
+      // Force real health check on manual refresh
+      const result = await forceRefetch();
+      // Invalidate the regular health cache to show fresh data
+      queryClient.invalidateQueries({ queryKey: ['/api/health'] });
+      // Also update the regular query cache with forced result
+      if (result.data) {
+        queryClient.setQueryData(['/api/health'], result.data);
+      }
+    } catch (error) {
+      console.error('Force refresh failed:', error);
+      // Fallback to regular refetch if force fails
+      await refetch();
+    }
     setTimeout(() => setIsRefreshing(false), 500); // Visual feedback
   };
 
