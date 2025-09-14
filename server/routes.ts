@@ -1281,21 +1281,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const excludedKeywords = await listKeywords({ excluded: true, orderBy: 'raw_volume', dir: 'desc' });
       const keywords = [...includedKeywords, ...excludedKeywords];
       
-      // Create CSV content with proper Korean encoding
-      const header = 'text,raw_volume,volume,grade,excluded,updated_at\n';
+      // Create CSV content with proper Korean encoding (use semicolons for Excel compatibility)
+      const header = 'text;raw_volume;volume;grade;excluded;updated_at\n';
       const rows = keywords.map(k => {
         const excluded = k.excluded ? 'true' : 'false';
         const updatedAt = k.updated_at ? new Date(k.updated_at).toISOString() : '';
-        return `${sanitizeCsvField(k.text)},${sanitizeCsvField(k.raw_volume)},${sanitizeCsvField(k.volume)},${sanitizeCsvField(k.grade)},${sanitizeCsvField(excluded)},${sanitizeCsvField(updatedAt)}`;
+        return `${sanitizeCsvField(k.text)};${sanitizeCsvField(k.raw_volume)};${sanitizeCsvField(k.volume)};${sanitizeCsvField(k.grade)};${sanitizeCsvField(excluded)};${sanitizeCsvField(updatedAt)}`;
       }).join('\n');
       
       const csvContent = header + rows;
       
-      // Set headers for file download with UTF-8 BOM for Korean support
+      // Set headers for file download with UTF-8 BOM and proper encoding for Korean Excel
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', 'attachment; filename="keywords-export.csv"');
+      res.setHeader('Content-Disposition', 'attachment; filename*=UTF-8\'\'keywords-export.csv');
       
-      res.send('\ufeff' + csvContent); // UTF-8 BOM for Excel Korean support
+      res.send('\ufeff' + csvContent); // UTF-8 BOM + Semicolon separator for Excel Korean support
     } catch (error) {
       console.error('Error exporting keywords:', error);
       res.status(500).json({ error: 'Failed to export keywords' });
