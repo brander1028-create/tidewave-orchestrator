@@ -60,6 +60,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10, titleExtract = true } = req.body;
       
+      // 🎯 디버깅: 요청 바디 로깅
+      console.log(`🎯 SERP Request Body:`, JSON.stringify({
+        keywords, minRank, maxRank, postsPerBlog, titleExtract
+      }, null, 2));
+      
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
       }
@@ -198,8 +203,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const posts = await storage.getAnalyzedPosts(blog.id);
         const top3Keywords = await storage.getTopKeywordsByBlog(blog.id); // Get TOP3
         
-        // Check if base keyword rank is 1-10 (지정 키워드 기준)
-        const hasHit = blog.baseRank && blog.baseRank >= 1 && blog.baseRank <= 10;
+        // 🎯 A. Base Rank 컷오프 환경변수화
+        const cutoff = Number(process.env.HIT_FILTER_CUTOFF ?? 10);
+        const hasHit = blog.baseRank && blog.baseRank >= 1 && blog.baseRank <= cutoff;
         
         if (hasHit) {
           hitBlogs.push({
@@ -273,8 +279,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       console.log(`📈 Final volumes_mode for response: ${volumesMode}`);
+      
+      // 🎯 4. 필터 로그 (결과 조립 구간)
+      const cutoff = Number(process.env.HIT_FILTER_CUTOFF ?? 10);
+      console.log(`🔍 Filter Stats: allBlogs=${allBlogs.length}, hasHit=${hitBlogs.length}, uniqueKeywords=${allUniqueKeywords.size}, volumesMode=${volumesMode}, cutoff=${cutoff}`);
 
-      const response = {
+      const response: any = {
         blogs: hitBlogs,
         keywords: allKeywords, 
         posts: allPosts,
@@ -290,6 +300,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         warnings: [],
         errors: []
       };
+      
+      // 🎯 B. 디버그 필드 추가 (카운터 0일 때)
+      if (hitBlogs.length === 0 || allKeywords.length === 0) {
+        response.debug = {
+          discoveredBlogs: allBlogs.length,
+          blogsAfterCutoff: hitBlogs.length, 
+          uniqueKeywordsAllBlogs: allUniqueKeywords.size,
+          cutoffUsed: cutoff
+        };
+        console.log(`🚨 Debug Info (zero results):`, response.debug);
+      }
+      
+      // 🎯 2. 원본 결과 JSON 로깅
+      console.log(`📊 SERP Results JSON (Job ${req.params.jobId}):`, JSON.stringify(response, null, 2));
 
       res.json(response);
     } catch (error) {
@@ -1758,6 +1782,12 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
               volumesMode: titleResult.mode === 'db-only' ? 'searchads' : 
                           titleResult.mode === 'api-refresh' ? 'searchads' : 'fallback'
             };
+            
+            // 🎯 C. 제목 선별 결과 검증 로그
+            const candidateCount = titleResult.stats?.candidateCount || 0;
+            const eligibleCount = titleResult.stats?.eligibleCount || 0;
+            console.log(`🔤 TITLE_TOP: blog=${blog.blogName}, titles=${titles.length}, cands=${candidateCount}, dbHits1000=${eligibleCount}, mode=${titleResult.mode}, top4=[${titleResult.topN.map(k => `${k.text}(${k.combined_score})`).join(', ')}]`);
+            
             console.log(`   🏆 [Title Extract] Top ${titleResult.topN.length} keywords for ${blog.blogName} (${titleResult.mode}): ${titleResult.topN.map(kw => `${kw.text} (${kw.combined_score}pts)`).join(', ')}`);
           } catch (error) {
             console.error(`   ❌ [Title Extract] Failed for ${blog.blogName}:`, error);
