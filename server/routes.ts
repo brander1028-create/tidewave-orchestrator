@@ -965,11 +965,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (newSeeds.length > 0) {
         const volumeResults = await getVolumesWithHealth(db, newSeeds);
         
+        // NaN 안전 처리 함수 (routes.ts용)
+        const safeParseNumber = (value: any): number => {
+          const parsed = Number(value);
+          return isNaN(parsed) ? 0 : parsed;
+        };
+        
         const keywordsToInsert: any[] = [];
         for (const [text, v] of Object.entries<any>(volumeResults.volumes)) {
-          const rawVolume = v.total ?? v.volumeMonthly ?? 0;
-          const adDepth   = v.plAvgDepth ?? v.adWordsCnt ?? 0;
-          const estCpc    = v.avePcCpc ?? v.cpc ?? 0;
+          const rawVolume = safeParseNumber(v.total ?? v.volumeMonthly ?? 0);
+          const adDepth   = safeParseNumber(v.plAvgDepth ?? v.adWordsCnt ?? 0);
+          const estCpc    = safeParseNumber(v.avePcCpc ?? v.cpc ?? 0);
           const compIdx   = v.compIdx ?? '중간';
 
           if (rawVolume < minVolume) continue;
