@@ -7,11 +7,14 @@ import {
   type InsertAnalyzedPost, 
   type ExtractedKeyword, 
   type InsertExtractedKeyword,
-  serpJobs
+  type KeywordCrawlHistory,
+  type InsertKeywordCrawlHistory,
+  serpJobs,
+  keywordCrawlHistory
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { db } from "./db";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql, and, gte } from "drizzle-orm";
 
 export interface IStorage {
   // SERP Job operations
@@ -33,6 +36,11 @@ export interface IStorage {
   createExtractedKeyword(keyword: InsertExtractedKeyword): Promise<ExtractedKeyword>;
   getExtractedKeywords(blogId: string): Promise<ExtractedKeyword[]>;
   getTopKeywordsByBlog(blogId: string): Promise<ExtractedKeyword[]>;
+  
+  // Keyword crawl history operations (Phase 3: 중복 크롤링 방지)
+  recordKeywordCrawl(keyword: string, source?: string): Promise<void>;
+  getRecentlyCrawledKeywords(daysPast?: number): Promise<string[]>;
+  filterUncrawledKeywords(keywords: string[], daysPast?: number): Promise<string[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -198,6 +206,67 @@ export class MemStorage implements IStorage {
     
     // Return top 3 keywords
     return blogKeywords.slice(0, 3);
+  }
+
+  // Keyword crawl history operations (Phase 3: 중복 크롤링 방지)
+  async recordKeywordCrawl(keyword: string, source: string = "bfs"): Promise<void> {
+    try {
+      // 이미 존재하면 업데이트, 없으면 생성 (UPSERT)
+      await db.insert(keywordCrawlHistory)
+        .values({
+          keyword,
+          source,
+          crawlCount: 1
+        })
+        .onConflictDoUpdate({
+          target: keywordCrawlHistory.keyword,
+          set: {
+            lastCrawledAt: sql`NOW()`,
+            crawlCount: sql`${keywordCrawlHistory.crawlCount} + 1`,
+            source
+          }
+        });
+      
+      console.log(`📝 Recorded crawl for keyword: ${keyword} (source: ${source})`);
+    } catch (error) {
+      console.error(`❌ Failed to record keyword crawl: ${keyword}`, error);
+    }
+  }
+
+  async getRecentlyCrawledKeywords(daysPast: number = 30): Promise<string[]> {
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - daysPast);
+      
+      const recentHistory = await db
+        .select({ keyword: keywordCrawlHistory.keyword })
+        .from(keywordCrawlHistory)
+        .where(gte(keywordCrawlHistory.lastCrawledAt, cutoffDate));
+      
+      const keywords = recentHistory.map(row => row.keyword);
+      console.log(`🔍 Found ${keywords.length} keywords crawled in last ${daysPast} days`);
+      return keywords;
+    } catch (error) {
+      console.error(`❌ Failed to get recently crawled keywords:`, error);
+      return [];
+    }
+  }
+
+  async filterUncrawledKeywords(keywords: string[], daysPast: number = 30): Promise<string[]> {
+    try {
+      const recentlyCrawled = await this.getRecentlyCrawledKeywords(daysPast);
+      const recentlyCrawledSet = new Set(recentlyCrawled);
+      
+      const uncrawled = keywords.filter(keyword => !recentlyCrawledSet.has(keyword));
+      
+      console.log(`🚫 Filtered out ${keywords.length - uncrawled.length}/${keywords.length} already crawled keywords`);
+      console.log(`✅ ${uncrawled.length} new keywords ready for crawling`);
+      
+      return uncrawled;
+    } catch (error) {
+      console.error(`❌ Failed to filter uncrawled keywords:`, error);
+      return keywords; // 에러 시 모든 키워드 반환 (안전장치)
+    }
   }
 }
 

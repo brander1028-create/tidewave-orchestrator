@@ -80,6 +80,16 @@ export const managedKeywords = pgTable("managed_keywords", {
   created_at: timestamp("created_at").defaultNow(),
 });
 
+// 키워드별 크롤링 이력 추적 테이블 (Phase 3: 중복 크롤링 방지)
+export const keywordCrawlHistory = pgTable("keyword_crawl_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  keyword: text("keyword").notNull().unique(), // 정규화된 키워드
+  lastCrawledAt: timestamp("last_crawled_at").defaultNow().notNull(), // 마지막 크롤링 시각
+  crawlCount: integer("crawl_count").notNull().default(1), // 총 크롤링 횟수
+  firstCrawledAt: timestamp("first_crawled_at").defaultNow().notNull(), // 첫 크롤링 시각
+  source: text("source").notNull().default("bfs"), // bfs, manual, upload 등
+});
+
 // App metadata table for persistent storage (API key state, etc)
 export const appMeta = pgTable("app_meta", {
   key: text("key").primaryKey(),
@@ -115,6 +125,12 @@ export const insertManagedKeywordSchema = createInsertSchema(managedKeywords).om
   updated_at: true,
 });
 
+export const insertKeywordCrawlHistorySchema = createInsertSchema(keywordCrawlHistory).omit({
+  id: true,
+  firstCrawledAt: true,
+  lastCrawledAt: true,
+});
+
 // Types for new entities
 export type SerpJob = typeof serpJobs.$inferSelect;
 export type InsertSerpJob = z.infer<typeof insertSerpJobSchema>;
@@ -126,6 +142,8 @@ export type ExtractedKeyword = typeof extractedKeywords.$inferSelect;
 export type InsertExtractedKeyword = z.infer<typeof insertExtractedKeywordSchema>;
 export type ManagedKeyword = typeof managedKeywords.$inferSelect;
 export type InsertManagedKeyword = z.infer<typeof insertManagedKeywordSchema>;
+export type KeywordCrawlHistory = typeof keywordCrawlHistory.$inferSelect;
+export type InsertKeywordCrawlHistory = z.infer<typeof insertKeywordCrawlHistorySchema>;
 
 // New API contract interface - matches specification document
 export interface SerpResultsData {
