@@ -389,8 +389,14 @@ export class BFSKeywordCrawler {
         
         console.log(`✅ Saved "${keyword}" (Vol: ${rawVolume.toLocaleString()}, Score: ${overallScore}) [${this.collected}/${this.maxTarget}]`);
         
-        // 연관 키워드를 다음 frontier에 추가 (구현 필요 시)
-        // 현재는 시드 키워드만으로 진행
+        // BFS 확장: 연관 키워드를 다음 frontier에 추가
+        const expandedKeywords = generateExpandedKeywords(keyword);
+        for (const expanded of expandedKeywords) {
+          const normalized = normalizeKeyword(expanded);
+          if (!this.visited.has(normalized) && !nextFrontier.has(normalized)) {
+            nextFrontier.add(normalized);
+          }
+        }
       }
       
       // 동시성 제어 - 잠시 대기
