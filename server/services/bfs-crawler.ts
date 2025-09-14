@@ -4,6 +4,7 @@ import { getVolumesWithHealth } from './externals-health.js';
 import { listKeywords, upsertMany } from '../store/keywords.js';
 import { nanoid } from 'nanoid';
 import { db } from '../db.js';
+import { storage } from '../storage.js';
 
 // CSV에서 시드 키워드 로드
 export function loadSeedsFromCSV(): string[] {
@@ -124,19 +125,27 @@ export class BFSKeywordCrawler {
     // 새로운 매개변수들은 추후 구현에서 활용 예정
   }
 
-  // 시드 키워드로 frontier 초기화
-  public initializeWithSeeds(seeds: string[]) {
+  // 시드 키워드로 frontier 초기화 (Phase 3: 중복 크롤링 방지)
+  public async initializeWithSeeds(seeds: string[]) {
     console.log(`🌱 Initializing BFS crawler with ${seeds.length} seed keywords`);
     
-    for (const seed of seeds) {
-      const normalized = normalizeKeyword(seed);
-      if (normalized) {
-        this.frontier.add(normalized);
-      }
+    // 정규화된 시드 키워드 목록 생성
+    const normalizedSeeds = seeds
+      .map(seed => normalizeKeyword(seed))
+      .filter(Boolean) as string[];
+    
+    console.log(`🔍 Normalized to ${normalizedSeeds.length} valid seeds`);
+    
+    // 최근 30일 내 크롤링된 키워드 필터링 (Phase 3: 중복 방지)
+    const uncrawledSeeds = await storage.filterUncrawledKeywords(normalizedSeeds, 30);
+    
+    // frontier에 미크롤링 키워드만 추가
+    for (const seed of uncrawledSeeds) {
+      this.frontier.add(seed);
     }
     
     this.progress.frontierSize = this.frontier.size;
-    console.log(`✅ Frontier initialized with ${this.frontier.size} unique seeds`);
+    console.log(`✅ Frontier initialized with ${this.frontier.size} new seeds (${normalizedSeeds.length - uncrawledSeeds.length} skipped as recently crawled)`);
   }
 
   // 메인 크롤링 실행
@@ -275,6 +284,9 @@ export class BFSKeywordCrawler {
         await upsertMany([keywordData]);
         this.collected++;
         this.progress.keywordsSaved = this.collected;
+        
+        // Phase 3: 크롤링 기록 저장 (중복 방지용)
+        await storage.recordKeywordCrawl(keyword, 'bfs');
         
         console.log(`✅ Saved "${keyword}" (Vol: ${rawVolume.toLocaleString()}, Score: ${overallScore}) [${this.collected}/${this.maxTarget}]`);
         

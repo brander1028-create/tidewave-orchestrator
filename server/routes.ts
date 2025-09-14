@@ -1002,8 +1002,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         strict
       });
 
-      // Initialize with seeds
-      crawler.initializeWithSeeds(seeds);
+      // Initialize with seeds (Phase 3: 중복 크롤링 방지)
+      await crawler.initializeWithSeeds(seeds);
 
       // Start crawling in background
       crawler.crawl().catch(error => {
@@ -1067,7 +1067,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Phase 3: Call budget & stale detection
         callBudget: budgetStatus,
         isStale: crawlerStale,
-        staleSince: crawlerStale ? Date.now() - (crawler.lastUpdated || 0) : null
+        staleSince: crawlerStale ? Date.now() - (crawler.lastUpdated?.getTime() || 0) : null
       });
     } catch (error) {
       console.error('❌ Failed to get crawl progress:', error);
@@ -1120,7 +1120,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Phase 3: Call budget & stale detection
         callBudget: budgetStatus,
         isStale: crawlerStale,
-        staleSince: crawlerStale ? Date.now() - (crawler.lastUpdated || 0) : null
+        staleSince: crawlerStale ? Date.now() - (crawler.lastUpdated?.getTime() || 0) : null
       });
 
     } catch (error) {
