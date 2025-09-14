@@ -79,6 +79,10 @@ export class BFSKeywordCrawler {
   private chunkSize: number;
   private concurrency: number;
   
+  // Phase 3: 단일 실행 가드용 타임스탬프
+  public lastUpdated: Date = new Date();
+  public jobId: string = nanoid();
+  
   // 진행 상태
   public status: 'idle' | 'running' | 'completed' | 'error' = 'idle';
   public progress = {
@@ -178,6 +182,17 @@ export class BFSKeywordCrawler {
       
       const chunk = currentFrontierArray.slice(i, i + this.chunkSize);
       console.log(`📦 Processing chunk ${Math.floor(i/this.chunkSize) + 1}/${Math.ceil(currentFrontierArray.length/this.chunkSize)}: ${chunk.length} keywords`);
+      
+      // Phase 3: 호출 예산 체크
+      const budgetCheck = checkAndConsumeCallBudget(1);
+      if (!budgetCheck.allowed) {
+        console.log(`💳 Call budget exhausted: ${budgetCheck.reason}`);
+        await new Promise(resolve => setTimeout(resolve, 60000)); // 1분 대기
+        continue;
+      }
+      
+      // Phase 3: lastUpdated 갱신
+      this.lastUpdated = new Date();
       
       // 검색량 조회 (health-aware)
       const volumeResult = await getVolumesWithHealth(db, chunk);
@@ -304,4 +319,79 @@ export function createGlobalCrawler(config: {
 
 export function clearGlobalCrawler() {
   globalCrawler = null;
+}
+
+// Phase 3: Call budget management
+interface CallBudgetStatus {
+  dailyRemaining: number;
+  perMinuteRemaining: number;
+  dailyLimit: number;
+  perMinuteLimit: number;
+  resetAt: Date;
+}
+
+// Simple in-memory call tracking (resets on server restart)
+let dailyCallCount = 0;
+let minuteCallCount = 0;
+let lastMinuteReset = Date.now();
+let lastDayReset = Date.now();
+
+const DAILY_CALL_LIMIT = 2000;
+const PER_MINUTE_LIMIT = 40;
+
+export function checkAndConsumeCallBudget(calls: number = 1): boolean {
+  const now = Date.now();
+  
+  // Reset minute counter if needed
+  if (now - lastMinuteReset >= 60000) {
+    minuteCallCount = 0;
+    lastMinuteReset = now;
+  }
+  
+  // Reset daily counter if needed  
+  if (now - lastDayReset >= 86400000) {
+    dailyCallCount = 0;
+    lastDayReset = now;
+  }
+  
+  // Check if we can make the calls
+  if (minuteCallCount + calls > PER_MINUTE_LIMIT) {
+    return false;
+  }
+  
+  if (dailyCallCount + calls > DAILY_CALL_LIMIT) {
+    return false;
+  }
+  
+  // Consume the calls
+  minuteCallCount += calls;
+  dailyCallCount += calls;
+  
+  return true;
+}
+
+export function getCallBudgetStatus(): CallBudgetStatus {
+  const now = Date.now();
+  
+  // Calculate next reset times
+  const nextMinuteReset = new Date(lastMinuteReset + 60000);
+  const nextDayReset = new Date(lastDayReset + 86400000);
+  
+  return {
+    dailyRemaining: Math.max(0, DAILY_CALL_LIMIT - dailyCallCount),
+    perMinuteRemaining: Math.max(0, PER_MINUTE_LIMIT - minuteCallCount),
+    dailyLimit: DAILY_CALL_LIMIT,
+    perMinuteLimit: PER_MINUTE_LIMIT,
+    resetAt: nextMinuteReset < nextDayReset ? nextMinuteReset : nextDayReset
+  };
+}
+
+// Phase 3: Stale crawler detection
+export function isStale(crawler: BFSKeywordCrawler | null): boolean {
+  if (!crawler || !crawler.lastUpdated) {
+    return false;
+  }
+  
+  const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+  return Date.now() - crawler.lastUpdated > STALE_THRESHOLD;
 }

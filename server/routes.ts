@@ -11,7 +11,7 @@ import { shouldPreflight, probeHealth, getOptimisticHealth, markHealthFail, mark
 import { getVolumesWithHealth } from './services/externals-health';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore, getKeywordsCounts } from './store/keywords';
 // BFS Crawler imports
-import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword } from './services/bfs-crawler.js';
+import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword, isStale, getCallBudgetStatus } from './services/bfs-crawler.js';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
@@ -1046,23 +1046,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // BFS Crawl Progress - Get current crawl status
+  // BFS Crawl Progress - Get current crawl status (Phase 3 enhanced)
   app.get('/api/keywords/crawl/progress', async (req, res) => {
     try {
       const crawler = getGlobalCrawler();
       if (!crawler) {
-        return res.json({ status: 'idle', message: 'No active crawl session' });
+        return res.json({ 
+          status: 'idle', 
+          message: 'No active crawl session',
+          callBudget: getCallBudgetStatus()
+        });
       }
 
       const progress = crawler.getProgress();
-      res.json(progress);
+      const budgetStatus = getCallBudgetStatus();
+      const crawlerStale = isStale(crawler);
+      
+      res.json({
+        ...progress,
+        // Phase 3: Call budget & stale detection
+        callBudget: budgetStatus,
+        isStale: crawlerStale,
+        staleSince: crawlerStale ? Date.now() - (crawler.lastUpdated || 0) : null
+      });
     } catch (error) {
       console.error('❌ Failed to get crawl progress:', error);
       res.status(500).json({ error: 'Failed to get crawl progress' });
     }
   });
 
-  // BFS Crawl Status - Get specific job status (by job ID)
+  // BFS Crawl Status - Get specific job status (by job ID) (Phase 3 enhanced)
   app.get('/api/keywords/crawl/:jobId/status', async (req, res) => {
     try {
       const { jobId } = req.params;
@@ -1072,14 +1085,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json({ 
           state: 'idle', 
           message: 'No active crawl session',
-          progress: { collected: 0, requested: 0, ok: 0, fail: 0 }
+          progress: { collected: 0, requested: 0, ok: 0, fail: 0 },
+          callBudget: getCallBudgetStatus()
         });
       }
 
       const progress = crawler.getProgress();
-      const state = crawler.status === 'running' ? 'running' : 
-                   crawler.status === 'completed' ? 'done' : 
-                   crawler.status === 'error' ? 'error' : 'idle';
+      const budgetStatus = getCallBudgetStatus();
+      const crawlerStale = isStale(crawler);
+      
+      // Phase 3: Enhanced state detection
+      let state = crawler.status === 'running' ? 'running' : 
+                  crawler.status === 'completed' ? 'done' : 
+                  crawler.status === 'error' ? 'error' : 'idle';
+      
+      // Mark as stale if inactive for >5 minutes
+      if (state === 'running' && crawlerStale) {
+        state = 'stale';
+      }
 
       res.json({
         jobId,
@@ -1093,7 +1116,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           currentHop: progress.currentHop || 0
         },
         config: null,
-        message: progress.estimatedTimeLeft || ''
+        message: progress.estimatedTimeLeft || '',
+        // Phase 3: Call budget & stale detection
+        callBudget: budgetStatus,
+        isStale: crawlerStale,
+        staleSince: crawlerStale ? Date.now() - (crawler.lastUpdated || 0) : null
       });
 
     } catch (error) {

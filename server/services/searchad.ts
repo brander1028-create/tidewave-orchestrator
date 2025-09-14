@@ -76,100 +76,157 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
 
   console.log(`🔍 Fetching search volumes for ${ks.length} keywords: ${ks.slice(0, 3).join(', ')}...`);
 
-  // 길이 제한 회피용 청크(너무 많이 붙이면 URL 길이 초과 위험) — 5개씩
-  const chunks: string[][] = [];
-  for (let i = 0; i < ks.length; i += 5) chunks.push(ks.slice(i, i+5));
-
+  // Phase 2: 적응형 청크 처리 (8→3 자동조절)
   const out: Record<string, Vol> = {};
-  let hasSuccessfulApiCall = false;
-  let hasApiErrors = false;
-  
-  // Initialize stats tracking
   const stats: SearchAdStats = {
-    requested: chunks.length,
+    requested: ks.length,
     ok: 0,
     fail: 0,
     http: {}
   };
   
-  for (const chunk of chunks) {
-    try {
-      const ts = Date.now().toString();
-      const sig = sign(ts, 'GET', PATH, SECRET);
+  let i = 0;
+  let chunkSize = 8; // 시작 청크 크기
+  const maxRetries = 2;
+  
+  while (i < ks.length) {
+    const batch = ks.slice(i, i + chunkSize);
+    console.log(`📦 Processing batch ${Math.floor(i/chunkSize) + 1}: ${batch.length} keywords (chunk=${chunkSize})`);
+    
+    let retryCount = 0;
+    let success = false;
+    
+    while (retryCount <= maxRetries && !success) {
+      try {
+        const ts = Date.now().toString();
+        const sig = sign(ts, 'GET', PATH, SECRET);
 
-      const headers = {
-        'X-Timestamp': ts,
-        'X-API-KEY': API_KEY,
-        'X-Customer': CUSTOMER,
-        'X-Signature': sig,
-      };
-      const qs = new URLSearchParams({ hintKeywords: chunk.join(','), showDetail: '1' });
-      const res = await fetch(`${BASE}${PATH}?${qs.toString()}`, { method: 'GET', headers });
-      
-      // Track HTTP status codes
-      const statusCode = res.status;
-      stats.http[statusCode] = (stats.http[statusCode] || 0) + 1;
-      
-      if (!res.ok) {
-        console.log(`⚠️ SearchAd API error for chunk ${chunk.join(',')}: ${res.status} ${res.statusText}`);
-        hasApiErrors = true;
-        stats.fail++;
-        continue;
-      }
-      
-      const json = await res.json() as any;
-      console.log(`📊 SearchAd API response for ${chunk.join(',')}: ${json.keywordList?.length || 0} keywords`);
-      hasSuccessfulApiCall = true;
-      stats.ok++;
-
-      for (const row of (json.keywordList ?? [])) {
-        const key = String(row.relKeyword ?? row.keyword ?? '').trim().toLowerCase();
-        const pc = Number(row.monthlyPcQcCnt ?? 0);
-        const mobile = Number(row.monthlyMobileQcCnt ?? 0);
-        if (!key) continue;
-        out[key] = { 
-          pc, 
-          mobile, 
-          total: pc + mobile, 
-          compIdx: row.compIdx,
-          plAvgDepth: Number(row.plAvgDepth ?? 0),
-          plClickRate: Number(row.plClickRate ?? 0),
-          avePcCpc: Number(row.avePcCpc ?? 0),
-          aveMobileCpc: Number(row.aveMobileCpc ?? 0)
+        const headers = {
+          'X-Timestamp': ts,
+          'X-API-KEY': API_KEY,
+          'X-Customer': CUSTOMER,
+          'X-Signature': sig,
         };
+        
+        // Phase 2: URL 인코딩 추가
+        const encodedKeywords = encodeURIComponent(batch.join(','));
+        const qs = new URLSearchParams({ hintKeywords: encodedKeywords, showDetail: '1' });
+        const res = await fetch(`${BASE}${PATH}?${qs.toString()}`, { method: 'GET', headers });
+        
+        const status = res.status;
+        stats.http[status] = (stats.http[status] || 0) + 1;
+        
+        if (status === 200) {
+          // ✅ 성공: 데이터 처리 후 전진
+          const json = await res.json() as any;
+          console.log(`✅ SearchAd API success for batch: ${json.keywordList?.length || 0} keywords`);
+          
+          for (const row of (json.keywordList ?? [])) {
+            const key = String(row.relKeyword ?? row.keyword ?? '').trim().toLowerCase();
+            const pc = Number(row.monthlyPcQcCnt ?? 0);
+            const mobile = Number(row.monthlyMobileQcCnt ?? 0);
+            if (!key) continue;
+            out[key] = { 
+              pc, 
+              mobile, 
+              total: pc + mobile, 
+              compIdx: row.compIdx,
+              plAvgDepth: Number(row.plAvgDepth ?? 0),
+              plClickRate: Number(row.plClickRate ?? 0),
+              avePcCpc: Number(row.avePcCpc ?? 0),
+              aveMobileCpc: Number(row.aveMobileCpc ?? 0)
+            };
+          }
+          
+          stats.ok += batch.length;
+          i += batch.length;
+          success = true;
+          
+          // 성공 시 청크 크기 복원 (최대 10)
+          if (chunkSize < 10) {
+            chunkSize = Math.min(10, chunkSize + 1);
+            console.log(`📈 Chunk size increased to ${chunkSize}`);
+          }
+          
+        } else if (status === 429) {
+          // ⏳ 429: Retry-After 백오프 대기 후 재시도
+          const json = await res.json().catch(() => ({})) as any;
+          const retryAfter = parseInt((json as any)?.retryAfter || res.headers.get('Retry-After') || '1');
+          const waitTime = Math.floor(retryAfter * 1000 * 1.5 + Math.random() * 500);
+          
+          console.log(`⏳ 429 Rate limit - waiting ${waitTime}ms (retry ${retryCount + 1}/${maxRetries + 1})`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          retryCount++;
+          
+        } else if (status === 400) {
+          // 🔄 400: 청크 크기 반으로 줄여 재시도
+          const newChunkSize = Math.max(3, Math.floor(chunkSize / 2));
+          if (newChunkSize < chunkSize) {
+            chunkSize = newChunkSize;
+            console.log(`🔄 400 Bad Request - reducing chunk size to ${chunkSize}`);
+            retryCount = 0; // 청크 크기 변경 시 재시도 카운트 리셋
+          } else {
+            // 이미 최소 크기면 실패 처리
+            console.log(`❌ 400 Bad Request - chunk size already minimal (${chunkSize}), skipping batch`);
+            stats.fail += batch.length;
+            i += batch.length;
+            success = true; // 더 이상 재시도하지 않음
+          }
+          
+        } else {
+          // ❌ 기타 에러: 실패 처리 후 전진
+          console.log(`❌ SearchAd API error: ${status} ${res.statusText}`);
+          stats.fail += batch.length;
+          i += batch.length;
+          success = true;
+        }
+        
+      } catch (error) {
+        console.error(`❌ SearchAd API exception:`, error);
+        stats.http[500] = (stats.http[500] || 0) + 1;
+        retryCount++;
+        
+        if (retryCount > maxRetries) {
+          stats.fail += batch.length;
+          i += batch.length;
+          success = true;
+        }
       }
-    } catch (error) {
-      console.error(`❌ SearchAd API error for chunk ${chunk.join(',')}:`, error);
-      hasApiErrors = true;
-      stats.fail++;
-      // Track 500 for network/parse errors
-      stats.http[500] = (stats.http[500] || 0) + 1;
     }
   }
   
-  // Determine mode based on success/failure stats
-  const successRate = stats.requested > 0 ? stats.ok / stats.requested : 0;
+  // Phase 2: 개선된 모드 판정 (ok===0→fallback, ok===requested && only2xx→searchads, 그 외 partial)
+  const only2xx = Object.keys(stats.http).every(code => {
+    const statusCode = parseInt(code);
+    return statusCode >= 200 && statusCode < 300;
+  });
+  
   let mode: 'fallback' | 'partial' | 'searchads';
   let reason: string | undefined;
   
-  if (hasApiErrors || !hasSuccessfulApiCall || Object.keys(out).length === 0) {
+  if (stats.ok === 0) {
     mode = 'fallback';
-    reason = hasApiErrors ? 'API errors occurred' : 'No successful API calls';
-    console.log(`🔄 SearchAd API failed (errors: ${hasApiErrors}, successful: ${hasSuccessfulApiCall}), falling back to frequency-based mode`);
-    console.log(`   📊 Stats: ${stats.ok}/${stats.requested} success rate: ${(successRate * 100).toFixed(1)}%`);
+    reason = 'No successful API calls';
+    console.log(`🔄 SearchAd API failed completely, using fallback mode`);
+    console.log(`   📊 Stats: ${stats.ok}/${stats.requested} success rate: 0.0%`);
     
+    // fallback 시 모든 키워드를 0 volume으로 반환
     const fallbackVolumes: Record<string, Vol> = {};
     ks.forEach(k => {
       fallbackVolumes[k.toLowerCase()] = { pc: 0, mobile: 0, total: 0 };
     });
     return { volumes: fallbackVolumes, mode, stats, reason };
-  } else if (stats.fail > 0) {
-    mode = 'partial';
-    reason = `Partial success: ${stats.ok}/${stats.requested} chunks succeeded`;
-    console.log(`⚠️ SearchAd API partial success - ${stats.ok}/${stats.requested} chunks, using partial mode`);
-  } else {
+    
+  } else if (stats.ok === stats.requested && only2xx) {
     mode = 'searchads';
-    console.log(`✅ SearchAd API full success - ${stats.ok}/${stats.requested} chunks`);
+    reason = 'Full success with all 2xx responses';
+    console.log(`✅ SearchAd API full success - ${stats.ok}/${stats.requested} keywords (100% success rate)`);
+    
+  } else {
+    mode = 'partial';
+    const successRate = (stats.ok / stats.requested * 100).toFixed(1);
+    reason = `Partial success: ${stats.ok}/${stats.requested} keywords (${successRate}%)`;
+    console.log(`⚠️ SearchAd API partial success - ${stats.ok}/${stats.requested} keywords (${successRate}% success rate)`);
   }
   
   console.log(`📊 Final volumes collected: ${Object.keys(out).length} keywords using SearchAd API (${mode} mode)`);

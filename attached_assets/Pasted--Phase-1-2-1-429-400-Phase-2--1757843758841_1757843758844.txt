@@ -1,0 +1,63 @@
+아직 아니에요. Phase 1(임시 저장)만으로는 2천→1만 수집 시 429(쿼터)·400(파라미터)로 계속 묶여요.
+버튼 눌러 “안 막히고” 크게 늘리려면 **Phase 2(적응형 호출) + Phase 3(단일 실행 가드/예산)**을 꼭 붙여야 합니다.
+
+지금 바로 시켜야 할 것 (복붙용 지시)
+
+[Phase 2 — 적응형 SearchAds 호출]
+
+청크 자동조절: 시작 8 → 400나면 chunk=Math.max(3, chunk/2) 후 같은 구간 재시도, 성공나오면 1씩 복원(최대 10).
+
+429 백오프: Retry-After(없으면 1s) ×1.5 + 지터(±0.5s) 대기 후 같은 청크 재시도(최대 2회).
+
+모드 판정: ok==0→fallback, ok==requested && http={2xx만}→searchads, 그 외 partial.
+
+인코딩/제한: hintKeywords URL 인코딩, 1청크 최대 5개 권장(400 예방).
+
+// getVolumes skeleton
+let i=0, chunk=8, ok=0, fail=0, http:{[k:number]:number}={};
+while(i<keys.length){
+  const batch = keys.slice(i, i+chunk);
+  const {status, json} = await callKeywordTool(batch); http[status]=(http[status]||0)+1;
+  if(status===200){ merge(json); ok+=batch.length; i+=batch.length; if(chunk<10) chunk++; }
+  else if(status===429){ await sleep(retryAfter(json)*1.5+rand()); /* i,chunk 유지 */ }
+  else if(status===400){ chunk=Math.max(3, Math.floor(chunk/2)); /* i 유지 */ }
+  else { fail+=batch.length; i+=batch.length; }
+}
+const mode = ok===0?'fallback': (ok===keys.length && only2xx(http)?'searchads':'partial');
+return {volumes, mode, stats:{requested:keys.length, ok, fail, http}};
+
+
+수락 기준: /api/keywords/refresh-all 로그에서 ok/requested ≥ 0.8, mode가 searchads 또는 partial.
+
+[Phase 3 — 단일 실행 가드/예산]
+
+중복 실행 방지: 글로벌 크롤러에 completed 플래그 + lastUpdated 기준 stale(>5분) 정리.
+
+러닝 중이면 /crawl → 409 + 진행상황 반환.
+
+호출 예산: dailyCallBudget(예: 2000)·perMinuteBudget(예: 40) 토큰버킷. 초과 시 큐 대기.
+
+// routes /crawl 진입부
+const ex = getGlobalCrawler();
+if(ex && ex.status==='running' && !isStale(ex)) return res.status(409).json({progress: ex.getProgress()});
+clearGlobalCrawler(); // 좀비면 청소
+
+
+수락 기준: “BFS completed!” 로그 1회만 출력, 중복 없음. 분당 호출수 상한 유지.
+
+버튼 눌렀을 때 기대 동작
+
+Phase 1만: 2천+ 저장은 되지만 400/429가 누적돼 느림/0 스킵 재발 → 1만까지 안정 도달 어렵다.
+
+Phase 1+2+3: 막히지 않고(백오프/청크조절/예산) 꾸준히 증가, 1만 타깃까지 시간 대비 안정 수집.
+
+추천 순서 (그대로 진행)
+
+Phase 1 적용 완료(OK) → 지금 상태 유지
+
+Phase 2 즉시 적용(적응형 호출) → 성공률 80%+로 끌어올리기
+
+Phase 3 적용(단일 실행/예산) → 장기 안정화
+
+이렇게 하면 토큰/쿼터 절약 + 속도 + 안정성 다 잡아요.
+필요하면 위 스켈레톤을 네 파일 경로에 맞춰 딱 붙이는 코드로 풀어줄게.
