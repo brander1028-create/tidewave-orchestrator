@@ -6,7 +6,7 @@ import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
 import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
-9import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
+import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
 import { getVolumes } from './services/searchad';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore, getKeywordsCounts } from './store/keywords';
 // BFS Crawler imports
@@ -425,7 +425,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Enhanced health check endpoint with prompt logic
   // TTL 캐시 (60초)
-  let healthCache: { data: any; ts: number } | null = null;
+  let healthCacheSimple: { data: any; ts: number } | null = null;
   const HEALTH_CACHE_TTL = 60000; // 60초
 
   app.get('/api/health', async (req, res) => {
@@ -434,21 +434,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let cacheStatus = 'MISS';
       
       // 캐시 확인
-      if (healthCache && (now - healthCache.ts < HEALTH_CACHE_TTL)) {
+      if (healthCacheSimple && (now - healthCacheSimple.ts < HEALTH_CACHE_TTL)) {
         cacheStatus = 'HIT';
         res.setHeader('X-Health-Cache', cacheStatus);
-        return res.status(200).json(healthCache.data);
+        return res.status(200).json(healthCacheSimple.data);
       }
       
       // 얕은 헬스체크 (빠른 버전)
       const healthData = {
         openapi: { ok: true },
-        searchads: { ok: true, mode: await metaGet('searchads_mode') || 'searchads' },
-        keywordsdb: { ok: true, count: await keywordsCount() }
+        searchads: { ok: true, mode: await metaGet(db, 'searchads_mode') || 'searchads' },
+        keywordsdb: { ok: true, count: await getKeywordsCounts() }
       };
       
       // 캐시 저장
-      healthCache = { data: healthData, ts: now };
+      healthCacheSimple = { data: healthData, ts: now };
       
       res.setHeader('X-Health-Cache', cacheStatus);
       res.status(200).json(healthData);
@@ -950,7 +950,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         : Date.now();
       
       // Get volumes_mode from meta only (no heavy health check)
-      const volumes_mode = await metaGet('searchads_mode') || 'searchads';
+      const volumes_mode = await metaGet(db, 'searchads_mode') || 'searchads';
       
       res.json({
         total,
