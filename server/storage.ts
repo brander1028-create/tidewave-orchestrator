@@ -10,6 +10,9 @@ import {
   type KeywordCrawlHistory,
   type InsertKeywordCrawlHistory,
   serpJobs,
+  discoveredBlogs,
+  analyzedPosts,
+  extractedKeywords,
   keywordCrawlHistory
 } from "@shared/schema";
 import { randomUUID } from "crypto";
@@ -44,10 +47,8 @@ export interface IStorage {
 }
 
 export class MemStorage implements IStorage {
-  private serpJobs: Map<string, SerpJob> = new Map();
-  private discoveredBlogs: Map<string, DiscoveredBlog> = new Map();
-  private analyzedPosts: Map<string, AnalyzedPost> = new Map();
-  private extractedKeywords: Map<string, ExtractedKeyword> = new Map();
+  // ❌ REMOVED: All Memory Maps replaced with DB operations
+  // Previously: private discoveredBlogs/analyzedPosts/extractedKeywords: Map<...> = new Map();
 
   // SERP Job operations
   async createSerpJob(insertJob: InsertSerpJob): Promise<SerpJob> {
@@ -123,89 +124,121 @@ export class MemStorage implements IStorage {
 
   // Discovered blog operations
   async createDiscoveredBlog(insertBlog: InsertDiscoveredBlog): Promise<DiscoveredBlog> {
-    const id = randomUUID();
-    const blog: DiscoveredBlog = {
-      ...insertBlog,
-      id,
-      baseRank: insertBlog.baseRank || null,
-      postsAnalyzed: insertBlog.postsAnalyzed || 0,
-      createdAt: new Date(),
-    };
-    this.discoveredBlogs.set(id, blog);
-    return blog;
+    try {
+      // ✅ DB INSERT with error handling and logging
+      const [createdBlog] = await db.insert(discoveredBlogs).values(insertBlog).returning();
+      console.log(`📝 INSERT_SUCCESS: discovered_blogs`, { id: createdBlog.id, jobId: createdBlog.jobId, blogId: createdBlog.blogId });
+      return createdBlog;
+    } catch (error) {
+      console.error('INSERT_FAIL', { table: 'discovered_blogs', err: error, payloadExcerpt: { jobId: insertBlog.jobId, blogId: insertBlog.blogId } });
+      throw error;
+    }
   }
 
   async getDiscoveredBlogs(jobId: string): Promise<DiscoveredBlog[]> {
-    return Array.from(this.discoveredBlogs.values())
-      .filter(blog => blog.jobId === jobId)
-      .sort((a, b) => a.rank - b.rank);
+    try {
+      // ✅ DB SELECT instead of memory filter
+      const blogs = await db.select().from(discoveredBlogs)
+        .where(eq(discoveredBlogs.jobId, jobId))
+        .orderBy(discoveredBlogs.rank);
+      
+      console.log(`📊 SELECT discovered_blogs: found ${blogs.length} blogs for jobId=${jobId}`);
+      return blogs;
+    } catch (error) {
+      console.error('SELECT_FAIL', { table: 'discovered_blogs', jobId, err: error });
+      return [];
+    }
   }
 
   async updateDiscoveredBlog(id: string, updates: Partial<DiscoveredBlog>): Promise<DiscoveredBlog | undefined> {
-    const blog = this.discoveredBlogs.get(id);
-    if (blog) {
-      const updatedBlog = { ...blog, ...updates };
-      this.discoveredBlogs.set(id, updatedBlog);
-      return updatedBlog;
+    try {
+      // ✅ DB UPDATE instead of memory map
+      const [updatedBlog] = await db.update(discoveredBlogs)
+        .set(updates)
+        .where(eq(discoveredBlogs.id, id))
+        .returning();
+      
+      if (updatedBlog) {
+        console.log(`📝 UPDATE_SUCCESS: discovered_blogs`, { id, updates: Object.keys(updates) });
+        return updatedBlog;
+      }
+      return undefined;
+    } catch (error) {
+      console.error('UPDATE_FAIL', { table: 'discovered_blogs', id, err: error });
+      return undefined;
     }
-    return undefined;
   }
 
   // Analyzed post operations
   async createAnalyzedPost(insertPost: InsertAnalyzedPost): Promise<AnalyzedPost> {
-    const id = randomUUID();
-    const post: AnalyzedPost = {
-      ...insertPost,
-      id,
-      publishedAt: insertPost.publishedAt || null,
-      createdAt: new Date(),
-    };
-    this.analyzedPosts.set(id, post);
-    return post;
+    try {
+      // ✅ DB INSERT with error handling and logging
+      const [createdPost] = await db.insert(analyzedPosts).values(insertPost).returning();
+      console.log(`📝 INSERT_SUCCESS: analyzed_posts`, { id: createdPost.id, blogId: createdPost.blogId, title: createdPost.title?.substring(0, 30) + '...' });
+      return createdPost;
+    } catch (error) {
+      console.error('INSERT_FAIL', { table: 'analyzed_posts', err: error, payloadExcerpt: { blogId: insertPost.blogId, title: insertPost.title?.substring(0, 30) } });
+      throw error;
+    }
   }
 
   async getAnalyzedPosts(blogId: string): Promise<AnalyzedPost[]> {
-    return Array.from(this.analyzedPosts.values())
-      .filter(post => post.blogId === blogId)
-      .sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+    try {
+      // ✅ DB SELECT instead of memory filter
+      const posts = await db.select().from(analyzedPosts)
+        .where(eq(analyzedPosts.blogId, blogId))
+        .orderBy(desc(analyzedPosts.createdAt));
+      
+      console.log(`📊 SELECT analyzed_posts: found ${posts.length} posts for blogId=${blogId}`);
+      return posts;
+    } catch (error) {
+      console.error('SELECT_FAIL', { table: 'analyzed_posts', blogId, err: error });
+      return [];
+    }
   }
 
   // Extracted keyword operations
   async createExtractedKeyword(insertKeyword: InsertExtractedKeyword): Promise<ExtractedKeyword> {
-    const id = randomUUID();
-    const keyword: ExtractedKeyword = {
-      ...insertKeyword,
-      id,
-      volume: insertKeyword.volume || null,
-      frequency: insertKeyword.frequency || 0,
-      rank: insertKeyword.rank || null,
-      tier: insertKeyword.tier || null,
-      createdAt: new Date(),
-    };
-    this.extractedKeywords.set(id, keyword);
-    return keyword;
+    try {
+      // ✅ DB INSERT with error handling and logging
+      const [createdKeyword] = await db.insert(extractedKeywords).values(insertKeyword).returning();
+      console.log(`📝 INSERT_SUCCESS: extracted_keywords`, { id: createdKeyword.id, blogId: createdKeyword.blogId, keyword: createdKeyword.keyword });
+      return createdKeyword;
+    } catch (error) {
+      console.error('INSERT_FAIL', { table: 'extracted_keywords', err: error, payloadExcerpt: { blogId: insertKeyword.blogId, keyword: insertKeyword.keyword } });
+      throw error;
+    }
   }
 
   async getExtractedKeywords(blogId: string): Promise<ExtractedKeyword[]> {
-    return Array.from(this.extractedKeywords.values())
-      .filter(keyword => keyword.blogId === blogId)
-      .sort((a, b) => (b.volume || 0) - (a.volume || 0) || b.frequency - a.frequency);
+    try {
+      // ✅ DB SELECT instead of memory filter
+      const keywords = await db.select().from(extractedKeywords)
+        .where(eq(extractedKeywords.blogId, blogId))
+        .orderBy(desc(extractedKeywords.volume), desc(extractedKeywords.frequency));
+      
+      console.log(`📊 SELECT extracted_keywords: found ${keywords.length} keywords for blogId=${blogId}`);
+      return keywords;
+    } catch (error) {
+      console.error('SELECT_FAIL', { table: 'extracted_keywords', blogId, err: error });
+      return [];
+    }
   }
 
   async getTopKeywordsByBlog(blogId: string): Promise<ExtractedKeyword[]> {
-    // Get all keywords for this blog, ordered by volume then frequency
-    const blogKeywords = Array.from(this.extractedKeywords.values())
-      .filter(keyword => keyword.blogId === blogId)
-      .sort((a, b) => {
-        // Sort by volume first (higher is better), then frequency
-        const volumeA = a.volume || 0;
-        const volumeB = b.volume || 0;
-        if (volumeB !== volumeA) return volumeB - volumeA;
-        return b.frequency - a.frequency;
-      });
-    
-    // Return top 3 keywords
-    return blogKeywords.slice(0, 3);
+    try {
+      // ✅ DB SELECT with proper ordering and limit
+      const topKeywords = await db.select().from(extractedKeywords)
+        .where(eq(extractedKeywords.blogId, blogId))
+        .orderBy(desc(extractedKeywords.volume), desc(extractedKeywords.frequency))
+        .limit(3);
+      
+      console.log(`📊 SELECT top3_keywords: found ${topKeywords.length} keywords for blogId=${blogId}`);
+      return topKeywords;
+    } catch (error) {
+      console.error('SELECT_FAIL', { table: 'top_keywords', blogId, err: error });
+      return [];
+    }
   }
 
   // Keyword crawl history operations (Phase 3: 중복 크롤링 방지)

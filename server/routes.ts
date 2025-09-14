@@ -175,11 +175,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Job not completed yet" });
       }
 
-      // If job has results JSON data, return it directly
-      if (job.results) {
-        console.log(`📊 Returning cached results for job ${req.params.jobId}`);
-        return res.json(job.results);
-      }
+      // ❌ SHORT-CIRCUIT REMOVED: Always assemble full results from persistent tables
+      // Previously: if (job.results) return res.json(job.results);
+      // Now: Always read from storage and build standard schema
 
       // Get all discovered blogs
       const allBlogs = await storage.getDiscoveredBlogs(job.id);
@@ -283,6 +281,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 🎯 4. 필터 로그 (결과 조립 구간)
       const cutoff = Number(process.env.HIT_FILTER_CUTOFF ?? 10);
       console.log(`🔍 Filter Stats: allBlogs=${allBlogs.length}, hasHit=${hitBlogs.length}, uniqueKeywords=${allUniqueKeywords.size}, volumesMode=${volumesMode}, cutoff=${cutoff}`);
+      
+      // ✅ RESULTS_BUILD 로그 (short-circuit 제거 후 디버깅)
+      console.log('RESULTS_BUILD', {
+        discovered: allBlogs.length,
+        afterCutoff: hitBlogs.length,
+        uniqueKeywordsAll: allUniqueKeywords.size,
+        volumes_mode: volumesMode
+      });
 
       const response: any = {
         blogs: hitBlogs,

@@ -1,0 +1,152 @@
+금 0으로 보이는 건 UI 문제가 아니라, 결과 API/저장/선별 로직이 몇 군데 어긋나서 그래요.
+로그상으로는 블로그 9 / 포스트 44까지 잘 돌았는데,
+
+/api/serp/jobs/:jobId/results가 캐시 요약(finalStats) 만 돌려주고(조립 스킵),
+
+DB에는 discovered_blogs / analyzed_posts / extracted_keywords가 0건이라 UI가 그걸 그대로 0으로 표기,
+
+제목 선별은 후보→DB 매핑을 엄격히 안 해서 유모차/맛집/토너 같은 엉뚱 토큰이 Top4에 섞인 상태입니다.
+
+아래 요청문을 그대로 Replit에 보내세요. (딱 필요한 수정 + 확인 자료 + 수락 기준 포함)
+
+[정정요청] 결과 API/저장/제목선별 교정 + 히스토리/로그 미니뷰
+1) 결과 API가 “요약(finalStats)”만 반환하는 문제 수정
+
+문제: processSerpAnalysisJob 마지막에 job.results = finalStats 저장 →
+/api/serp/jobs/:jobId/results에서 초기 if(job.results) return job.results 로 바로 종료 →
+UI가 기대하는 blogs/keywords/posts/counters 스키마가 오지 않아 전부 0으로 보임.
+
+해결:
+
+short-circuit 제거: /api/serp/jobs/:jobId/results에서
+
+// ❌ if (job.results) return res.json(job.results)
+// ✅ 항상 storage에서 blogs/posts/keywords를 읽어 표준 스키마로 조립
+
+
+finalStats는 job.resultsSummary 같은 별도 필드에 저장하고,
+표준 스키마(blogs/keywords/posts/counters/summaryPerInputKeyword)를 반드시 조립해 반환.
+
+조립 시 로그 추가:
+
+console.log('RESULTS_BUILD', {
+  discovered: allBlogs.length,
+  afterCutoff: hitBlogs.length,
+  uniqueKeywordsAll: allUniqueKeywords.size,
+  volumes_mode
+});
+
+
+수락 기준: /api/serp/jobs/:id/results raw JSON에
+blogs[] / keywords[] / posts[] / counters{hit_blogs,selected_keywords,searched_keywords,volumes_mode} 가 들어오고, UI의 카운터가 0이 아니다.
+
+2) DB 저장이 0건인 문제 (메모리/트랜잭션/타입)
+
+문제: 로그상 “블로그 9 / 포스트 44 / 키워드 추출”인데, DB 쿼리 결과는 전부 0. 저장 함수가 메모리/롤백/타입 오류 가능성.
+
+해결 체크:
+
+storage.createDiscoveredBlog / createAnalyzedPost / createExtractedKeyword 가 동일 커넥션/트랜잭션으로 실제 DB에 INSERT 하는지 확인.
+
+INSERT 후 rowCount/lastInsertId 로그.
+
+publishedAt 등 timestamp→integer 컬럼 삽입 시 실패했던 log(“float→integer”) 패치 재확인.
+
+스키마/타입 불일치 시 NULL로 처리하고 계속 진행.
+
+upsert 키(job_id, blog_url 등) 충돌 시 무음 실패 방지: ON CONFLICT DO UPDATE 로그.
+
+저장 함수마다 에러시 console.error('INSERT_FAIL', {table, err, payloadExcerpt}).
+
+수락 기준:
+
+SELECT COUNT(*) FROM discovered_blogs WHERE job_id=:id > 0
+
+SELECT COUNT(*) FROM analyzed_posts … > 0
+
+SELECT COUNT(*) FROM extracted_keywords … > 0
+
+3) 제목 선별 — 후보→DB 매핑을 엄격히(엉뚱 토큰 제거)
+
+문제: 유모차/맛집/토너 등 제목에 없는 토큰이 Top4로 들어옴.
+→ 후보 집합을 벗어난 DB 상위 키워드를 섞어 쓰거나, canonicalize 불량/불용어 필터 약함.
+
+해결:
+
+후보 생성: 제목 10개 → 1~3그램, 2자 미만 제외, 불용어 제거(추천/후기/정보/제품/선택/비교/리뷰/가격/쿠폰/할인/특가/세일/무료 등).
+
+canonicalize() 강제:
+
+홍삼 추천/홍삼 정/키즈홍삼 → 홍삼
+
+vitamin d/비타민 d/비타민d → 비타민D
+
+비타민D 1000IU/2000IU → 비타민D (용량은 보조 표기)
+
+매핑은 후보 집합에만:
+
+getKeywordVolumeMap(candidates) + getKeywordScores(candidates) 만 조회
+
+절대 DB 전체 상위 키워드 사용 금지
+
+점수식: combined = round(0.7*volume_score + 0.3*score)
+
+volume_score = clamp01(log10(max(1, raw))/5)*100
+
+대상: raw_volume ≥ 1000(DB) && excluded=false
+
+없으면 API 1회 갱신 → 그래도 없으면 None(빈 Top4 또는 0표시), DB 저장 금지.
+
+수락 기준: TITLE_TOP 로그에서 cands=…, dbHits1000=…, top4=[…]의 text가 항상 제목 후보에 존재하는 키워드로만 구성.
+
+4) base_rank 컷오프/요약
+
+문제: 첫페이지(1~10)만 통과 시 0이 자주 나옴 → 확인용 컷오프 완화가 필요.
+
+수정:
+
+.env: HIT_FILTER_CUTOFF=10 (테스트 시 30으로 일시 변경 가능)
+
+요약에서 11~30위 상위 5개 표도 보조로 노출.
+
+수락 기준: 컷오프 10/30 전환 시 hit_blogs가 유의미하게 변하고, 요약 표도 반영.
+
+5) 히스토리 & 로그 미니뷰 (한 페이지)
+
+엔드포인트:
+
+GET /api/jobs/history?limit=50 → { items:[{jobId, createdAt, baseKeyword(s), counters, durations }] }
+
+GET /api/jobs/:jobId/logs?tail=200 → 최근 로그 tail(서버 콘솔 캐시)
+
+UI:
+
+히스토리 테이블: 시각 | 키워드 | 발견/히트 | 요청/실제 | 모드 | 총작업시간 | [자세히]
+
+[자세히] → 오른쪽 패널(미니 로그 뷰 + 조립 디버그: discovered / afterCutoff / uniqueKeywordsAll)
+
+수락 기준: 방금 실행한 job이 히스토리에 보이고, 자세히에서 디버그 숫자와 최근 로그 tail이 보임.
+
+6) 지금 이 jobId로 확인해 줄 자료(필수)
+
+jobId = c5ee1373-26c7-487c-9884-497399d078b8
+
+수정된 /api/serp/jobs/:jobId/results raw JSON (short-circuit 제거 후)
+
+조립 디버그 로그 한 줄: RESULTS_BUILD {discovered, afterCutoff, uniqueKeywordsAll, volumes_mode}
+
+DB 카운트 3종(위 쿼리) — 0이 아니어야 정상
+
+TITLE_TOP 예시 3개 — top4의 text가 모두 해당 블로그 제목에서 나온 후보인지 확인
+
+7) 최종 수락 기준(한 번만 체크)
+
+결과 페이지 카운터가 0이 아니며, 요약/자세히가 표준 스키마에 맞게 표시
+
+DB 테이블 3종(blogs/posts/keywords) 숫자가 0이 아님
+
+TITLE_TOP의 후보/Top4가 제목 후보에 포함되는 키워드로만 구성
+
+컷오프/요약 표 동작
+
+히스토리/로그 미니뷰에서 한눈에 확인 가능
