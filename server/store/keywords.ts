@@ -179,16 +179,18 @@ export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Pro
  */
 export async function listKeywords(opts: {
   excluded: boolean;
-  orderBy: 'score' | 'raw_volume' | 'comp_score' | 'ad_depth' | 'est_cpc_krw' | 'text';
+  orderBy: 'score' | 'raw_volume' | 'comp_idx' | 'comp_score' | 'ad_depth' | 'est_cpc_krw' | 'text' | 'keyword_length';
   dir: 'asc' | 'desc';
 }): Promise<ManagedKeyword[]> {
   const fieldMap: any = {
     score: managedKeywords.score,
     raw_volume: managedKeywords.raw_volume,
-    comp_score: managedKeywords.comp_score,
+    comp_idx: managedKeywords.comp_idx,  // Support both for compatibility
+    comp_score: managedKeywords.comp_idx, // comp_score maps to comp_idx in DB
     ad_depth: managedKeywords.ad_depth,
     est_cpc_krw: managedKeywords.est_cpc_krw,
-    text: managedKeywords.text
+    text: managedKeywords.text,
+    keyword_length: sql`LENGTH(${managedKeywords.text})` // SQL expression for keyword length
   };
   
   const orderField = fieldMap[opts.orderBy] ?? managedKeywords.score;

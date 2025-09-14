@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, Search, AlertTriangle, CheckCircle, Filter, TrendingUp, Database, ArrowLeft, Download, Upload, FileText } from "lucide-react";
+import { RefreshCw, Search, AlertTriangle, CheckCircle, Filter, TrendingUp, Database, ArrowLeft, Download, Upload, FileText, ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Navigation } from "@/components/navigation";
@@ -66,7 +66,7 @@ export default function KeywordsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [refreshBase, setRefreshBase] = useState("");
   const [refreshLimit, setRefreshLimit] = useState(300);
-  const [orderBy, setOrderBy] = useState<'score' | 'raw_volume' | 'comp_idx' | 'ad_depth' | 'est_cpc_krw' | 'text'>('score');
+  const [orderBy, setOrderBy] = useState<'score' | 'raw_volume' | 'comp_idx' | 'ad_depth' | 'est_cpc_krw' | 'text' | 'keyword_length'>('score');
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc');
   const [activeTab, setActiveTab] = useState("manage");
   const [lastRefreshStats, setLastRefreshStats] = useState<RefreshResponse | null>(null);
@@ -284,7 +284,7 @@ export default function KeywordsPage() {
     queryFn: async () => {
       const params = new URLSearchParams({
         excluded: 'false',
-        orderBy,
+        orderBy: orderBy === 'comp_idx' ? 'comp_score' : orderBy, // Map comp_idx to comp_score for backend
         dir: orderDir
       });
       const response = await fetch(`/api/keywords?${params}`);
@@ -300,7 +300,7 @@ export default function KeywordsPage() {
     queryFn: async () => {
       const params = new URLSearchParams({
         excluded: 'true',
-        orderBy,
+        orderBy: orderBy === 'comp_idx' ? 'comp_score' : orderBy, // Map comp_idx to comp_score for backend
         dir: orderDir
       });
       const response = await fetch(`/api/keywords?${params}`);
@@ -554,6 +554,28 @@ export default function KeywordsPage() {
     return "text-gray-600 dark:text-gray-400";
   };
 
+  // 헤더 클릭 정렬 함수
+  const handleSort = (column: 'score' | 'raw_volume' | 'comp_idx' | 'ad_depth' | 'est_cpc_krw' | 'text' | 'keyword_length') => {
+    if (orderBy === column) {
+      // 같은 컬럼 클릭 시 방향 변경
+      setOrderDir(orderDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      // 다른 컬럼 클릭 시 해당 컬럼으로 변경하고 desc로 시작
+      setOrderBy(column);
+      setOrderDir('desc');
+    }
+  };
+
+  // 정렬 아이콘 렌더링
+  const renderSortIcon = (column: string) => {
+    if (orderBy !== column) {
+      return <ArrowUpDown className="h-4 w-4 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity" />;
+    }
+    return orderDir === 'asc' ? 
+      <ChevronUp className="h-4 w-4 text-blue-600" /> : 
+      <ChevronDown className="h-4 w-4 text-blue-600" />;
+  };
+
   const renderKeywordsTable = (keywords: ManagedKeyword[], showToggle: boolean) => {
     const filteredKeywords = filterKeywords(keywords);
     
@@ -575,8 +597,8 @@ export default function KeywordsPage() {
           {showToggle && (
             <div className="flex items-center space-x-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <Select value={orderBy} onValueChange={(value: 'score' | 'raw_volume' | 'comp_idx' | 'ad_depth' | 'est_cpc_krw' | 'text') => setOrderBy(value)}>
-                <SelectTrigger className="w-32" data-testid="kw-sort-select">
+              <Select value={orderBy} onValueChange={(value: 'score' | 'raw_volume' | 'comp_idx' | 'ad_depth' | 'est_cpc_krw' | 'text' | 'keyword_length') => setOrderBy(value)}>
+                <SelectTrigger className="w-36" data-testid="kw-sort-select">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -586,6 +608,7 @@ export default function KeywordsPage() {
                   <SelectItem value="ad_depth">광고깊이순</SelectItem>
                   <SelectItem value="est_cpc_krw">CPC순</SelectItem>
                   <SelectItem value="text">이름순</SelectItem>
+                  <SelectItem value="keyword_length">글자수순</SelectItem>
                 </SelectContent>
               </Select>
               
@@ -612,12 +635,66 @@ export default function KeywordsPage() {
           <Table>
             <TableHeader>
               <TableRow data-testid="kw-table-header">
-                <TableHead className="w-[200px]">키워드</TableHead>
-                <TableHead className="text-right w-[120px]">조회량</TableHead>
-                <TableHead className="text-center w-[100px]">경쟁도</TableHead>
-                <TableHead className="text-center w-[100px]">광고깊이</TableHead>
-                <TableHead className="text-right w-[120px]">예상CPC</TableHead>
-                <TableHead className="text-center w-[100px] font-semibold">종합점수</TableHead>
+                <TableHead className="w-[200px]">
+                  <button
+                    className="group flex items-center space-x-1 hover:bg-gray-100 dark:hover:bg-gray-800 p-1 rounded transition-colors"
+                    onClick={() => handleSort('text')}
+                    data-testid="header-keyword"
+                  >
+                    <span>키워드</span>
+                    {renderSortIcon('text')}
+                  </button>
+                </TableHead>
+                <TableHead className="text-right w-[120px]">
+                  <button
+                    className="group flex items-center space-x-1 hover:bg-gray-100 dark:hover:bg-gray-800 p-1 rounded transition-colors ml-auto"
+                    onClick={() => handleSort('raw_volume')}
+                    data-testid="header-volume"
+                  >
+                    <span>조회량</span>
+                    {renderSortIcon('raw_volume')}
+                  </button>
+                </TableHead>
+                <TableHead className="text-center w-[100px]">
+                  <button
+                    className="group flex items-center space-x-1 hover:bg-gray-100 dark:hover:bg-gray-800 p-1 rounded transition-colors mx-auto"
+                    onClick={() => handleSort('comp_idx')}
+                    data-testid="header-competition"
+                  >
+                    <span>경쟁도</span>
+                    {renderSortIcon('comp_idx')}
+                  </button>
+                </TableHead>
+                <TableHead className="text-center w-[100px]">
+                  <button
+                    className="group flex items-center space-x-1 hover:bg-gray-100 dark:hover:bg-gray-800 p-1 rounded transition-colors mx-auto"
+                    onClick={() => handleSort('ad_depth')}
+                    data-testid="header-ad-depth"
+                  >
+                    <span>광고깊이</span>
+                    {renderSortIcon('ad_depth')}
+                  </button>
+                </TableHead>
+                <TableHead className="text-right w-[120px]">
+                  <button
+                    className="group flex items-center space-x-1 hover:bg-gray-100 dark:hover:bg-gray-800 p-1 rounded transition-colors ml-auto"
+                    onClick={() => handleSort('est_cpc_krw')}
+                    data-testid="header-cpc"
+                  >
+                    <span>예상CPC</span>
+                    {renderSortIcon('est_cpc_krw')}
+                  </button>
+                </TableHead>
+                <TableHead className="text-center w-[100px] font-semibold">
+                  <button
+                    className="group flex items-center space-x-1 hover:bg-gray-100 dark:hover:bg-gray-800 p-1 rounded transition-colors mx-auto font-semibold"
+                    onClick={() => handleSort('score')}
+                    data-testid="header-score"
+                  >
+                    <span>종합점수</span>
+                    {renderSortIcon('score')}
+                  </button>
+                </TableHead>
                 {showToggle && <TableHead className="text-center w-[80px]">액션</TableHead>}
               </TableRow>
             </TableHeader>
