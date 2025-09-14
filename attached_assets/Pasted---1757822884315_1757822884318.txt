@@ -1,0 +1,218 @@
+좋아. 네 코드 그대로 보고 왜 자꾸 멈추는지 + 최소 수정으로 바로 굴러가게 정리해줄게.
+핵심은 ➊ 점수식/경쟁도 매핑이 거꾸로라 랭킹이 뒤틀리고, ➋ 목록 정렬/조회가 구버전(raw_volume 고정)이라 UI가 “안 바뀌는” 느낌을 주며, ➌ 시드/크롤은 잘 눌러도 DB가 기대대로 안 채워지는 구조(related 키워드 생성/조회 방식, 업로드 경로 미정)가 섞여 있어요. 아래 패치 5개만 넣으면 복잡한 구조 손대지 않고도 정상화됩니다.
+
+
+---
+
+✅ 패치 1 — 경쟁도 매핑과 점수식 바로잡기
+
+지금 compIdxToScore가 낮음=100, 높음=20으로 뒤집혀 있어요(상업성 점수에 반대 효과). 또 calculateOverallScore는 depth/cpc를 “작을수록 가산점”으로 넣어 상업성 정의와 어긋납니다. 아래로 교체하세요.
+
+// === utils: scoring ===
+// 이전 로직 삭제
+export function compIdxToScore(idx?: string | null): number {
+  if (!idx) return 60; // 중간
+  const s = String(idx).toLowerCase();
+  if (s.includes('높음') || s.includes('high') || s === '2') return 100;
+  if (s.includes('중간') || s.includes('mid')  || s === '1') return 60;
+  if (s.includes('낮음') || s.includes('low')  || s === '0') return 20;
+  return 60;
+}
+
+// volume: 로그 스케일, depth: 더 깊을수록 +, cpc: 클수록 +   (상업성 지표를 같은 방향으로)
+export function calculateOverallScore(
+  raw_volume: number,
+  comp_score: number,
+  ad_depth: number,
+  est_cpc: number
+): number {
+  const clamp01 = (x:number)=> Math.max(0, Math.min(1, x));
+  // 10만 조회 기준 정규화(로그 스케일)
+  const volume_norm = clamp01(Math.log10(Math.max(1, raw_volume)) / 5); // 1..100000 → 0..1
+  const depth_norm  = clamp01((ad_depth || 0) / 5);                     // 0..5 → 0..1
+  const cpc_norm    = est_cpc ? clamp01(est_cpc / 5000) : 0;            // 0..5000원 cap
+
+  const score =
+    0.35 * (volume_norm * 100) +
+    0.35 * clamp01(comp_score / 100) * 100 +
+    0.20 * (depth_norm * 100) +
+    0.10 * (cpc_norm * 100);
+
+  return Math.round(clamp01(score / 100) * 100);
+}
+
+> 효과: “높음/깊음/비쌈/조회 많음”이 모두 상향 가중 → Top3 선별이 직관적으로 바뀝니다.
+
+
+
+
+---
+
+✅ 패치 2 — listKeywords 정렬을 5지표/score에 맞게
+
+지금 /api/keywords는 orderBy가 사실상 raw_volume|text만 먹습니다. score/comp_score/ad_depth/est_cpc_krw 정렬을 지원해 주세요.
+
+// === listKeywords 개선 ===
+export async function listKeywords(opts: {
+  excluded: boolean;
+  orderBy: 'score'|'raw_volume'|'comp_score'|'ad_depth'|'est_cpc_krw'|'text';
+  dir: 'asc' | 'desc';
+}): Promise<ManagedKeyword[]> {
+  const map:any = {
+    score: managedKeywords.score,
+    raw_volume: managedKeywords.raw_volume,
+    comp_score: managedKeywords.comp_score,
+    ad_depth: managedKeywords.ad_depth,
+    est_cpc_krw: managedKeywords.est_cpc_krw,
+    text: managedKeywords.text
+  };
+  const field = map[opts.orderBy] ?? managedKeywords.score;
+  const orderer = opts.dir === 'desc' ? desc(field) : asc(field);
+  return await db.select()
+    .from(managedKeywords)
+    .where(eq(managedKeywords.excluded, opts.excluded))
+    .orderBy(orderer)
+    .limit(1000);
+}
+
+그리고 /api/keywords 라우트의 정렬 매핑도 맞추세요:
+
+const sortMap:Record<string,string> = {
+  text:'text', raw_volume:'raw_volume', score:'score', comp_score:'comp_score', ad_depth:'ad_depth', est_cpc_krw:'est_cpc_krw'
+};
+const orderBy = sortMap[String(sort)] || 'score';
+const orderDir = order === 'asc' ? 'asc' : 'desc';
+const keywords = await listKeywords({ excluded: excludedFilter, orderBy: orderBy as any, dir: orderDir as any });
+
+
+---
+
+✅ 패치 3 — getKeywordVolumeMap의 WHERE 절 (Drizzle)
+
+= ANY(${keywordTexts})는 PG 배열 바인딩이 꼬일 수 있습니다. **inArray**로 바꾸면 안전합니다.
+
+import { inArray } from 'drizzle-orm';
+
+export async function getKeywordVolumeMap(keywordTexts: string[]): Promise<Record<string, number>> {
+  if (keywordTexts.length === 0) return {};
+  const rows = await db.select({ text: managedKeywords.text, raw_volume: managedKeywords.raw_volume })
+    .from(managedKeywords)
+    .where(inArray(managedKeywords.text, keywordTexts));
+  const map:Record<string,number> = {};
+  for (const r of rows) map[r.text] = r.raw_volume;
+  for (const t of keywordTexts) if (!(t in map)) map[t] = 0;
+  return map;
+}
+
+
+---
+
+✅ 패치 4 — upsertMany 안정화(루프 유지·의미 있는 count)
+
+지금은 삽입/업데이트 모두 insertedCount++라서 보고 수치가 틀려요. 아래처럼 “실제 저장 시도 건수”를 반환하고, 값은 넘어온 값을 그대로 저장합니다. (대량 upsert로 바꾸려면 Drizzle values([...]).onConflictDoUpdate()로 한 번에 가능하지만, 우선 루프 유지)
+
+export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Promise<number> {
+  if (!keywords.length) return 0;
+  let saved = 0;
+  for (const kw of keywords) {
+    try {
+      await db.insert(managedKeywords)
+        .values({
+          text: kw.text!, raw_volume: kw.raw_volume ?? 0, volume: kw.volume ?? 0,
+          grade: kw.grade ?? 'C', commerciality: kw.commerciality ?? 0, difficulty: kw.difficulty ?? 0,
+          source: kw.source ?? 'searchads',
+          comp_idx: kw.comp_idx ?? null, comp_score: kw.comp_score ?? 0,
+          ad_depth: kw.ad_depth ?? 0, has_ads: !!kw.has_ads,
+          est_cpc_krw: kw.est_cpc_krw ?? null, est_cpc_source: kw.est_cpc_source ?? 'unknown',
+          score: kw.score ?? 0,
+          updated_at: sql`NOW()`
+        })
+        .onConflictDoUpdate({
+          target: managedKeywords.text,
+          set: {
+            raw_volume: sql`excluded.raw_volume`,
+            volume:     sql`excluded.volume`,
+            grade:      sql`excluded.grade`,
+            commerciality: sql`excluded.commerciality`,
+            difficulty: sql`excluded.difficulty`,
+            comp_idx:   sql`excluded.comp_idx`,
+            comp_score: sql`excluded.comp_score`,
+            ad_depth:   sql`excluded.ad_depth`,
+            has_ads:    sql`excluded.has_ads`,
+            est_cpc_krw: sql`excluded.est_cpc_krw`,
+            est_cpc_source: sql`excluded.est_cpc_source`,
+            score:      sql`excluded.score`,
+            updated_at: sql`NOW()`
+          }
+        });
+      saved++;
+    } catch (e) {
+      console.error(`Failed to upsert "${kw.text}":`, e);
+    }
+  }
+  return saved;
+}
+
+> 이렇게 하면 “삽입 vs 갱신” 통계가 필요해도 상위 라우트에서 기존/신규를 카운트할 수 있고, 최소한 count가 실제 저장된 건수로 맞습니다.
+
+
+
+
+---
+
+✅ 패치 5 — “왜 안 늘어나는가”의 즉시 원인(시드/크롤)
+
+/api/keywords/refresh-all이 항상 ‘홍삼’ 1개만 호출 → 늘 10~수십개만 추가됩니다. 위에서 제안한 A 패치 적용(= refresh-all → 내부적으로 crawl 실행) 하세요.
+
+엑셀 시드 업로드 루트가 없어서 UI가 fileId를 못 넣고 멈춰요. B 패치의 /api/uploads 추가가 필요합니다.
+
+loadSeedsFromCSV()를 인자 없이 부르는 구현이면 빈 배열이 나올 수 있습니다. C 패치처럼 경로 인자를 넘기세요.
+
+
+
+---
+
+🔎 테스트 순서(5분)
+
+1. 정렬/리스트
+
+GET /api/keywords?excluded=false&sort=score&order=desc → 200, 상단 “전체 N (활성 A | 제외 B)” 숫자 맞는지
+
+
+
+2. 시드 업로드 → BFS
+
+POST /api/uploads(CSV/XLSX) → {fileId}
+
+POST /api/keywords/crawl { source:"file", seedsFileId:"..." } → {jobId}
+
+GET /api/keywords/crawl/<jobId>/status 폴링 → collected 증가
+
+
+
+3. refresh-all(전수)
+
+POST /api/keywords/refresh-all(기본 바디) → job 시작, 상태 폴링
+
+
+
+4. 결과 반영
+
+1~2분 뒤 GET /api/keywords?sort=score&order=desc에 신규 키워드가 보이고, 상단 카운트 증가
+
+
+
+
+
+---
+
+“복잡해서 멈춘다”에 대한 결론
+
+크롤 구조 자체는 그대로 두고, 정렬/점수/시드 I/O 3점만 정확히 해주면 됩니다.
+위 패치로:
+
+점수식 정상화 → Top3/정렬이 직관
+
+리스트 정렬/조회가 5지표 기준
+
+시드 업로드/전수 수집이 실제로 시작

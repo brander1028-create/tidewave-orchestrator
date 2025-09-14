@@ -1,0 +1,202 @@
+좋아. 네가 던져준 routes.ts를 통으로 훑어보니, “BFS가 안 돈다/버튼 눌러도 무반응”의 직접 원인이 몇 개 딱 보여.
+아래는 문제 → 이유 → 한방 패치 순서야. (복붙용 코드 포함)
+
+🚨 무엇이 막고 있나 (핵심 5가지)
+
+/api/keywords/refresh-all가 ‘홍삼’ 1개만 긁음
+
+upsertKeywordsFromSearchAds('홍삼', 300)로 하드코딩돼 있어서 늘 10~수십 개만 추가됨.
+
+BFS 시드 업로드 루트가 없음
+
+UI에서 “엑셀로 1000/2000 시드 넣고 시작”하려면 **/api/uploads**가 필요한데, 현재 루트에 없음.
+
+그래서 버튼은 떠 있어도 실제로 쓸 fileId를 서버에 못 줘서 멈춤.
+
+CSV 내장 시드 로딩이 모호
+
+loadSeedsFromCSV()를 인자 없이 호출. 구현이 경로를 내부 기본값으로 가정하지 않으면 빈 시드로 시작해서 “No seeds found”가 됨.
+
+크롤러 좀비/중복 방지 약함
+
+이전 세션에서 status==='running'으로 남아 있으면 항상 409. TTL/최근활동 가드가 없어 죽은 세션에 걸릴 수 있음.
+
+키워드 리스트 소팅/필드 노출이 구버전
+
+/api/keywords가 orderBy: sort==='text' ? 'text' : 'raw_volume'로 고정.
+
+우리가 쓰는 5지표/score 기준 정렬이 안 됨 → UI에서 “안 바뀌는 느낌”.
+
+✅ 한방 패치(복붙) — routes.ts 수정 블록
+A) refresh-all를 진짜 “전체 수집”으로
+// REPLACE: /api/keywords/refresh-all
+app.post('/api/keywords/refresh-all', async (req, res) => {
+  try {
+    const {
+      minVolume = 1000,
+      hasAdsOnly = true,
+      source = 'builtin',             // 'file'|'manual'|'builtin'
+      seeds = [],
+      seedsCsv = '/mnt/data/seed_keywords_v2_ko.csv',
+      target = 20000,
+      chunkSize = 10,
+      concurrency = 1,
+      maxHops = 3,
+      stopIfNoNewPct = 0.5
+    } = req.body || {};
+
+    const searchadsHealth = await checkSearchAds();
+    if (searchadsHealth.mode === 'fallback') {
+      return res.status(503).json({ error:'SearchAds API not available', health: searchadsHealth });
+    }
+
+    // refresh-all은 내부적으로 BFS를 바로 킨다 (=전수 수집)
+    const startBody:any = {
+      mode: 'exhaustive', minVolume, hasAdsOnly, target, chunkSize, concurrency, maxHops, stopIfNoNewPct
+    };
+    if (source === 'manual' && seeds.length > 0)      startBody.seeds = seeds;
+    else if (source === 'file' && req.body.seedsFileId) startBody.seedsFileId = req.body.seedsFileId;
+    else                                              startBody.seedsCsv = seedsCsv;
+
+    const r = await fetch('http://localhost:3000/api/keywords/crawl', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(startBody)
+    });
+    const j = await r.json();
+    if (!r.ok) return res.status(r.status).json(j);
+    res.json({ ok:true, jobId:j.jobId, started:true, config:startBody });
+  } catch (e:any) {
+    console.error('🔄 Keywords refresh-all failed:', e);
+    res.status(500).json({ error:'Refresh failed', details:e?.message||String(e) });
+  }
+});
+
+B) 시드 업로드 엔드포인트 추가 (CSV/XLSX → fileId 반환)
+// ADD: uploads (시드용)
+app.post('/api/uploads', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error:'No file uploaded' });
+
+    // CSV만 먼저 지원 (엑셀은 추후 xlsx 파서 추가)
+    const rows:any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      Readable.from(req.file!.buffer)
+        .pipe(csv())
+        .on('data', (d) => rows.push(d))
+        .on('end', resolve)
+        .on('error', reject);
+    });
+
+    // 파일 내용에서 seed 컬럼 추출
+    const seeds = rows
+      .map(r => (r.seed || r.SEED || r['Seed'] || '').toString().trim())
+      .filter(Boolean);
+
+    if (seeds.length === 0) return res.status(400).json({ error:'No seeds found in CSV' });
+
+    // 임시 저장 (메모리/메타): fileId에 seeds 배열 저장
+    const fileId = 'upload-' + Date.now();
+    await metaSet(db, fileId, { seeds, at: Date.now() });
+    res.json({ fileId, rows: seeds.length });
+  } catch (e:any) {
+    console.error('upload failed', e);
+    res.status(500).json({ error:'Upload failed', details:e?.message||String(e) });
+  }
+});
+
+C) BFS 시작: 빈 시드면 내장 CSV or 업로드 fileId 사용
+// MODIFY: /api/keywords/crawl seed 결정부
+// ...
+let seeds: string[] = [];
+if (userSeeds && userSeeds.length > 0) {
+  seeds = userSeeds;
+} else if (req.body.seedsFileId) {
+  const f = await metaGet<any>(db, req.body.seedsFileId);
+  if (!f || !Array.isArray(f.seeds) || f.seeds.length === 0) {
+    return res.status(400).json({ error:'Invalid seedsFileId or empty seeds' });
+  }
+  seeds = f.seeds;
+  console.log(`🌱 Using ${seeds.length} seeds from upload file`);
+} else {
+  // 내장 CSV 사용 (경로 인자로 넘겨서 오동작 방지)
+  seeds = loadSeedsFromCSV(seedsCsv);  // ← 인자 추가
+  if (!seeds.length) return res.status(400).json({ error:'No seeds found in CSV file' });
+}
+// ...
+
+
+⚠️ 함수 시그니처 수정 필요: loadSeedsFromCSV(path?:string) 형태로 바꾸고, 기본 경로를 내부에서 /mnt/data/seed_keywords_v2_ko.csv로 두세요.
+
+D) 좀비 크롤러 가드(409 방지)
+// BEFORE: if (existingCrawler && existingCrawler.status === 'running') { return 409; }
+// AFTER:
+const existing = getGlobalCrawler();
+if (existing) {
+  const p = existing.getProgress();
+  const last = p?.lastUpdated || 0;
+  const stale = Date.now() - last > 5*60*1000; // 5분
+  if (existing.status === 'running' && !stale) {
+    return res.status(409).json({ error:'Crawler already running', progress: existing.getProgress() });
+  }
+  // 좀비면 날리고 재시작 허용
+  clearGlobalCrawler();
+}
+
+E) 키워드 리스트 정렬을 5지표/score로 제대로
+// MODIFY: /api/keywords 정렬 매핑
+const sortMap:Record<string,string> = {
+  text:'text',
+  raw_volume:'raw_volume',
+  score:'score',
+  comp_score:'comp_score',
+  ad_depth:'ad_depth',
+  est_cpc_krw:'est_cpc_krw'
+};
+const orderByCol = sortMap[String(sort)] || 'score';     // 기본 score
+const orderDir = (order === 'asc' ? 'asc' : 'desc');
+
+// store.listKeywords가 (excluded, orderBy, dir) 받는다고 가정
+const keywords = await listKeywords({
+  excluded: excludedFilter,
+  orderBy: orderByCol,
+  dir: orderDir
+});
+
+🔍 왜 그랬나 — 네 코드 기준 원인 요약
+
+refresh-all이 항상 ‘홍삼’만 넣어서 “조금만 늘어나는” 증상 고착.
+
+/api/uploads 부재 → 파일 업로드로 시드 시작 불가 → 버튼은 표시되지만 시작에 필요한 fileId가 없음.
+
+loadSeedsFromCSV() 무인자 호출 → 구현에 따라 빈 시드 가능.
+
+좀비 크롤러(예전 세션) → 무조건 409; 사용자 입장에선 “버튼 눌러도 무반응”.
+
+정렬/표시가 구버전(raw_volume 고정) → 5지표/score가 UI에서 안 먹히는 착시.
+
+🧪 최종 점검 체크리스트(1분)
+
+업로드 → BFS
+
+POST /api/uploads → {fileId}
+
+POST /api/keywords/crawl { source:'file', seedsFileId:'...' } → {jobId}
+
+GET /api/keywords/crawl/<jobId>/status → state:running|done, progress.collected 증가
+
+내장 CSV → BFS
+
+POST /api/keywords/crawl { source:'builtin' } 또는 본문 비움 → {jobId}
+
+리스트 정렬
+
+GET /api/keywords?excluded=false&sort=score&order=desc&limit=50 → 200, 상단 요약 전체 N (활성 A | 제외 B) 일치
+
+✍️ 프론트 한 줄만 확인
+
+“BFS 시작” 버튼 핸들러가 실제로 POST /api/keywords/crawl을 호출하고, 받은 {jobId}로 /status 폴링하는지.
+
+strict 모드 412 시 토스트/배지로 즉시 에러 보여주는지.
+
+이 패치까지 넣으면 시드 업로드 → BFS 확장 → 진행률 표시 → 5지표 정렬이 한 번에 살아납니다.
+필요하면 /services/bfs-crawler의 loadSeedsFromCSV(path) 시그니처 변경 스니펫도 바로 줄게.

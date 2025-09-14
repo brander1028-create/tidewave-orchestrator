@@ -21,6 +21,13 @@ import { Readable } from 'stream';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
+  // === Health TTL cache & shallow mode ===
+  const HEALTH_TTL_MS = 60_000; // 60s
+  let healthCache: { data: any|null; ts: number; inFlight: Promise<any>|null; disabled: boolean } =
+    { data: null, ts: 0, inFlight: null, disabled: false };
+
+  const isDeep = (req:any)=> req.query?.deep === '1' || req.query?.deep === 'true';
+  
   // Configure multer for CSV file uploads
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -737,24 +744,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (newSeeds.length > 0) {
         const volumeResults = await getVolumes(newSeeds);
         
-        const keywordsToInsert = [];
-        for (const [keyword, data] of Object.entries(volumeResults.volumes)) {
-          if (data.volumeMonthly >= 1000) { // 조회량 1000+ 기준만 저장
-            keywordsToInsert.push({
-              keyword,
-              raw_volume: data.volumeMonthly,
-              competition_index: data.compIdx || '중간',
-              competition_score: compIdxToScore(data.compIdx || '중간'),
-              ad_depth: data.adWordsCnt || 0,
-              estimated_cpc: data.cpc || 0,
-              overall_score: calculateOverallScore(
-                data.volumeMonthly,
-                compIdxToScore(data.compIdx || '중간'),
-                data.adWordsCnt || 0,
-                data.cpc || 0
-              )
-            });
-          }
+        const keywordsToInsert: any[] = [];
+        for (const [text, v] of Object.entries<any>(volumeResults.volumes)) {
+          const rawVolume = v.total ?? v.volumeMonthly ?? 0;
+          const adDepth   = v.plAvgDepth ?? v.adWordsCnt ?? 0;
+          const estCpc    = v.avePcCpc ?? v.cpc ?? 0;
+          const compIdx   = v.compIdx ?? '중간';
+
+          if (rawVolume < minVolume) continue;
+          if (hasAdsOnly && adDepth <= 0) continue;
+
+          keywordsToInsert.push({
+            text,
+            raw_volume: rawVolume,
+            comp_idx: compIdx,
+            comp_score: compIdxToScore(compIdx),
+            ad_depth: adDepth,
+            has_ads: adDepth > 0,
+            est_cpc_krw: estCpc,
+            est_cpc_source: 'searchads',
+            score: calculateOverallScore(rawVolume, compIdxToScore(compIdx), adDepth, estCpc),
+            source: 'bfs_seed'
+          });
         }
         
         if (keywordsToInsert.length > 0) {

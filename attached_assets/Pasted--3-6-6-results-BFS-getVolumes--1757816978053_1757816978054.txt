@@ -1,0 +1,172 @@
+결론: 치명 3개, 중요 6개, 경미 6개 보였어요. 특히 /results 응답 포맷, 키워드 랭크 미저장, BFS getVolumes 필드 불일치가 실제 오동작 원인입니다. 아래 패치만 적용하면 흐름 안정됩니다.
+
+반드시 고쳐야 할 것(치명)
+
+GET /api/serp/jobs/:jobId/results가 “신규 계약 포맷”을 거의 반환하지 않음
+완료 시 processSerpAnalysisJob이 finalStats(구 포맷)를 job.results에 저장해서, /results가 늘 그걸 그대로 돌려보냅니다.
+수정: job.results에 blogs 키가 있으면 캐시를 사용, 아니면 새 포맷을 계산·저장 후 반환.
+
+// 🔧 replace this in /api/serp/jobs/:jobId/results
+// old:
+if (job.results) {
+  console.log(`📊 Returning cached results for job ${req.params.jobId}`);
+  return res.json(job.results);
+}
+
+// new:
+if (job.results && (job.results as any).blogs) {
+  console.log(`📊 Returning cached NEW-format results for job ${req.params.jobId}`);
+  return res.json(job.results);
+}
+// else: compute NEW format (아래 기존 계산 로직 유지) 후…
+await storage.updateSerpJob(job.id, { results: response }); // 캐시로 저장
+return res.json(response);
+
+
+키워드 SERP 랭크가 저장되지 않음
+3단계에서 // TODO: Update keyword rank in storage로 남아 있어, 이후 결과/CSV에 랭크가 비어 있습니다.
+수정: 추출된 키워드 레코드에 랭크 업데이트 함수를 호출하세요.
+
+// ranking check loop 안
+if (serpRank != null) {
+  const extracted = await storage.getExtractedKeywords(blog.id);
+  const target = extracted.find(k => k.keyword === keyword.keyword);
+  if (target) {
+    // storage에 이런 형태의 API 하나 추가하세요.
+    await storage.updateExtractedKeyword(target.id, { rank: serpRank });
+  }
+}
+
+
+BFS 시드 처리에서 getVolumes 결과 필드 불일치
+expand에서는 { total, plAvgDepth, avePcCpc, compIdx }를 쓰는데, BFS 시드 처리에서는 { volumeMonthly, adWordsCnt, cpc }로 접근합니다. 현재 구현대로면 undefined로 들어가서 필터링/저장이 망가집니다.
+수정: 두 스키마를 모두 수용하는 안전 매핑으로 통일.
+
+const volumeResults = await getVolumes(newSeeds);
+const keywordsToInsert:any[] = [];
+for (const [text, v] of Object.entries<any>(volumeResults.volumes)) {
+  const rawVolume = v.total ?? v.volumeMonthly ?? 0;
+  const adDepth   = v.plAvgDepth ?? v.adWordsCnt ?? 0;
+  const estCpc    = v.avePcCpc ?? v.cpc ?? 0;
+  const compIdx   = v.compIdx ?? '중간';
+
+  if (rawVolume < minVolume) continue;
+  if (hasAdsOnly && adDepth <= 0) continue;
+
+  keywordsToInsert.push({
+    text,
+    raw_volume: rawVolume,
+    comp_idx: compIdx,
+    comp_score: compIdxToScore(compIdx),
+    ad_depth: adDepth,
+    has_ads: adDepth > 0,
+    est_cpc_krw: estCpc,
+    est_cpc_source: 'searchads',
+    score: calculateOverallScore(rawVolume, compIdxToScore(compIdx), adDepth, estCpc),
+    source: 'bfs_seed'
+  });
+}
+if (keywordsToInsert.length) await upsertMany(keywordsToInsert);
+
+중요(정합성/UX)
+
+Job History 카운터가 0으로만 나올 수 있음
+완료 job의 results가 구 포맷이면 counters가 없어 전부 0으로 표기됩니다.
+수정: results.counters 없을 때 스토리지에서 최소치(발견 블로그 수 등)를 계산하거나, 위 ① 패치로 /results에 새 포맷을 캐시해두고 그걸 사용.
+
+/api/serp/jobs/:jobId/cancel이 pending 상태 취소를 막음
+사용자 취소가 바로 먹히게 pending도 허용하세요.
+
+if (!['running','pending'].includes(job.status)) {
+  return res.status(400).json({ error: "Job is not running or pending" });
+}
+
+
+GET /api/keywords 기본이 무조건 excluded=false
+파라미터 미지정 시 전체를 보려는 경우가 많습니다.
+수정: excluded가 미지정이면 필터를 전달하지 않도록.
+
+let excludedFilter: boolean | undefined = undefined;
+if (excluded === 'true') excludedFilter = true;
+else if (excluded === 'false') excludedFilter = false;
+
+const keywords = await listKeywords({
+  excluded: excludedFilter, // ← undefined면 전체
+  orderBy: sort === 'text' ? 'text' : 'raw_volume',
+  dir: order === 'asc' ? 'asc' : 'desc'
+});
+
+
+BFS seedsCsv 파라미터가 무시됨
+지금은 항상 loadSeedsFromCSV() 기본경로만 사용합니다.
+수정: loadSeedsFromCSV(seedsCsv)로 경로를 넘기고, 함수 시그니처도 받도록.
+
+// let seeds = loadSeedsFromCSV();
+let seeds = loadSeedsFromCSV(seedsCsv); // ← 요청값 반영
+
+
+/api/keywords/refresh-all이 고정 문자열 ‘홍삼’만 수집
+엔드포인트 이름과 동작이 어긋납니다. base 배열·리스트를 받거나 내부 프리셋을 순환하도록 고치세요(또는 라우트명을 refresh-sample로 바꾸기).
+
+CSV 업로드 MIME 제한이 과협소
+브라우저가 CSV를 application/vnd.ms-excel로 보내는 경우가 흔합니다.
+수정:
+
+if (['text/csv','application/vnd.ms-excel'].includes(file.mimetype) || file.originalname.toLowerCase().endsWith('.csv')) {
+  cb(null, true);
+} else {
+  cb(new Error('Only CSV files are allowed'));
+}
+
+
+/api/keywords/export.csv에서 포뮬러 인젝션 보호 부재
+다른 CSV 익스포트는 sanitizeCsvField를 쓰지만, 여기선 생 텍스트를 씁니다. 동일 보호 적용 권장.
+
+let csvOut = "text,raw_volume,volume,grade,excluded,updated_at\n";
+for (const k of keywords) {
+  const updatedAt = k.updated_at ? new Date(k.updated_at).toISOString() : '';
+  csvOut += [
+    sanitizeCsvField(k.text),
+    sanitizeCsvField(k.raw_volume),
+    sanitizeCsvField(k.volume),
+    sanitizeCsvField(k.grade),
+    sanitizeCsvField(k.excluded ? 'true' : 'false'),
+    sanitizeCsvField(updatedAt)
+  ].join(',') + '\n';
+}
+res.setHeader('Content-Type','text/csv; charset=utf-8');
+res.setHeader('Content-Disposition','attachment; filename="keywords-export.csv"');
+res.send('\ufeff' + csvOut);
+
+경미(정리/안전)
+
+csv-parser ESM 디폴트 임포트: esModuleInterop 꺼져 있으면 import * as csv from 'csv-parser'로 바꾸세요.
+
+미사용 임포트: z, nlpService, checkAllServices는 제거 추천(트리 셰이킹, 가독성).
+
+duplicates 카운터: 선언만 있고 증가 안 함(두 곳). 필요 없으면 삭제 or 로직 보완.
+
+취소 직후 레이스: 취소 후에도 루프가 한 번 더 진행할 수 있습니다. 각 내부 루프(키워드·블로그·랭크 체크) 시작부에 있는 취소 체크는 좋지만, “저장 직전”에도 한 줄 더 넣으면 안전합니다.
+
+/api/serp/analyze·/api/serp/search 처리 부하: 단일 프로세스에서 장기 작업이면 이벤트 루프 블로킹 위험. 나중에 큐/워커(예: BullMQ)로 뺄 것을 권장.
+
+/api/keywords/:id: k.id 타입이 숫자인 경우 문자열 비교로 못 찾을 수 있으니 형 일치 확인.
+
+빠른 스모크 테스트(요청/응답 정상 확인)
+# 1) 분석 시작
+curl -s -X POST http://localhost:3000/api/serp/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"keywords":["홍삼스틱","홍삼"],"minRank":2,"maxRank":15,"postsPerBlog":10}'
+
+# 2) 상태
+curl -s http://localhost:3000/api/serp/jobs/<jobId>
+
+# 3) (선택) 대기 중 취소 허용 확인
+curl -s -X POST http://localhost:3000/api/serp/jobs/<jobId>/cancel
+
+# 4) 완료 후 결과(신규 포맷) — blogs/keywords/posts/counters 확인
+curl -s http://localhost:3000/api/serp/jobs/<jobId>/results
+
+# 5) 키워드 리스트(전체/제외필터)
+curl -s "http://localhost:3000/api/keywords?limit=20"
+curl -s "http://localhost:3000/api/keywords?excluded=true&limit=20"

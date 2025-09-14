@@ -1,0 +1,93 @@
+키워드 수집에서 연관키워드 추가하면
+몇개가추가되었다고 나오긴하는데
+총키워드수나 활성화 키워드수 변화가 없음
+실제 되는건지 아니면 수치가 반영안되는건지? 오류 확인하고
+
+요청] 키워드 카운트 표기 + 엑셀 시드 업로드 기반 BFS 크롤 + 진행상황 표시
+
+카운트 표기(혼선 제거)
+상단 요약을 항상 전체 N (활성 A | 제외 B)로 표기.
+
+“활성 키워드 관리” 테이블 헤더 옆에는 활성 A 만 표기.
+
+시드 업로드 → BFS 크롤 (엑셀/CSV)
+목표: 내가 1000개/2000개/그 이상을 엑셀로 넣으면, 그 시드를 시작점으로 연관 키워드를 확장 수집(BFS).
+시드 그 자체도 조건 만족 시(조회량≥1000 & has_ads) DB에 기본 추가.
+
+백엔드
+
+업로드 (새)
+
+POST /api/uploads (multipart, CSV/XLSX) → { fileId, rows }
+
+파일 스키마: seed[, category] (헤더 1행, UTF-8)
+
+업로드 후 서버가 파일을 임시 위치에 저장
+
+BFS 시작 (수정/확장)
+
+POST /api/keywords/crawl
+
+{
+"mode": "exhaustive",
+"source": "file",
+"seedsFileId": "<fileId>",
+"target": 20000,
+"minVolume": 1000,
+"hasAdsOnly": true,
+"chunkSize": 10,
+"concurrency": 1,
+"maxHops": 3,
+"stopIfNoNewPct": 0.5
+}
+
+동작:
+
+업로드 파일의 seed 전부를 frontier로 초기화
+
+keywordstool(showDetail=1) 호출 → raw_volume(pc+mobile, -1→0)·comp_idx/comp_score·ad_depth(has_ads)·est_cpc_krw(null 허용) 계산, score 산출
+
+필터: raw_volume≥minVolume AND has_ads=true만 DB 업서트(5지표 저장)
+
+신규 연관어는 정규화(trim+lower+다중공백1) 후 중복제거, frontier에 추가
+
+시드(원본)도 필터 통과 시 기본 추가
+
+상태 폴링/중지
+
+GET /api/keywords/crawl/:jobId/status
+
+{ state:running|done|error, progress:0..100, requested, ok, fail, queue, collected, mode }
+
+POST /api/keywords/crawl/:jobId/cancel → { ok:true }
+
+프론트(UI)
+
+상단 카드:
+
+[파일 업로드(XLSX/CSV)] → POST /api/uploads → fileId 저장
+
+[BFS 크롤 시작] → POST /api/keywords/crawl(source=file, seedsFileId)
+
+(보조) 멀티라인 시드 직접 입력도 지원: source:"manual", seeds:[…]
+
+진행상황 박스(버튼 아래 실시간 표시):
+
+진행률바/퍼센트 + requested / ok / fail / queue / collected + mode 배지(searchads=초록, partial=노랑, fallback=회색)
+
+[중지] 버튼(옵션)
+
+테이블은 기존대로 5지표만(조회량/경쟁도/광고깊이/예상CPC/종합점수), 정렬 기본 score DESC.
+
+“활성/제외” 탭 분리 유지, 각 액션은 X / ↩.
+
+수락 기준
+상단: 전체 N (활성 A | 제외 B) 일관 표기. “활성 관리”엔 활성 A만.
+
+파일 업로드 후 BFS 크롤 시작 시 jobId를 받고, 하단 진행상황에서 퍼센트/카운터가 1초 단위로 갱신.
+
+크롤 완료 시 /api/keywords?excluded=false&sort=score&order=desc에 새 키워드가 반영되고, 시드도 조건 만족 시 포함.
+
+(오류) 헬스 실패 시 토스트/배지로 원인 표시(OpenAPI/SearchAds).
+
+참고해서 다시

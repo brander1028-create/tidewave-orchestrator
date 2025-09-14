@@ -1,0 +1,115 @@
+ChatGPT의 말:
+25s 동안 생각함
+
+한줄 결론: /api/health가 매번 ‘풀 점검’을 돌고 /api/keywords/stats도 거길 다시 불러 자기증폭 루프가 생긴 겁니다. TTL 캐시+얕은헬스+stats 경량화 3가지만 적용하면 즉시 멈춥니다.
+
+지금 바로 멈추는 핫픽스(서버 한 파일에 복붙)
+
+server/routes.ts 상단에 추가(라우트들 정의 전에):
+
+// === Health TTL cache & shallow mode ===
+const HEALTH_TTL_MS = 60_000; // 60s
+let healthCache: { data: any|null; ts: number; inFlight: Promise<any>|null; disabled: boolean } =
+  { data: null, ts: 0, inFlight: null, disabled: false };
+
+const isDeep = (req:any)=> req.query?.deep === '1' || req.query?.deep === 'true';
+
+// (선택) 헬스 토글용: 문제 시 heavy health 잠깐 꺼두기
+app.post('/api/health/toggle', (req, res) => {
+  healthCache.disabled = !!req.body?.disabled;
+  return res.json({ ok:true, disabled: healthCache.disabled });
+});
+
+app.get('/api/health', async (req, res) => {
+  try {
+    if (healthCache.disabled && !isDeep(req)) {
+      return res.status(200).json({ ok:true, disabled:true, cached:true, ...healthCache.data });
+    }
+    const now = Date.now();
+    // 캐시 HIT (얕은)
+    if (!isDeep(req) && healthCache.data && now - healthCache.ts < HEALTH_TTL_MS) {
+      res.set('X-Health-Cache','HIT');
+      return res.status(200).json(healthCache.data);
+    }
+    // 진행중이면 기다리기(중복 방지)
+    if (!isDeep(req) && healthCache.inFlight) {
+      res.set('X-Health-Cache','WAIT');
+      const data = await Promise.race([
+        healthCache.inFlight,
+        new Promise<never>((_,rej)=>setTimeout(()=>rej(new Error('wait timeout')),3000))
+      ]).catch(()=>healthCache.data);
+      return res.status(200).json(data || { ok:false, cached:false });
+    }
+    // 실제 실행(딥 or 캐시만료)
+    const runner = (async () => {
+      const data = await getHealthWithPrompt(db); // ← 기존 함수 그대로
+      healthCache = { data, ts: Date.now(), inFlight: null, disabled: false };
+      try { await metaSet(db, 'searchads_mode', data?.searchads?.mode ?? 'fallback'); } catch {}
+      return data;
+    })();
+    if (!isDeep(req)) healthCache.inFlight = runner;
+    const data = await runner;
+    res.set('X-Health-Cache', isDeep(req) ? 'DEEP' : 'MISS');
+    return res.status(200).json(data);
+  } catch (e:any) {
+    healthCache.inFlight = null;
+    return res.status(500).json({ error:'Health check failed', details:String(e?.message || e) });
+  }
+});
+
+
+그리고 /api/keywords/stats에서 무거운 헬스 호출 제거(매 요청마다 SearchAds를 다시 부르지 않게):
+
+app.get("/api/keywords/stats", async (req, res) => {
+  try {
+    const included = await listKeywords({ excluded:false, orderBy:'raw_volume', dir:'desc' });
+    const excluded = await listKeywords({ excluded:true,  orderBy:'raw_volume', dir:'desc' });
+    const total = included.length + excluded.length;
+    const all = [...included, ...excluded];
+    const lastUpdated = all.length
+      ? new Date(Math.max(...all.map(k => k.updated_at ? +new Date(k.updated_at) : 0))).toISOString()
+      : new Date().toISOString();
+
+    // ✅ 메타 캐시에서 mode만 읽기 (헬스 재호출 금지)
+    let volumes_mode = 'fallback';
+    try { volumes_mode = (await metaGet<string>(db, 'searchads_mode')) || 'fallback'; } catch {}
+
+    return res.json({ total, lastUpdated, volumes_mode });
+  } catch (err) {
+    return res.status(500).json({ error:'Failed to get keywords stats' });
+  }
+});
+
+
+프론트 폴링은 기본 /api/health(얕은)만 쓰고, 필요할 때만 /api/health?deep=1로 눌러서 ‘실점검’ 하세요.
+
+왜 지금 무한반복처럼 찍히나(원인 요약)
+
+/api/health가 매번 SearchAds/OpenAPI 실 호출 → 로그에 760개 처리 문구가 계속 찍힘.
+
+/api/keywords/stats가 다시 getHealthWithPrompt를 호출 → 서로 증폭.
+
+브라우저/에이전트가 20~30초 폴링 → 서버는 매번 “풀 헬스” 재실행.
+
+적용 후 바로 확인(10초)
+# 연속 3회 호출 시 MISS → HIT → HIT 뜨면 성공
+curl -i http://localhost:3000/api/health
+curl -i http://localhost:3000/api/health
+curl -i http://localhost:3000/api/keywords/stats
+
+
+로그에 SearchAd API response ... 760 keywords가 매번 뜨면 실패, 가끔(deep 때만) 뜨면 정상.
+
+급하면 임시로 heavy 헬스 꺼두기:
+
+curl -s -X POST http://localhost:3000/api/health/toggle -H 'Content-Type: application/json' -d '{"disabled":true}'
+
+추가로 권장(선택)
+
+/api/health 내부 외부호출에 타임아웃(15s)과 동시성 1 적용.
+
+UI 폴링 주기 60s 이상, 기본은 얕은 모드.
+
+로그 레벨 낮추기(샘플 볼륨·통계는 debug로).
+
+이렇게만 바꾸면 Replit 에이전트가 뭘 “요청하든” 더 이상 무한 반복처럼 보이지 않고, 필요한 순간에만 풀 헬스가 돌게 됩니다.
