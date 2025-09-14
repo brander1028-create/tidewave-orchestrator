@@ -1667,7 +1667,7 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
       // Update progress
       const progressIncrement = (30 / keywords.length);
       await storage.updateSerpJob(jobId, {
-        progress: Math.min(5 + ((index + 1) * progressIncrement), 35)
+        progress: Math.round(Math.min(5 + ((index + 1) * progressIncrement), 35))
       });
     }
 
@@ -1790,7 +1790,7 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         await storage.updateDiscoveredBlog(blog.id, { baseRank: baseRank });
         
         await storage.updateSerpJob(jobId, {
-          progress: Math.min(35 + ((index + 1) * (30 / discoveredBlogs.length)), 65)
+          progress: Math.round(Math.min(35 + ((index + 1) * (30 / discoveredBlogs.length)), 65))
         });
         
         // Rate limiting
@@ -1887,7 +1887,7 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         
         const progressIncrement = (35 / discoveredBlogs.length);
         await storage.updateSerpJob(jobId, {
-          progress: Math.min(65 + ((index + 1) * progressIncrement), 100)
+          progress: Math.round(Math.min(65 + ((index + 1) * progressIncrement), 100))
         });
         
       } catch (error) {
