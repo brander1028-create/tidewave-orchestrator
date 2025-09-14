@@ -58,7 +58,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Start SERP analysis with keywords
   app.post("/api/serp/analyze", async (req, res) => {
     try {
-      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10 } = req.body;
+      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10, titleExtract = true } = req.body;
       
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
@@ -89,7 +89,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Start analysis in background
-      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog);
+      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract);
 
       res.json({ 
         jobId: job.id,
@@ -520,7 +520,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // If validation passes, delegate to existing analyze endpoint logic
-      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10 } = req.body;
+      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10, titleExtract = true } = req.body;
       
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
@@ -539,7 +539,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Start analysis in background (reuse existing function)
-      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog);
+      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract);
 
       // 시작 성공 → 정상 기록
       const h = await getOptimisticHealth(db);
@@ -1579,7 +1579,7 @@ function extractBlogIdFromUrl(url: string): string {
 }
 
 // Background SERP analysis job processing
-async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank: number, maxRank: number, postsPerBlog: number = 10) {
+async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank: number, maxRank: number, postsPerBlog: number = 10, titleExtract: boolean = true) {
   try {
     // Helper function to check if job is cancelled
     const checkIfCancelled = async (): Promise<boolean> => {
@@ -1723,23 +1723,53 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
           });
         }
 
-        // Step 2.3: Extract top 3 keywords by search volume (with frequency fallback)
+        // Step 2.3: Extract keywords based on titleExtract setting
         const titles = scrapedPosts.map(post => post.title);
-        console.log(`   🔤 Extracting volume-based keywords from ${titles.length} titles for ${blog.blogName}`);
-        const { top3, detail, volumesMode } = await extractTop3ByVolume(titles);
+        let keywordResults: any = { detail: [], volumesMode: 'fallback' };
         
-        console.log(`   🏆 Top 3 keywords for ${blog.blogName}: ${detail.map((d: any) => `${d.tier.toUpperCase()}: ${d.keyword} (${d.volume_total})`).join(', ')}`);
+        if (titleExtract) {
+          console.log(`   🔤 [Title Extract] Extracting Top4 keywords (70% volume + 30% combined) from ${titles.length} titles for ${blog.blogName}`);
+          try {
+            const titleResult = await titleKeywordExtractor.extractTopNByCombined(titles, 4);
+            keywordResults = {
+              detail: titleResult.topN.map((kw, index) => ({
+                keyword: kw.text,
+                tier: `tier${index + 1}` as 'tier1'|'tier2'|'tier3'|'tier4',
+                volume_total: kw.raw_volume || 0,
+                volume_pc: 0, // Not available from title extractor
+                volume_mobile: 0, // Not available from title extractor  
+                frequency: kw.frequency || 0,
+                hasVolume: kw.raw_volume > 0,
+                combined_score: kw.combined_score
+              })),
+              volumesMode: titleResult.mode === 'db-only' ? 'searchads' : 
+                          titleResult.mode === 'api-refresh' ? 'searchads' : 'fallback'
+            };
+            console.log(`   🏆 [Title Extract] Top ${titleResult.topN.length} keywords for ${blog.blogName} (${titleResult.mode}): ${titleResult.topN.map(kw => `${kw.text} (${kw.combined_score}pts)`).join(', ')}`);
+          } catch (error) {
+            console.error(`   ❌ [Title Extract] Failed for ${blog.blogName}:`, error);
+            // Fallback to original method
+            const { top3, detail, volumesMode } = await extractTop3ByVolume(titles);
+            keywordResults = { detail, volumesMode };
+            console.log(`   🔄 [Fallback] Using original extraction for ${blog.blogName}`);
+          }
+        } else {
+          console.log(`   🔤 [Legacy] Extracting volume-based keywords from ${titles.length} titles for ${blog.blogName}`);
+          const { top3, detail, volumesMode } = await extractTop3ByVolume(titles);
+          keywordResults = { detail, volumesMode };
+          console.log(`   🏆 [Legacy] Top 3 keywords for ${blog.blogName}: ${detail.map((d: any) => `${d.tier.toUpperCase()}: ${d.keyword} (${d.volume_total})`).join(', ')}`);
+        }
         
-        // Save top keywords with volume data + base_rank
-        for (const [keywordIndex, keywordDetail] of Array.from((detail as any[]).entries())) {
+        // Save extracted keywords with volume data + base_rank
+        for (const [keywordIndex, keywordDetail] of Array.from((keywordResults.detail as any[]).entries())) {
           await storage.createExtractedKeyword({
             jobId: job.id,
             blogId: blog.id,
             keyword: keywordDetail.keyword,
             volume: keywordDetail.volume_total || null,
             frequency: keywordDetail.frequency || 0,
-            rank: null, // Will be set by SERP check later for TOP3 keywords
-            tier: keywordIndex + 1 // 1, 2, 3 for tier1, tier2, tier3
+            rank: null, // Will be set by SERP check later
+            tier: keywordIndex + 1 // 1, 2, 3, 4... for tier1, tier2, etc.
           });
         }
         
