@@ -1163,8 +1163,25 @@ export default function KeywordsPage() {
                       <span>BFS 크롤링 진행 중</span>
                       <Badge variant="secondary">{crawlProgress.state}</Badge>
                     </h4>
-                    <div className="text-xs text-muted-foreground">
-                      홉 {crawlProgress.progress?.currentHop || 0} / {crawlProgress.config?.maxHops || 3}
+                    <div className="flex items-center gap-4">
+                      {/* 실시간 진행 카운터 */}
+                      <div className="flex items-center gap-3 text-xs">
+                        <div className="flex items-center gap-1">
+                          <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                          <span data-testid="counter-success">성공: {crawlProgress.progress?.collected || 0}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="w-2 h-2 bg-orange-500 rounded-full"></span>
+                          <span data-testid="counter-skipped">스킵: {crawlProgress.progress?.skipped || 0}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                          <span data-testid="counter-failed">실패: {crawlProgress.progress?.failed || 0}</span>
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        홉 {crawlProgress.progress?.currentHop || 0} / {crawlProgress.config?.maxHops || 3}
+                      </div>
                     </div>
                   </div>
                   

@@ -86,7 +86,7 @@ export async function loadOptimizedSeeds(maxSeeds: number = 200): Promise<string
     }
     
     // 이미 DB에 있는 키워드 제외
-    const existingKeywords = await listKeywords({ excluded: false });
+    const existingKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
     const existingTexts = new Set(existingKeywords.map(k => normalizeKeyword(k.text)));
     
     const newSeeds = selectedSeeds.filter(seed => {
@@ -176,6 +176,13 @@ export class BFSKeywordCrawler {
     frontierSize: 0,
     visitedSize: 0,
     estimatedTimeLeft: '계산 중...',
+    
+    // 실시간 카운터 (사용자 요청)
+    collected: 0,      // 성공적으로 수집된 키워드
+    skipped: 0,        // "No volume data" 스킵된 키워드
+    failed: 0,         // API 호출 실패한 키워드
+    attempted: 0,      // 시도한 총 키워드 수
+    
     // 청크 진행률
     currentChunk: 0,
     totalChunks: 0,
@@ -322,6 +329,8 @@ export class BFSKeywordCrawler {
         const volumeData = volumes[keyword];
         if (!volumeData) {
           console.log(`⏭️  No volume data for "${keyword}" - skipping`);
+          this.progress.skipped++;
+          this.progress.attempted++;
           continue;
         }
         
@@ -366,6 +375,8 @@ export class BFSKeywordCrawler {
         await upsertMany([keywordData]);
         this.collected++;
         this.progress.keywordsSaved = this.collected;
+        this.progress.collected++;
+        this.progress.attempted++;
         
         // Phase 3: 크롤링 기록 저장 (중복 방지용)
         await storage.recordKeywordCrawl(keyword, 'bfs');
