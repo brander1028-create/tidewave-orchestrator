@@ -6,7 +6,7 @@ import { nanoid } from 'nanoid';
 import { db } from '../db.js';
 import { storage } from '../storage.js';
 
-// CSV에서 시드 키워드 로드
+// CSV에서 시드 키워드 로드 (기본 버전)
 export function loadSeedsFromCSV(): string[] {
   try {
     const csvPath = join(process.cwd(), 'server/data/seed_keywords_v2_ko.csv');
@@ -28,6 +28,88 @@ export function loadSeedsFromCSV(): string[] {
   } catch (error) {
     console.error('❌ Failed to load seeds from CSV:', error);
     return [];
+  }
+}
+
+// 최적화된 시드 키워드 로드 (Phase 3: 효율성 개선)
+export async function loadOptimizedSeeds(maxSeeds: number = 200): Promise<string[]> {
+  try {
+    const csvPath = join(process.cwd(), 'server/data/seed_keywords_v2_ko.csv');
+    const csvContent = readFileSync(csvPath, 'utf-8');
+    
+    const lines = csvContent.split('\n').slice(1); // Skip header
+    
+    // CSV 파싱: 카테고리별로 그룹화
+    const seedsByCategory: { [category: string]: string[] } = {};
+    
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      
+      const parts = line.split(',');
+      const category = parts[0]?.trim();
+      const seed = parts[1]?.trim();
+      
+      if (category && seed && seed.length > 0) {
+        if (!seedsByCategory[category]) {
+          seedsByCategory[category] = [];
+        }
+        seedsByCategory[category].push(seed);
+      }
+    }
+    
+    const categories = Object.keys(seedsByCategory);
+    console.log(`📁 Found ${categories.length} categories: ${categories.join(', ')}`);
+    
+    // 카테고리별로 균등하게 시드 선택 (다양성 확보)
+    const seedsPerCategory = Math.max(1, Math.floor(maxSeeds / categories.length));
+    const selectedSeeds: string[] = [];
+    
+    for (const category of categories) {
+      const categorySeeds = seedsByCategory[category];
+      
+      // 카테고리 내에서 랜덤 선택 (항상 앞부분만 사용하지 않음)
+      const shuffled = [...categorySeeds].sort(() => Math.random() - 0.5);
+      const selected = shuffled.slice(0, seedsPerCategory);
+      
+      selectedSeeds.push(...selected);
+    }
+    
+    // 남은 슬롯이 있으면 전체에서 랜덤 추가
+    if (selectedSeeds.length < maxSeeds) {
+      const allSeeds = Object.values(seedsByCategory).flat();
+      const remaining = allSeeds
+        .filter(seed => !selectedSeeds.includes(seed))
+        .sort(() => Math.random() - 0.5)
+        .slice(0, maxSeeds - selectedSeeds.length);
+      
+      selectedSeeds.push(...remaining);
+    }
+    
+    // 이미 DB에 있는 키워드 제외
+    const existingKeywords = await listKeywords({ excluded: false });
+    const existingTexts = new Set(existingKeywords.map(k => normalizeKeyword(k.text)));
+    
+    const newSeeds = selectedSeeds.filter(seed => {
+      const normalized = normalizeKeyword(seed);
+      return !existingTexts.has(normalized);
+    });
+    
+    // 최근 30일 내 크롤링된 키워드 제외 
+    const uncrawledSeeds = await storage.filterUncrawledKeywords(newSeeds, 30);
+    
+    console.log(`🎯 Optimized seed selection:`);
+    console.log(`   📊 Total available: ${Object.values(seedsByCategory).flat().length}`);
+    console.log(`   🎲 Randomly selected: ${selectedSeeds.length}`);
+    console.log(`   🚫 Excluded (in DB): ${selectedSeeds.length - newSeeds.length}`);
+    console.log(`   ⏭️  Excluded (recently crawled): ${newSeeds.length - uncrawledSeeds.length}`);
+    console.log(`   ✅ Final seeds: ${uncrawledSeeds.length}`);
+    console.log(`   🌱 Sample: ${uncrawledSeeds.slice(0, 5).join(', ')}...`);
+    
+    return uncrawledSeeds;
+  } catch (error) {
+    console.error('❌ Failed to load optimized seeds:', error);
+    // 에러 시 기본 방식으로 fallback
+    return loadSeedsFromCSV();
   }
 }
 

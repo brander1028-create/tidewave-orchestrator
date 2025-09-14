@@ -11,7 +11,7 @@ import { shouldPreflight, probeHealth, getOptimisticHealth, markHealthFail, mark
 import { getVolumesWithHealth } from './services/externals-health';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore, getKeywordsCounts } from './store/keywords';
 // BFS Crawler imports
-import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword, isStale, getCallBudgetStatus } from './services/bfs-crawler.js';
+import { loadSeedsFromCSV, loadOptimizedSeeds, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword, isStale, getCallBudgetStatus } from './services/bfs-crawler.js';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
@@ -935,12 +935,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         seeds = uploadedFile.rows.map(row => row.seed);
         console.log(`📁 Using ${seeds.length} seeds from uploaded file "${uploadedFile.originalName}": ${seeds.slice(0, 5).join(', ')}...`);
         
-      } else { // source === 'builtin'
-        seeds = loadSeedsFromCSV();
+      } else { // source === 'builtin' (Phase 3: 최적화된 시드 선택)
+        seeds = await loadOptimizedSeeds(200); // 최대 200개 시드를 카테고리별 분산 선택
         if (seeds.length === 0) {
           return res.status(400).json({ error: 'No seeds found in builtin CSV file' });
         }
-        console.log(`📂 Using ${seeds.length} builtin seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
+        console.log(`🎯 Using ${seeds.length} optimized builtin seeds: ${seeds.slice(0, 5).join(', ')}...`);
       }
 
       // ✅ STEP: Process seeds FIRST (add to database, skip duplicates)
