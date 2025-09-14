@@ -79,6 +79,14 @@ export default function KeywordsPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [crawlProgress, setCrawlProgress] = useState<any>(null);
   
+  // File upload state
+  const [seedSource, setSeedSource] = useState<'manual' | 'file' | 'builtin'>('manual');
+  const [uploadedFile, setUploadedFile] = useState<{
+    id: string;
+    name: string;
+    rows: number;
+  } | null>(null);
+  
   // Parse seeds from text input (comma/newline separated)
   const seeds = seedsText.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
   
@@ -133,10 +141,28 @@ export default function KeywordsPage() {
   // BFS Crawl Handler (long operation)
   const onCrawl = async () => {
     try {
-      const body = {
+      // Validate seed source
+      if (seedSource === 'manual' && seeds.length === 0) {
+        toast({
+          title: "시드 키워드 입력 필요",
+          description: "수동 입력 모드에서는 최소 1개 이상의 시드 키워드가 필요합니다.",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      if (seedSource === 'file' && !uploadedFile) {
+        toast({
+          title: "파일 업로드 필요",
+          description: "파일 모드에서는 CSV/XLSX 파일을 먼저 업로드해야 합니다.",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      const body: any = {
         mode: 'exhaustive',
-        seeds: seeds.length > 0 ? seeds : [], // Use user seeds or empty for CSV
-        seedsCsv: '/mnt/data/seed_keywords_v2_ko.csv',
+        source: seedSource,
         target: 20000,
         minVolume: 1000,
         hasAdsOnly: true,
@@ -146,6 +172,14 @@ export default function KeywordsPage() {
         stopIfNoNewPct: 0.5,
         dailyCallBudget: 2000
       };
+      
+      // Add source-specific parameters
+      if (seedSource === 'manual') {
+        body.seeds = seeds;
+      } else if (seedSource === 'file') {
+        body.seedsFileId = uploadedFile!.id;
+      }
+      // For 'builtin', no additional parameters needed
 
       const response = await fetch('/api/keywords/crawl', {
         method: 'POST',
@@ -175,9 +209,13 @@ export default function KeywordsPage() {
       const result = await response.json();
       setJobId(result.jobId);
       
+      const sourceDesc = seedSource === 'manual' ? '수동 입력' : 
+                       seedSource === 'file' ? `파일 (${uploadedFile?.name})` : 
+                       '내장 CSV';
+      
       toast({
         title: "BFS 크롤링 시작",
-        description: `시드 ${result.seedsLoaded}개로 최대 ${result.config.target}개 키워드 수집 시작`
+        description: `${sourceDesc} 시드 ${result.seedsLoaded}개로 최대 ${result.config.target}개 키워드 수집 시작`
       });
       
       // Refresh keywords data
@@ -325,42 +363,6 @@ export default function KeywordsPage() {
     },
   });
 
-  // BFS Crawl mutation
-  const crawlMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest('POST', '/api/keywords/crawl', {
-        target: 10000,
-        maxHops: 3,
-        minVolume: 1000,
-        hasAdsOnly: true,
-        chunkSize: 10,
-        concurrency: 1
-      });
-      return response.json();
-    },
-    onSuccess: (data: any) => {
-      toast({
-        title: "BFS 크롤링 시작",
-        description: `${data.seedsLoaded}개 시드로 최대 ${data.config.target}개 키워드 수집 시작`
-      });
-      queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "크롤링 시작 실패",
-        description: error.message || "BFS 크롤링 시작에 실패했습니다.",
-        variant: "destructive"
-      });
-    }
-  });
-
-  // Crawl progress query (fixed circular reference)
-  const { data: crawlProgressData } = useQuery({
-    queryKey: ['/api/keywords/crawl/progress'],
-    refetchInterval: 2000, // Poll every 2 seconds
-    enabled: crawlMutation.isPending
-  });
 
   // Toggle keyword excluded status
   const toggleMutation = useMutation({
@@ -435,58 +437,58 @@ export default function KeywordsPage() {
     
     const files = e.dataTransfer.files;
     if (files.length > 0) {
-      const file = files[0];
-      if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
-        handleFileUpload(file);
-      } else {
-        toast({
-          title: "파일 형식 오류",
-          description: "CSV 파일만 업로드할 수 있습니다",
-          variant: "destructive",
-        });
-      }
+      handleFileUpload(files[0]);
     }
   };
 
   const handleFileUpload = async (file: File) => {
+    if (!file.name.toLowerCase().match(/\.(csv|xlsx)$/)) {
+      toast({
+        title: "지원하지 않는 파일 형식",
+        description: "CSV 또는 XLSX 파일만 업로드 가능합니다.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
     setUploadProgress({ loading: true });
     
     try {
-      // Create FormData for multipart form upload
       const formData = new FormData();
       formData.append('file', file);
-
-      // Upload to backend API
-      const response = await fetch('/api/keywords/import', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
-      }
-
-      const result = await response.json();
       
-      setUploadProgress({ loading: false, result });
+      const response = await fetch('/api/uploads', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Upload failed');
+      }
+      
+      const result = await response.json();
+      setUploadedFile({
+        id: result.fileId,
+        name: file.name,
+        rows: result.rowCount
+      });
+      setSeedSource('file');
       
       toast({
-        title: "업로드 완료",
-        description: `파일 "${file.name}"이 성공적으로 업로드되었습니다`,
+        title: "파일 업로드 완료",
+        description: `${result.rowCount}개 시드 키워드가 로드되었습니다.`
       });
-      
-      // Invalidate queries to refresh data
-      queryClient.invalidateQueries({ queryKey: ['/api/keywords'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/keywords', 'stats'] });
       
     } catch (error) {
-      setUploadProgress({ loading: false });
-      const errorMessage = error instanceof Error ? error.message : "파일 업로드 중 오류가 발생했습니다";
+      console.error('File upload error:', error);
       toast({
-        title: "업로드 실패",
-        description: errorMessage,
-        variant: "destructive",
+        title: "파일 업로드 실패",
+        description: error instanceof Error ? error.message : "파일 업로드 중 오류가 발생했습니다.",
+        variant: "destructive"
       });
+    } finally {
+      setUploadProgress({ loading: false });
     }
   };
 
@@ -497,9 +499,7 @@ export default function KeywordsPage() {
     handleFileUpload(file);
     
     // Reset file input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    event.target.value = '';
   };
 
   const handleRefresh = () => {
@@ -880,48 +880,198 @@ export default function KeywordsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* 시드 입력란 (멀티라인) */}
-              <div className="space-y-2">
-                <label htmlFor="seeds-input" className="text-sm font-medium">
-                  시드 키워드 입력 (쉼표 또는 줄바꿈으로 구분)
-                </label>
-                <Textarea
-                  id="seeds-input"
-                  placeholder="홍삼, 면역력 강화&#10;탈모 샴푸&#10;비타민 D"
-                  value={seedsText}
-                  onChange={(e) => setSeedsText(e.target.value)}
-                  className="min-h-[100px] resize-vertical"
-                  data-testid="input-seeds"
-                />
-                {seeds.length > 0 && (
-                  <div className="text-xs text-muted-foreground">
-                    {seeds.length}개 시드: {seeds.slice(0, 3).join(', ')}{seeds.length > 3 ? '...' : ''}
-                  </div>
-                )}
+              {/* 시드 소스 선택 */}
+              <div className="space-y-3">
+                <label className="text-sm font-medium">시드 키워드 소스</label>
+                <div className="flex flex-col space-y-2">
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      value="manual"
+                      checked={seedSource === 'manual'}
+                      onChange={(e) => setSeedSource(e.target.value as 'manual')}
+                      className="w-4 h-4"
+                      data-testid="radio-source-manual"
+                    />
+                    <span>수동 입력</span>
+                  </label>
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      value="file"
+                      checked={seedSource === 'file'}
+                      onChange={(e) => setSeedSource(e.target.value as 'file')}
+                      className="w-4 h-4"
+                      data-testid="radio-source-file"
+                    />
+                    <span>파일 업로드 (CSV/XLSX)</span>
+                  </label>
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      value="builtin"
+                      checked={seedSource === 'builtin'}
+                      onChange={(e) => setSeedSource(e.target.value as 'builtin')}
+                      className="w-4 h-4"
+                      data-testid="radio-source-builtin"
+                    />
+                    <span>내장 CSV (2K 키워드)</span>
+                  </label>
+                </div>
               </div>
+
+              {/* 수동 입력 모드 */}
+              {seedSource === 'manual' && (
+                <div className="space-y-2">
+                  <label htmlFor="seeds-input" className="text-sm font-medium">
+                    시드 키워드 입력 (쉼표 또는 줄바꿈으로 구분)
+                  </label>
+                  <Textarea
+                    id="seeds-input"
+                    placeholder="홍삼, 면역력 강화&#10;탈모 샴푸&#10;비타민 D"
+                    value={seedsText}
+                    onChange={(e) => setSeedsText(e.target.value)}
+                    className="min-h-[100px] resize-vertical"
+                    data-testid="input-seeds"
+                  />
+                  {seeds.length > 0 && (
+                    <div className="text-xs text-muted-foreground">
+                      {seeds.length}개 시드: {seeds.slice(0, 3).join(', ')}{seeds.length > 3 ? '...' : ''}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 파일 업로드 모드 */}
+              {seedSource === 'file' && (
+                <div className="space-y-3">
+                  {!uploadedFile ? (
+                    <div
+                      className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                        isDragOver ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
+                      }`}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      data-testid="dropzone-seeds"
+                    >
+                      <Upload className="mx-auto h-8 w-8 text-gray-400 mb-2" />
+                      <div className="text-sm text-gray-600 mb-2">
+                        CSV/XLSX 파일을 드래그하거나 클릭하여 업로드
+                      </div>
+                      <div className="text-xs text-gray-500 mb-3">
+                        첫 번째 열: seed, 두 번째 열: category (선택)
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={uploadProgress.loading}
+                        data-testid="button-upload-seeds"
+                      >
+                        {uploadProgress.loading ? (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            업로드 중...
+                          </>
+                        ) : (
+                          <>
+                            <FileText className="mr-2 h-4 w-4" />
+                            파일 선택
+                          </>
+                        )}
+                      </Button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".csv,.xlsx"
+                        onChange={handleFileChange}
+                        className="hidden"
+                        data-testid="input-upload-seeds"
+                      />
+                    </div>
+                  ) : (
+                    <div className="border rounded-lg p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium" data-testid="text-uploaded-file">업로드된 파일</div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setUploadedFile(null);
+                            setSeedSource('manual');
+                          }}
+                          data-testid="button-remove-file"
+                        >
+                          제거
+                        </Button>
+                      </div>
+                      <div className="text-sm text-gray-600">
+                        <div>파일명: {uploadedFile.name}</div>
+                        <div>시드 개수: {uploadedFile.rows.toLocaleString()}개</div>
+                        <div className="text-xs text-green-600 mt-1">✓ 업로드 완료</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 내장 CSV 모드 정보 */}
+              {seedSource === 'builtin' && (
+                <div className="border rounded-lg p-4 space-y-2">
+                  <div className="text-sm font-medium">내장 시드 데이터</div>
+                  <div className="text-sm text-gray-600">
+                    <div>파일: seed_keywords_v2_ko.csv</div>
+                    <div>시드 개수: 약 2,000개</div>
+                    <div className="text-xs text-blue-600 mt-1">ℹ️ 미리 준비된 한국어 키워드</div>
+                  </div>
+                </div>
+              )}
 
               {/* 두 개 버튼 */}
               <div className="flex gap-3 justify-center">
                 <Button
                   onClick={onExpand}
-                  disabled={seeds.length === 0}
+                  disabled={seedSource !== 'manual' || seeds.length === 0 || uploadProgress.loading}
                   className="px-6 py-2"
                   variant="outline"
                   data-testid="btn-expand-keywords"
                 >
                   <Search className="mr-2 h-4 w-4" />
                   연관 키워드 추가
+                  {seedSource !== 'manual' && (
+                    <span className="ml-1 text-xs opacity-60">(수동입력만)</span>
+                  )}
                 </Button>
                 
                 <Button
                   onClick={onCrawl}
+                  disabled={
+                    uploadProgress.loading ||
+                    jobId ||
+                    (seedSource === 'manual' && seeds.length === 0) ||
+                    (seedSource === 'file' && !uploadedFile)
+                  }
                   className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white"
                   data-testid="btn-crawl-bfs"
                 >
                   <TrendingUp className="mr-2 h-4 w-4" />
                   BFS 크롤 시작
-                  {seeds.length === 0 && (
+                  {seedSource === 'manual' && seeds.length === 0 && (
+                    <span className="ml-1 text-xs opacity-80">(시드 입력 필요)</span>
+                  )}
+                  {seedSource === 'file' && !uploadedFile && (
+                    <span className="ml-1 text-xs opacity-80">(파일 업로드 필요)</span>
+                  )}
+                  {seedSource === 'builtin' && (
                     <span className="ml-1 text-xs opacity-80">(2K시드)</span>
+                  )}
+                  {seedSource === 'file' && uploadedFile && (
+                    <span className="ml-1 text-xs opacity-80">({uploadedFile.rows}개 시드)</span>
+                  )}
+                  {jobId && (
+                    <span className="ml-1 text-xs opacity-80">(진행중)</span>
                   )}
                 </Button>
               </div>
