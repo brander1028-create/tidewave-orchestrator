@@ -57,8 +57,9 @@ export async function pingKeywordsDB(): Promise<void> {
   `);
 }
 
+
 /**
- * Get total keywords count
+ * Get total keywords count (backward compatibility)
  */
 export async function keywordsCount(): Promise<number> {
   const result = await db.select({ count: sql<number>`COUNT(*)` }).from(managedKeywords);

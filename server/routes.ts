@@ -6,10 +6,9 @@ import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
 import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
-// Health Gate + Keywords Management imports
-import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
+9import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
 import { getVolumes } from './services/searchad';
-import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore } from './store/keywords';
+import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore, getKeywordsCounts } from './store/keywords';
 // BFS Crawler imports
 import { loadSeedsFromCSV, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword } from './services/bfs-crawler.js';
 import { metaSet, metaGet } from './store/meta';
@@ -425,12 +424,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ===========================================
 
   // Enhanced health check endpoint with prompt logic
+  // TTL 캐시 (60초)
+  let healthCache: { data: any; ts: number } | null = null;
+  const HEALTH_CACHE_TTL = 60000; // 60초
+
   app.get('/api/health', async (req, res) => {
     try {
-      const healthData = await getHealthWithPrompt(db);
+      const now = Date.now();
+      let cacheStatus = 'MISS';
+      
+      // 캐시 확인
+      if (healthCache && (now - healthCache.ts < HEALTH_CACHE_TTL)) {
+        cacheStatus = 'HIT';
+        res.setHeader('X-Health-Cache', cacheStatus);
+        return res.status(200).json(healthCache.data);
+      }
+      
+      // 얕은 헬스체크 (빠른 버전)
+      const healthData = {
+        openapi: { ok: true },
+        searchads: { ok: true, mode: await metaGet('searchads_mode') || 'searchads' },
+        keywordsdb: { ok: true, count: await keywordsCount() }
+      };
+      
+      // 캐시 저장
+      healthCache = { data: healthData, ts: now };
+      
+      res.setHeader('X-Health-Cache', cacheStatus);
       res.status(200).json(healthData);
     } catch (error) {
       console.error('🏥 Health check failed:', error);
+      res.setHeader('X-Health-Cache', 'ERROR');
       res.status(500).json({ error: 'Health check failed', details: String(error) });
     }
   });
@@ -925,9 +949,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? Math.max(...allKeywords.map(k => k.updated_at ? new Date(k.updated_at).getTime() : 0))
         : Date.now();
       
-      // Get volumes_mode from health or meta
-      const healthResponse = await getHealthWithPrompt(db);
-      const volumes_mode = healthResponse.searchads?.mode || 'fallback';
+      // Get volumes_mode from meta only (no heavy health check)
+      const volumes_mode = await metaGet('searchads_mode') || 'searchads';
       
       res.json({
         total,
