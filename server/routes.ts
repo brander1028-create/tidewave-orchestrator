@@ -18,6 +18,8 @@ import type { HealthResponse } from './types';
 import multer from 'multer';
 import csv from 'csv-parser';
 import { Readable } from 'stream';
+import * as XLSX from 'xlsx';
+import { nanoid } from 'nanoid';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -28,21 +30,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const isDeep = (req:any)=> req.query?.deep === '1' || req.query?.deep === 'true';
   
-  // Configure multer for CSV file uploads
+  // Configure multer for CSV/XLSX file uploads
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
       fileSize: 10 * 1024 * 1024, // 10MB limit
     },
     fileFilter: (req, file, cb) => {
-      // Accept CSV files only
-      if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+      // Accept CSV and XLSX files
+      const isValidFile = file.mimetype === 'text/csv' || 
+                         file.originalname.endsWith('.csv') ||
+                         file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                         file.originalname.endsWith('.xlsx');
+      
+      if (isValidFile) {
         cb(null, true);
       } else {
-        cb(new Error('Only CSV files are allowed'));
+        cb(new Error('Only CSV and XLSX files are allowed'));
       }
     },
   });
+
+  // In-memory storage for uploaded file data
+  const uploadedFiles = new Map<string, { rows: any[], originalName: string, uploadedAt: Date }>();
   
   // Start SERP analysis with keywords
   app.post("/api/serp/analyze", async (req, res) => {
@@ -542,6 +552,93 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await markHealthFail(db, error?.message);
       console.error('🔒 SERP search failed:', error);
       res.status(500).json({ error: 'SERP search failed', details: String(error) });
+    }
+  });
+
+  // ===== File Upload for Seeds =====
+  app.post('/api/uploads', upload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      console.log(`📁 Processing uploaded file: ${req.file.originalname} (${req.file.size} bytes)`);
+
+      let rows: { seed: string; category?: string }[] = [];
+      const fileName = req.file.originalname.toLowerCase();
+
+      if (fileName.endsWith('.csv')) {
+        // Parse CSV file
+        const csvData = req.file.buffer.toString('utf-8');
+        const lines = csvData.split('\n');
+        
+        if (lines.length < 2) {
+          return res.status(400).json({ error: 'CSV file must have at least header + 1 data row' });
+        }
+
+        // Skip header line and process data
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          
+          const parts = line.split(',');
+          const seed = parts[0]?.trim();
+          const category = parts[1]?.trim() || undefined;
+          
+          if (seed && seed.length > 0) {
+            rows.push({ seed, category });
+          }
+        }
+      } else if (fileName.endsWith('.xlsx')) {
+        // Parse XLSX file
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+        
+        if (data.length < 2) {
+          return res.status(400).json({ error: 'XLSX file must have at least header + 1 data row' });
+        }
+
+        // Skip header row and process data
+        for (let i = 1; i < data.length; i++) {
+          const row = data[i];
+          const seed = row[0]?.toString()?.trim();
+          const category = row[1]?.toString()?.trim() || undefined;
+          
+          if (seed && seed.length > 0) {
+            rows.push({ seed, category });
+          }
+        }
+      } else {
+        return res.status(400).json({ error: 'Unsupported file format. Only CSV and XLSX are allowed.' });
+      }
+
+      if (rows.length === 0) {
+        return res.status(400).json({ error: 'No valid seed keywords found in file' });
+      }
+
+      // Generate unique file ID and store in memory
+      const fileId = nanoid();
+      uploadedFiles.set(fileId, {
+        rows,
+        originalName: req.file.originalname,
+        uploadedAt: new Date()
+      });
+
+      console.log(`✅ Successfully processed ${rows.length} seed keywords from ${req.file.originalname}`);
+      console.log(`📂 File stored with ID: ${fileId}`);
+
+      res.json({ 
+        fileId, 
+        rows: rows.length,
+        fileName: req.file.originalname,
+        sample: rows.slice(0, 3) // Show first 3 for preview
+      });
+
+    } catch (error) {
+      console.error('❌ File upload failed:', error);
+      res.status(500).json({ error: 'Failed to process uploaded file', details: String(error) });
     }
   });
 
