@@ -412,5 +412,5 @@ export function isStale(crawler: BFSKeywordCrawler | null): boolean {
   }
   
   const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
-  return Date.now() - crawler.lastUpdated > STALE_THRESHOLD;
+  return Date.now() - crawler.lastUpdated.getTime() > STALE_THRESHOLD;
 }

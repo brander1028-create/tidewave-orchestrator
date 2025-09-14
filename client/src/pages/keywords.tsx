@@ -1125,12 +1125,12 @@ export default function KeywordsPage() {
                 
                 <Button
                   onClick={onCrawl}
-                  disabled={
+                  disabled={Boolean(
                     uploadProgress.loading ||
                     jobId ||
                     (seedSource === 'manual' && seeds.length === 0) ||
                     (seedSource === 'file' && !uploadedFile)
-                  }
+                  )}
                   className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white"
                   data-testid="btn-crawl-bfs"
                 >
@@ -1330,7 +1330,7 @@ export default function KeywordsPage() {
                     활성 키워드 관리
                     {keywordsStats && (
                       <Badge variant="outline" className="text-xs">
-                        {(keywordsStats as KeywordsStatsResponse).active?.toLocaleString() || 0}개
+                        {((keywordsStats as KeywordsStatsResponse)?.active || 0).toLocaleString()}개
                       </Badge>
                     )}
                   </CardTitle>
