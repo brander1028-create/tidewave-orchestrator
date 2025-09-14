@@ -1281,21 +1281,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const excludedKeywords = await listKeywords({ excluded: true, orderBy: 'raw_volume', dir: 'desc' });
       const keywords = [...includedKeywords, ...excludedKeywords];
       
-      // Create CSV content
+      // Create CSV content with proper Korean encoding
       const header = 'text,raw_volume,volume,grade,excluded,updated_at\n';
       const rows = keywords.map(k => {
         const excluded = k.excluded ? 'true' : 'false';
         const updatedAt = k.updated_at ? new Date(k.updated_at).toISOString() : '';
-        return `"${k.text}",${k.raw_volume},${k.volume},"${k.grade}",${excluded},"${updatedAt}"`;
+        return `${sanitizeCsvField(k.text)},${sanitizeCsvField(k.raw_volume)},${sanitizeCsvField(k.volume)},${sanitizeCsvField(k.grade)},${sanitizeCsvField(excluded)},${sanitizeCsvField(updatedAt)}`;
       }).join('\n');
       
       const csvContent = header + rows;
       
-      // Set headers for file download
+      // Set headers for file download with UTF-8 BOM for Korean support
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', 'attachment; filename="keywords-export.csv"');
       
-      res.send(csvContent);
+      res.send('\ufeff' + csvContent); // UTF-8 BOM for Excel Korean support
     } catch (error) {
       console.error('Error exporting keywords:', error);
       res.status(500).json({ error: 'Failed to export keywords' });
