@@ -685,6 +685,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Load built-in keywords from CSV
+  app.post("/api/keywords/load-builtin", async (req, res) => {
+    try {
+      console.log('📂 Loading built-in keywords from CSV...');
+      const { loadSeedsFromCSV } = await import('./services/bfs-crawler');
+      const seedKeywords = loadSeedsFromCSV();
+      
+      if (seedKeywords.length === 0) {
+        return res.status(500).json({ error: "Failed to load seed keywords from CSV" });
+      }
+
+      // 키워드들을 ManagedKeyword 형태로 변환
+      const keywordsToSave = seedKeywords.map(text => ({
+        text: text.trim(),
+        raw_volume: 0, // Will be updated when volumes are fetched
+        comp_idx: 'unknown',
+        ad_depth: 0,
+        est_cpc_krw: 0,
+        score: 50, // Default score
+        excluded: false
+      }));
+
+      // 배치로 저장
+      const { upsertMany } = await import('./store/keywords');
+      const totalSaved = await upsertMany(keywordsToSave);
+      
+      console.log(`✅ Successfully loaded ${totalSaved}/${seedKeywords.length} keywords from built-in CSV`);
+      
+      res.json({
+        success: true,
+        totalKeywords: seedKeywords.length,
+        savedKeywords: totalSaved,
+        message: `Successfully loaded ${totalSaved} built-in keywords`
+      });
+    } catch (error) {
+      console.error('❌ Error loading built-in keywords:', error);
+      res.status(500).json({ error: "Failed to load built-in keywords" });
+    }
+  });
+
   // Keywords refresh endpoint (optimistic health)
   app.post('/api/keywords/refresh', async (req, res) => {
     try {
