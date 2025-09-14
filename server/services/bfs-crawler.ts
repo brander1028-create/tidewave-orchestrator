@@ -182,8 +182,9 @@ export class BFSKeywordCrawler {
       // 검색량 조회 (health-aware)
       const volumeResult = await getVolumesWithHealth(db, chunk);
       const volumes = volumeResult.volumes;
+      const mode = volumeResult.mode;
       
-      console.log(`📊 Got volumes for ${Object.keys(volumes).length}/${chunk.length} keywords`);
+      console.log(`📊 Got volumes for ${Object.keys(volumes).length}/${chunk.length} keywords (mode: ${mode})`);
       
       // 각 키워드 처리
       for (const keyword of chunk) {
@@ -202,28 +203,34 @@ export class BFSKeywordCrawler {
         const rawVolume = volumeData.total || 0;
         const hasAds = (volumeData.plAvgDepth || 0) > 0;
         
-        // 필터 적용
-        if (rawVolume < this.minVolume) {
-          console.log(`⏭️  "${keyword}" volume ${rawVolume} < ${this.minVolume} - skipping`);
-          continue;
+        // 필터 적용 - ONLY in searchads mode (Phase 1: 임시 저장 정책)
+        if (mode === 'searchads') {
+          if (rawVolume < this.minVolume) {
+            console.log(`⏭️  "${keyword}" volume ${rawVolume} < ${this.minVolume} - skipping`);
+            continue;
+          }
+          
+          if (this.hasAdsOnly && !hasAds) {
+            console.log(`⏭️  "${keyword}" has no ads - skipping`);
+            continue;
+          }
+        } else {
+          console.log(`📝 "${keyword}" saving with raw_volume=${rawVolume} (${mode} mode - no filters)`);
         }
         
-        if (this.hasAdsOnly && !hasAds) {
-          console.log(`⏭️  "${keyword}" has no ads - skipping`);
-          continue;
-        }
-        
-        // 키워드 저장
-        const overallScore = calculateOverallScore(
-          rawVolume,
-          compIdxToScore(volumeData.compIdx || '중간'),
-          volumeData.plAvgDepth || 0,
-          volumeData.avePcCpc || 0
-        );
+        // 키워드 저장 (Phase 1: 임시 저장 정책)
+        const overallScore = mode === 'searchads' 
+          ? calculateOverallScore(
+              rawVolume,
+              compIdxToScore(volumeData.compIdx || '중간'),
+              volumeData.plAvgDepth || 0,
+              volumeData.avePcCpc || 0
+            )
+          : 40; // 임시 보수적 점수 for fallback/partial mode
         
         const keywordData = {
           text: keyword,
-          raw_volume: rawVolume,
+          raw_volume: mode === 'searchads' ? rawVolume : 0, // fallback/partial에서는 0으로 저장
           comp_idx: volumeData.compIdx || '중간',
           ad_depth: volumeData.plAvgDepth || 0,
           est_cpc_krw: volumeData.avePcCpc || 0,

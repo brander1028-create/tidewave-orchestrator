@@ -795,8 +795,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get volumes for all seeds (health-aware)
       const volumeResult = await getVolumesWithHealth(db, seeds);
       const volumes = volumeResult.volumes;
+      const mode = volumeResult.mode;
       
-      console.log(`📊 Got volumes for ${Object.keys(volumes).length}/${seeds.length} seeds`);
+      console.log(`📊 Got volumes for ${Object.keys(volumes).length}/${seeds.length} seeds (mode: ${mode})`);
 
       // Process and save keywords
       const keywordsToUpsert: any[] = [];
@@ -808,31 +809,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const rawVolume = volumeData.total || 0;
         const hasAds = (volumeData.plAvgDepth || 0) > 0;
         
-        // Apply filters
-        if (rawVolume < minVolume) {
-          console.log(`⏭️ "${text}" volume ${rawVolume} < ${minVolume} - skipping`);
-          continue;
-        }
-        
-        if (hasAdsOnly && !hasAds) {
-          console.log(`⏭️ "${text}" has no ads - skipping`);
-          continue;
+        // Apply filters ONLY in searchads mode (Phase 1: 임시 저장 정책)
+        if (mode === 'searchads') {
+          if (rawVolume < minVolume) {
+            console.log(`⏭️ "${text}" volume ${rawVolume} < ${minVolume} - skipping`);
+            continue;
+          }
+          
+          if (hasAdsOnly && !hasAds) {
+            console.log(`⏭️ "${text}" has no ads - skipping`);
+            continue;
+          }
+        } else {
+          console.log(`📝 "${text}" saving with raw_volume=${rawVolume} (${mode} mode - no filters)`);
         }
 
-        // Calculate score
-        const overallScore = calculateOverallScore(
-          rawVolume,
-          compIdxToScore(volumeData.compIdx || '중간'),
-          volumeData.plAvgDepth || 0,
-          volumeData.avePcCpc || 0
-        );
+        // Calculate score (Phase 1: 임시 저장 정책)
+        const overallScore = mode === 'searchads' 
+          ? calculateOverallScore(
+              rawVolume,
+              compIdxToScore(volumeData.compIdx || '중간'),
+              volumeData.plAvgDepth || 0,
+              volumeData.avePcCpc || 0
+            )
+          : 40; // 임시 보수적 점수 for fallback/partial mode
 
         // Check if keyword already exists
         const existingKeyword = await findKeywordByText(text);
         
         const keywordData = {
           text,
-          raw_volume: rawVolume,
+          raw_volume: mode === 'searchads' ? rawVolume : 0, // fallback/partial에서는 0으로 저장
           comp_idx: volumeData.compIdx || '중간',
           ad_depth: volumeData.plAvgDepth || 0,
           est_cpc_krw: volumeData.avePcCpc || 0,
