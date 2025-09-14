@@ -55,6 +55,8 @@ type HealthResponse = {
 
 type KeywordsStatsResponse = {
   total: number;
+  active: number;
+  excluded: number;
   lastUpdated: string;
   volumes_mode: 'fallback' | 'partial' | 'searchads';
 };
@@ -726,8 +728,10 @@ export default function KeywordsPage() {
                   {keywordsStats ? (
                     <div className="space-y-3">
                       <div className="flex justify-between items-center">
-                        <span className="text-sm text-muted-foreground">총 키워드 수</span>
-                        <span className="font-mono text-lg">{(keywordsStats as KeywordsStatsResponse).total.toLocaleString()}</span>
+                        <span className="text-sm text-muted-foreground">키워드 현황</span>
+                        <span className="font-mono text-lg" data-testid="kw-counts">
+                          전체 {(keywordsStats as KeywordsStatsResponse).total.toLocaleString()} (활성 {(keywordsStats as KeywordsStatsResponse).active.toLocaleString()} | 제외 {(keywordsStats as KeywordsStatsResponse).excluded.toLocaleString()})
+                        </span>
                       </div>
                       <div className="flex justify-between items-center">
                         <span className="text-sm text-muted-foreground">조회량 모드</span>
@@ -1007,7 +1011,14 @@ export default function KeywordsPage() {
             <TabsContent value="manage" className="space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle>활성 키워드 관리</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    활성 키워드 관리
+                    {keywordsStats && (
+                      <Badge variant="outline" className="text-xs">
+                        {(keywordsStats as KeywordsStatsResponse).active?.toLocaleString() || 0}개
+                      </Badge>
+                    )}
+                  </CardTitle>
                   <CardDescription>
                     SERP 분석에 사용될 키워드들을 관리합니다
                   </CardDescription>

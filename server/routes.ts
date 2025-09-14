@@ -1102,21 +1102,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Keywords DB Management APIs
   app.get("/api/keywords/stats", async (req, res) => {
     try {
-      const includedKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
-      const excludedKeywords = await listKeywords({ excluded: true, orderBy: 'raw_volume', dir: 'desc' });
-      const total = includedKeywords.length + excludedKeywords.length;
+      // Use efficient count function instead of loading all keywords
+      const counts = await getKeywordsCounts();
       
-      // Get last updated timestamp
-      const allKeywords = [...includedKeywords, ...excludedKeywords];
-      const lastUpdated = allKeywords.length > 0 
-        ? Math.max(...allKeywords.map(k => k.updated_at ? new Date(k.updated_at).getTime() : 0))
+      // Get last updated timestamp from a small sample
+      const recentKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
+      const lastUpdated = recentKeywords.length > 0 
+        ? Math.max(...recentKeywords.slice(0, 10).map(k => k.updated_at ? new Date(k.updated_at).getTime() : 0))
         : Date.now();
       
       // Get volumes_mode from meta only (no heavy health check)
       const volumes_mode = await metaGet(db, 'searchads_mode') || 'searchads';
       
       res.json({
-        total,
+        total: counts.total,
+        active: counts.active,
+        excluded: counts.excluded,
         lastUpdated: new Date(lastUpdated).toISOString(),
         volumes_mode
       });
