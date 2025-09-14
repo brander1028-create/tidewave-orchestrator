@@ -935,12 +935,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         seeds = uploadedFile.rows.map(row => row.seed);
         console.log(`📁 Using ${seeds.length} seeds from uploaded file "${uploadedFile.originalName}": ${seeds.slice(0, 5).join(', ')}...`);
         
-      } else { // source === 'builtin' (Phase 3: 최적화된 시드 선택)
-        seeds = await loadOptimizedSeeds(200); // 최대 200개 시드를 카테고리별 분산 선택
+      } else { // source === 'builtin' 
+        const csvPath = join(process.cwd(), 'server/data/seed_keywords_v2_ko.csv');
+        seeds = loadSeedsFromCSV(csvPath); // 명시적 경로 전달
         if (seeds.length === 0) {
-          return res.status(400).json({ error: 'No seeds found in builtin CSV file' });
+          return res.status(400).json({ error: `No seeds found in builtin CSV file: ${csvPath}` });
         }
-        console.log(`🎯 Using ${seeds.length} optimized builtin seeds: ${seeds.slice(0, 5).join(', ')}...`);
+        console.log(`📂 Using ${seeds.length} builtin seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
+      }
+
+      // 빈 프론티어 가드: 시드 없으면 곧바로 done 방지
+      if (!Array.isArray(seeds) || seeds.length === 0) {
+        return res.status(400).json({ error: 'No seeds to start BFS crawl' });
       }
 
       // ✅ STEP: Process seeds FIRST (add to database, skip duplicates)

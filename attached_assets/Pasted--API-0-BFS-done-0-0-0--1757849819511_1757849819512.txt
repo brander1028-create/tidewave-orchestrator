@@ -1,0 +1,129 @@
+결론부터: API 밴보다는 “시드가 0개로 들어가서 BFS가 곧바로 종료(done)” 케이스가 가장 유력합니다.
+화면도 큐: 0 / 방문: 0, 진행률 0% → 프론티어가 비어 시작=즉시 done 패턴과 일치해요. 지금 crawl 라우트가 업로드 시드(fileId) 를 못 읽고, 내부 CSV도 경로 없이 loadSeedsFromCSV()를 불러 빈 배열을 받을 가능성이 큽니다. 그래서 “된다고” 뜨는데 0 수집이에요.
+
+아래 최소 패치로 바로 살아나게 하세요.
+
+1) 원인 요약 (지금 코드 기준)
+
+/api/keywords/crawl에서 시드 결정 로직:
+
+if (userSeeds && userSeeds.length > 0) {
+  seeds = userSeeds;
+} else {
+  seeds = loadSeedsFromCSV(); // ← 경로 인자 없음 → 빈 배열 가능성 큼
+}
+
+
+➜ 업로드 fileId를 읽는 분기 자체가 없음. CSV도 경로 미전달.
+
+그래서 crawler.initializeWithSeeds(seeds)가 빈 seeds로 호출 → 프론티어 0 → done(0/20000).
+
+“No volume data … skipping” 로그는 expand 쪽에서 일부 나오는 것이고, BFS는 아예 시작 전 종료가 문제의 핵심.
+
+2) 딱 두 군데만 고치면 해결
+A) 업로드 지원 + fileId 시드 로딩
+// ① 업로드 엔드포인트 (CSV/XLSX → fileId)
+// 이미 있다고 했지만 없다면 추가
+app.post('/api/uploads', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const rows:any[] = [];
+  await new Promise<void>((resolve, reject) => {
+    Readable.from(req.file!.buffer).pipe(csv())
+      .on('data', d => rows.push(d))
+      .on('end', resolve).on('error', reject);
+  });
+  const seeds = rows.map(r => (r.seed || r.SEED || r['Seed'] || '').toString().trim()).filter(Boolean);
+  if (!seeds.length) return res.status(400).json({ error: 'No seeds in CSV' });
+
+  const fileId = 'upload-' + Date.now();
+  await metaSet(db, fileId, { seeds, at: Date.now() }); // 메타에 저장
+  res.json({ fileId, rows: seeds.length });
+});
+
+// ② /api/keywords/crawl 시드 결정부 수정
+app.post('/api/keywords/crawl', async (req, res) => {
+  // ...
+  const {
+    source='builtin',             // 'manual'|'file'|'builtin'
+    seeds: userSeeds = [],
+    seedsFileId,
+    seedsCsv = '/mnt/data/seed_keywords_v2_ko.csv',
+    // ...
+  } = req.body || {};
+
+  let seeds:string[] = [];
+  if (source === 'manual' && userSeeds.length) {
+    seeds = userSeeds;
+    console.log(`🌱 manual seeds: ${seeds.length}`);
+  } else if (source === 'file' && seedsFileId) {
+    const up = await metaGet<any>(db, seedsFileId);
+    if (!up?.seeds?.length) return res.status(400).json({ error:'Invalid seedsFileId or empty seeds' });
+    seeds = up.seeds;
+    console.log(`🌱 file seeds: ${seeds.length}`);
+  } else {
+    // builtin CSV 명시적 경로 필요
+    seeds = loadSeedsFromCSV(seedsCsv);   // ← 함수 시그니처 path 받도록
+    if (!seeds.length) return res.status(400).json({ error:`No seeds in CSV: ${seedsCsv}` });
+    console.log(`🌱 builtin seeds: ${seeds.length}`);
+  }
+
+  // 빈 프론티어 가드: 씨드 없으면 곧바로 done 방지
+  if (!Array.isArray(seeds) || seeds.length === 0) {
+    return res.status(400).json({ error: 'No seeds to start BFS' });
+  }
+
+  // ... 나머지 동일 (initializeWithSeeds → crawl)
+});
+
+
+필수: loadSeedsFromCSV(path?:string)로 바꿔 /mnt/data/seed_keywords_v2_ko.csv를 읽도록 해주세요.
+
+3) 진행률/카운터는 “항상 증가”하게
+
+크롤 시작 직후 초기 진행값에 frontierSize를 실어 보내고,
+
+각 배치 처리 때마다 requested++, ok++/fail++/skipped++, frontierSize·visitedSize 업데이트.
+
+UI는 /api/keywords/crawl/:jobId/status를 1초 폴링.
+
+예시(크롤러 내부 루프):
+
+this.progress.totalProcessed++;
+if (savedThisBatch) this.progress.keywordsSaved += savedThisBatch;
+this.progress.frontierSize = q.length;
+this.progress.lastUpdated = Date.now();
+
+4) 400/429 때문에 또 0이 찍히지 않게 (Phase 2 요약)
+
+400: 청크 반으로 줄여 같은 구간 재시도 (chunk = Math.max(3, Math.floor(chunk/2))).
+
+429: Retry-After(없으면 1s) *1.5 + 지터 대기, 같은 청크 재시도(최대 2회).
+
+실패시에도 fallback 임시 저장(raw_volume=0, score=40)로 “0개 수집” 방지(Phase 1 적용 완료라면 OK).
+
+5) 빠른 자가진단 (30초)
+
+업로드해서 fileId 얻기:
+POST /api/uploads → {fileId:"upload-..."}
+
+BFS 시작:
+POST /api/keywords/crawl { "source":"file", "seedsFileId":"upload-..." }
+→ 응답에 seedsLoaded(or log)와 frontierSize>0이어야 정상.
+
+상태:
+GET /api/keywords/crawl/<jobId>/status → requested/queue가 증감하는지 확인.
+
+키워드 리스트:
+GET /api/keywords?excluded=false&sort=score&order=desc → 수집 수 증가 확인.
+
+6) “API 한도 초과/밴?” 판정
+
+밴이면 모든 호출이 401/403으로 떨어지고 헬스 searchads.mode='fallback'.
+
+현재는 400/429가 섞여 나옴 → 쿼리/청크/레이트리밋 문제. 위 적응형 호출 넣으면 80%+ 성공률까지 끌어올릴 수 있어요.
+
+7) 에이전트에 보낼 짧은 지시 (복붙)
+
+“crawl 라우트에서 source:'file' + seedsFileId를 지원하고, loadSeedsFromCSV(path)로 빌트인 v2 CSV를 명시 경로로 읽어 프론티어가 0이면 400을 돌려주세요. 시작 응답/상태에는 frontierSize를 포함하고, 진행 중에는 requested/ok/fail/skipped/frontierSize/lastUpdated를 매 배치 업데이트하세요. 또한 SearchAds 400/429에 대한 적응형 호출(400→청크 반감, 429→Retry-After 백오프)을 적용해주세요.”
+
+이렇게만 바꾸면 **“done(0/20000)”**은 바로 사라지고, 버튼 누를 때마다 큐가 차오르고 카운터가 움직이는 걸 보게 됩니다.

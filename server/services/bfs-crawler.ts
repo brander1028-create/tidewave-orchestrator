@@ -7,9 +7,9 @@ import { db } from '../db.js';
 import { storage } from '../storage.js';
 
 // CSV에서 시드 키워드 로드 (기본 버전)
-export function loadSeedsFromCSV(): string[] {
+export function loadSeedsFromCSV(path?: string): string[] {
   try {
-    const csvPath = join(process.cwd(), 'server/data/seed_keywords_v2_ko.csv');
+    const csvPath = path || join(process.cwd(), 'server/data/seed_keywords_v2_ko.csv');
     const csvContent = readFileSync(csvPath, 'utf-8');
     
     const lines = csvContent.split('\n').slice(1); // Skip header
