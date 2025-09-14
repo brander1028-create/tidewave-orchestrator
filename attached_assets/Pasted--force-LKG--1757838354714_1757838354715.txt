@@ -1,0 +1,148 @@
+) 무슨 변화?
+
+서버 기동 직후 또는 사용자가 한 번 수동 검사(force) → LKG 캐시 저장.
+
+그 다음부터는 실행 전 헬스체크를 생략하고 바로 실행(=빠름, 토큰 절약).
+
+만약 실행 중 API 호출이 401/403/429/5xx 등으로 실패하면,
+
+degraded=true로 표기하고,
+
+다음 실행 시에만 자동으로 1회 재검사(force) → 실패면 412로 막음 / 성공이면 다시 LKG 갱신 후 계속 “무검사 실행”.
+
+1) 서버: LKG 상태 + 낙관 모드 스위치
+a) server/services/health-cache.ts 새로/수정
+import { checkOpenAPI, checkSearchAds, checkKeywordsDB } from './health';
+import { metaGet, metaSet } from '../store/meta';
+
+type HealthData = {
+  openapi: Awaited<ReturnType<typeof checkOpenAPI>>;
+  searchads: Awaited<ReturnType<typeof checkSearchAds>>;
+  keywordsdb: Awaited<ReturnType<typeof checkKeywordsDB>>;
+  ts: number;
+  degraded?: boolean;       // 오류로 강제 재검 필요 상태
+  last_ok_ts?: number;      // 마지막 정상 시각
+};
+
+const KEY = 'health_lkg';
+const MODE = (process.env.HEALTH_MODE || 'optimistic') as 'optimistic'|'preflight';
+
+export async function getHealthLKG(): Promise<HealthData|null> {
+  return (await metaGet<HealthData>(/* db */ null as any, KEY)) || null;
+}
+export async function setHealthLKG(h: HealthData) {
+  await metaSet(/* db */ null as any, KEY, h);
+}
+
+export async function markHealthGood(h: HealthData) {
+  h.degraded = false;
+  h.last_ok_ts = Date.now();
+  await setHealthLKG(h);
+}
+export async function markHealthFail(reason?:string) {
+  const cur = (await getHealthLKG()) || { ts: 0 } as HealthData;
+  cur.degraded = true;
+  cur.ts = Date.now();
+  await setHealthLKG(cur);
+}
+
+/** 강제 실측 */
+export async function probeHealth(): Promise<HealthData> {
+  const [openapi, searchads, keywordsdb] = await Promise.all([
+    checkOpenAPI(), checkSearchAds(), checkKeywordsDB()
+  ]);
+  const h: HealthData = { openapi, searchads, keywordsdb, ts: Date.now(), degraded:false, last_ok_ts: Date.now() };
+  await setHealthLKG(h);
+  return h;
+}
+
+/** 실행 전에 프리플라이트가 필요한가? */
+export async function shouldPreflight(strict?: boolean): Promise<boolean> {
+  const lkg = await getHealthLKG();
+  if (strict) return true;             // 강제 안전 모드
+  if (MODE === 'preflight') return true;
+  // optimistic 모드: degraded만 아니면 프리플라이트 생략
+  return !!(lkg && lkg.degraded);
+}
+
+
+HEALTH_MODE=optimistic(기본) → 평소엔 프리플라이트 생략, degraded일 때만 1회 강제.
+
+2) 실행 엔드포인트에서 사용
+a) /api/serp/search, /api/keywords/refresh, /api/keywords/crawl
+import { shouldPreflight, probeHealth, getHealthLKG, markHealthFail, markHealthGood } from './services/health-cache';
+
+app.post('/api/keywords/crawl', async (req,res)=>{
+  const { strict=false } = req.body || {};
+  // 1) 필요한 경우에만 프리플라이트
+  if (await shouldPreflight(strict)) {
+    const h = await probeHealth();
+    if (!h.openapi.ok || h.searchads.mode==='fallback' || !h.keywordsdb.ok) {
+      return res.status(412).json({ error:'PRECONDITION_FAILED', health:h });
+    }
+  }
+  // 2) 바로 실행 (낙관 모드)
+  try {
+    // ... 기존 BFS 시작 로직 ...
+    // 시작 성공/호출 성공 → 정상 기록(선택)
+    const h = await getHealthLKG(); if (h) await markHealthGood(h);
+    return res.json({ /* jobId 등 */ });
+  } catch (e:any) {
+    // 3) 실행 중 오류 → degraded 마킹 (다음 번에만 재검사)
+    await markHealthFail(e?.message);
+    throw e;
+  }
+});
+
+
+refresh/search에도 같은 패턴 적용: shouldPreflight(strict) → probeHealth() → 실행 / 실패 시 markHealthFail().
+
+3) 오류 감지 지점(중요)
+
+SearchAds 호출부(getVolumes, keywordstool 등)에서 401/403/429/5xx면 markHealthFail()을 호출.
+
+OpenAPI 호출부(블로그 검색) 401/쿼터 에러도 동일.
+
+성공 응답(2xx)이면 markHealthGood()(선택)으로 degraded 해제.
+
+예:
+
+// services/searchad.ts 내부
+try {
+  const r = await fetch(url, { headers });
+  if (!r.ok) {
+    await markHealthFail(`searchads ${r.status}`);
+    // 기존 실패 처리 계속
+  } else {
+    const json = await r.json();
+    const h = await getHealthLKG(); if (h) await markHealthGood(h);
+    return json;
+  }
+} catch (e) {
+  await markHealthFail('searchads exception');
+  throw e;
+}
+
+4) /api/health 라우트(상시 호출 금지)
+// 평상시: LKG만 반환, ?force=true일 때만 probe
+app.get('/api/health', async (req,res)=>{
+  const force = String(req.query.force||'')==='true';
+  const data = force ? await probeHealth() : (await getHealthLKG() || await probeHealth());
+  res.json({ ...data, mode: process.env.HEALTH_MODE || 'optimistic' });
+});
+
+5) 프론트 UX (짧게)
+
+배지 갱신: 포커스/수동 새로고침에서만 /api/health?force=false.
+
+실행 버튼: 그냥 바로 POST (strict=false), 실패 시에만 자동으로 GET /api/health?force=true 하고 에러 메시지.
+
+설정 토글: “빠른 모드(헬스 생략)”=optimistic / “안전 모드(항상 검사)”=preflight.
+
+6) 요약 답
+
+매 실행마다 검사 필요 없음.
+
+처음 1회 OK면 그대로 계속 실행, 오류가 발생했을 때만 1회 재검사 후 차단/복구.
+
+위 패치로 토큰·시간 절약 + 장애 시 자동 복구 루프까지 됩니다.
