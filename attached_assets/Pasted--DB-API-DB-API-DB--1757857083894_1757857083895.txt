@@ -1,0 +1,239 @@
+좋아—지금 제안한 흐름(DB 우선 → 없으면 API로 갱신 → 다시 DB로 선별)은 방향이 아주 좋고, 토큰/쿼터도 충분히 아낄 수 있어.
+다만 “언제 API를 켤지”와 “DB에 무엇을 저장할지”를 명확하게 못 박아야 비용 폭주·노이즈 DB를 피할 수 있어.
+아래를 그대로 Replit에 요청하면 헷갈림 없이 바로 구현 가능해.
+
+
+---
+
+[요청] 제목 키워드 선별 — DB 우선 → 없으면 API 갱신 → 재선별 (조회량70 + 종합30, Top4)
+
+0) 목표
+
+블로그 **제목 리스트(최근 10개)**에서 후보 키워드를 추출하고,
+**키워드DB(캐시)**만으로 Top4를 먼저 선정(조회량70 + 종합30).
+
+만약 DB에서 raw_volume ≥ 1000 후보가 1개도 없으면
+한 번만 SearchAds API를 호출해 해당 제목 후보에 한해 조회량·지표를 갱신(업서트) → 다시 DB로 Top4 선별.
+
+그래도 없으면 빈도 기반 Top4(“unknown” 배지)로 안전 반환.
+
+
+
+---
+
+1) 스코어 및 조건
+
+volume_score(0~100) = clamp01( log10(max(1, raw_volume)) / 5 ) * 100
+
+combined_score = round( 0.7 * volume_score + 0.3 * score )
+
+선별 대상: raw_volume ≥ 1000 (DB 기준)
+
+Top N: 4개 (N=4)
+
+
+
+---
+
+2) 파이프라인 (한 번의 분석 호출당)
+
+A. 토크나이징 & 정규화 (제목→후보)
+
+입력: 제목 10개(또는 설정값)
+
+정규화: 한/영/숫자만, 소문자화, 다중 공백 1개
+
+불용어 제거: 추천/후기/정보/제품/선택/비교/리뷰/가격/쿠폰/할인/특가/세일/무료 등
+
+n-gram: 1~3그램, 2자 미만 제외
+
+canonicalize()(그룹화):
+
+홍삼 추천/키즈홍삼/홍삼 정 → 홍삼
+
+vitamin d/비타민d/비타민 d → 비타민D
+
+비타민D 1000IU/2000IU → 비타민D (용량 토큰은 보조 표기용)
+
+
+후보 집합: 최대 50개(frequency 상위)로 제한 → API 비용 보호
+
+
+B. DB 우선 선별
+
+getKeywordMetrics(candidates)로 DB에서 raw_volume, score, excluded 로드
+
+excluded=true는 제외
+
+raw_volume ≥ 1000만 대상으로 combined_score 계산 → Top4 반환
+
+성공 시 즉시 종료(API 호출 없음)
+
+
+C. DB 실패 시 한 번만 API (갱신 모드)
+
+트리거 조건: DB기준 히트(≥1000)가 0개 AND
+
+1. 후보 수 ≤ 50,
+
+
+2. updated_at ≥ 30일 지난 키워드만 대상(캐시),
+
+
+3. 일일/분당 예산 미초과(dailyCallBudget, perMinuteBudget)
+
+
+
+호출: getVolumesWithCache(candidates) — 배치 10, 429/400 적응형, TTL=30일
+
+업서트 정책:
+
+저장: raw_volume ≥ 1000 AND has_ads(plAvgDepth>0)일 때만 DB 저장
+
+저장하지 않음: 낮은 조회수(롱테일 잡음) DB 오염 금지
+
+(옵션) 추적만: raw<1000은 메모리 캐시에만 보관
+
+
+모드 판정: searchads/partial/fallback (이미 구현된 규칙 유지)
+
+
+D. 갱신 후 재선별
+
+다시 B 단계(DB 우선) 수행 → Top4 산출
+
+그래도 없으면 빈도 기반 Top4 + source='freq-fallback' 배지로 귀결
+
+
+
+---
+
+3) UI/로그 (사용자 체감)
+
+상단 라벨:
+
+선별 모드: DB-only / API-refresh(once) / freq-fallback
+
+
+카운터:
+
+candidates: X, db_hits(≥1000): Y, api_refreshed: Z/TTL
+
+
+저장 결과(모드): searchads/partial/fallback 배지
+
+토스트: “DB에 고조회 키워드 없음 → API로 갱신 시도(1회)”, 실패 시 “빈도 기반으로 선별했습니다.”
+
+
+
+---
+
+4) 비용/속도 가드 (중요)
+
+항상 DB 우선: API는 0→1회만
+
+TTL 30일 캐시: 최근 갱신된 키워드는 다시 호출 금지
+
+Batch 10 + 적응형: 400이면 chunk/2, 429면 backoff 후 동일 청크 재시도(최대 2회)
+
+예산: perMinuteBudget=40, dailyCallBudget=2000 — 초과 시 API 생략
+
+후보 상한: 제목에서 최대 50개 토큰만 API 후보
+
+저장 최소조건: **raw_volume ≥ 1000 & has_ads=true**만 DB에 저장(오염 방지)
+
+
+> 이 설계로 토큰/쿼터는 “제목 10개 → 후보 50개 → 배치 5회 이내” 수준.
+대부분은 DB-only로 끝나고, 가끔만 API refresh가 도니 비용 매우 낮음.
+
+
+
+
+---
+
+5) 코드 훅(시그니처/의사코드)
+
+// services/nlp/extractTopNByCombined.ts
+export async function extractTopNByCombined(titles: string[], N=4): Promise<{ topN: Item[], mode: 'db'|'api-refresh'|'freq-fallback' }> {
+  const cands = canonicalize(tokenize(titles));          // ≤50
+  const fromDB = await loadFromDB(cands);                // map[text] -> {raw_volume, score, excluded}
+  const eligible = filterDB(fromDB, {minVolume:1000});   // excluded=false && raw≥1000
+
+  if (eligible.length > 0) return { topN: pickTop(eligible, N), mode:'db' };
+
+  // --- API refresh (one-shot) ---
+  if (shouldRefreshAPI(cands, fromDB)) {
+    const api = await getVolumesWithCache(cands);        // chunk10, adaptive, TTL 30d
+    const toSave = api.items.filter(x => x.raw>=1000 && x.hasAds);
+    await upsertMany(metricsFrom(api, toSave));          // 5지표 저장
+    const reloaded = await loadFromDB(cands);
+    const eligible2 = filterDB(reloaded, {minVolume:1000});
+    if (eligible2.length > 0) return { topN: pickTop(eligible2, N), mode:'api-refresh' };
+  }
+
+  // --- fallback ---
+  const freqTop = topByFrequency(cands, titles, N).map(x => ({
+    text:x.text, raw_volume:0, score:0, volume_score:0, combined_score:0
+  }));
+  return { topN: freqTop, mode:'freq-fallback' };
+}
+
+function pickTop(list){ // combined DESC -> raw DESC -> freq DESC
+  return list.sort((a,b)=> b.combined - a.combined || b.raw - a.raw || b.freq - a.freq).slice(0,N);
+}
+
+
+---
+
+6) 제목→DB 매핑 정확도 보강
+
+정확 일치 정책 유지 + canonicalize()(붙임/띄움/대소문자/외래어/용량)
+
+excluded=true는 후보 제외
+
+길이<2 / 자모 / 스팸 토큰 컷
+
+
+
+---
+
+7) 수락 기준 (테스트)
+
+1. DB-only 시나리오: 제목에 홍삼/비타민D가 포함되어 있고 DB에 있는 경우 → API 호출 없음, Top4 바로 산출.
+
+
+2. API-refresh 시나리오: 제목에 롱테일만 있을 때 → API 1회 후 DB에 ≥1000 히트가 저장되고 Top4 산출.
+
+
+3. fallback 시나리오: 여전히 ≥1000 없음 → 빈도 Top4, freq-fallback 배지.
+
+
+4. 비용: 후보 50개 기준 배치 ≤5회(chunk 10) + TTL 30d로 재호출 없음.
+
+
+5. 저장: API 모드에서 raw≥1000 & has_ads=true만 DB 업서트(낮은 조회수 저장 금지).
+
+
+
+
+---
+
+8) (선택) 키워드 확장 시너지
+
+API-refresh 때 raw≥1000을 DB에 쌓으므로, BFS 확장의 씨드 품질이 점점 올라감(선순환).
+
+단, 제목 분석용 API-refresh는 “해당 제목 후보”에 한정(전체 BFS 호출과 혼동 금지).
+
+
+
+---
+
+결론
+
+네가 제안한 전략은 효율적이고 실용적이야.
+
+위 가드(트리거/TTL/예산/상한/저장 조건) 를 같이 못 박으면 토큰/쿼터 부담은 매우 낮고, 제목 분석 품질은 크게 올라간다.
+
+이 요청서대로 적용하면, 네가 말한 “DB 기반 7:3 Top4 → 필요할 때만 API 보강 → 다시 DB” 플로우가 안정/저비용으로 돌아간다.
+
+

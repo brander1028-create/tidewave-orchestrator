@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Database, Activity } from "lucide-react";
+import { Search, Database, Activity, FileText } from "lucide-react";
 import HealthStatus from "@/components/health-status";
 
 export function Navigation() {
@@ -21,6 +21,13 @@ export function Navigation() {
       icon: Database,
       description: "키워드 데이터베이스 관리",
       active: location === "/keywords" || location.startsWith("/keywords/"),
+    },
+    {
+      href: "/title-analysis",
+      label: "제목 분석",
+      icon: FileText,
+      description: "블로그 제목 키워드 추출",
+      active: location === "/title-analysis" || location.startsWith("/title-analysis/"),
     },
   ];
 
@@ -50,7 +57,7 @@ export function Navigation() {
                   variant={item.active ? "default" : "ghost"}
                   size="sm"
                   className="flex items-center space-x-2"
-                  data-testid={`nav-${item.href === "/" ? "dashboard" : "keywords"}`}
+                  data-testid={`nav-${item.href === "/" ? "dashboard" : item.href === "/keywords" ? "keywords" : "title-analysis"}`}
                 >
                   <Link 
                     href={item.href}

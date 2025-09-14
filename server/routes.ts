@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { scraper } from "./services/scraper";
 import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
+import { titleKeywordExtractor } from "./services/title-keyword-extractor";
 import { serpScraper } from "./services/serp-scraper";
 import { z } from "zod";
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
@@ -1480,6 +1481,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ 
         error: 'Failed to import keywords',
         details: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  // 제목 키워드 추출 API 엔드포인트 - DB 우선 → API 갱신 → 재선별 파이프라인
+  app.post('/api/titles/analyze', async (req, res) => {
+    try {
+      const { titles, N = 4 } = req.body;
+      
+      // 입력 검증
+      if (!Array.isArray(titles) || titles.length === 0) {
+        return res.status(400).json({ error: 'titles array is required (1-20 titles)' });
+      }
+      
+      if (titles.length > 20) {
+        return res.status(400).json({ error: 'Maximum 20 titles allowed' });
+      }
+      
+      if (N < 1 || N > 10) {
+        return res.status(400).json({ error: 'N must be between 1 and 10' });
+      }
+      
+      // 제목이 문자열인지 확인
+      for (const title of titles) {
+        if (typeof title !== 'string' || title.trim().length === 0) {
+          return res.status(400).json({ error: 'All titles must be non-empty strings' });
+        }
+      }
+      
+      console.log(`🎯 Title analysis request: ${titles.length} titles → Top ${N}`);
+      console.log(`📋 Sample titles: ${titles.slice(0, 3).map(t => `"${t}"`).join(', ')}...`);
+      
+      // DB 우선 → API 갱신 → 재선별 파이프라인 실행
+      const result = await titleKeywordExtractor.extractTopNByCombined(titles, N);
+      
+      console.log(`✅ Title analysis complete: ${result.mode} mode, ${result.topN.length} keywords extracted`);
+      
+      // 응답 형식
+      res.json({
+        success: true,
+        mode: result.mode,
+        topN: result.topN,
+        stats: result.stats,
+        budget: result.budget,
+        metadata: {
+          titles_analyzed: titles.length,
+          keywords_requested: N,
+          extraction_mode: result.mode,
+          timestamp: new Date().toISOString()
+        }
+      });
+      
+    } catch (error: any) {
+      console.error('❌ Title analysis failed:', error);
+      
+      // 상세한 에러 응답
+      res.status(500).json({
+        error: 'Title analysis failed',
+        details: error?.message || String(error),
+        mode: 'error'
       });
     }
   });
