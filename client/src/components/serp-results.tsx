@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ExternalLink, Download, TrendingUp, AlertTriangle } from "lucide-react";
+import { ExternalLink, Download, TrendingUp, AlertTriangle, Database, RefreshCw } from "lucide-react";
 import type { SerpJob, DiscoveredBlog, ExtractedKeyword } from "@shared/schema";
 
 interface SerpResultsProps {
@@ -12,7 +12,14 @@ interface SerpResultsProps {
 interface BlogResult {
   blog: DiscoveredBlog;
   posts: any[];
-  topKeywords: ExtractedKeyword[];
+  topKeywords: Array<{
+    text: string;
+    raw_volume: number;
+    score: number;
+    volume_score: number;
+    combined_score: number;
+    rank: number;
+  }>;
 }
 
 interface SerpResultsData {
@@ -24,7 +31,15 @@ interface SerpResultsData {
   }>;
   keywords: Array<{
     blog_id: string;
-    top3: ExtractedKeyword[];
+    top4: Array<{
+      text: string;
+      raw_volume: number;
+      score: number;
+      volume_score: number;
+      combined_score: number;
+      rank: number;
+    }>;
+    mode: "DB-only" | "API-refresh" | "None";
   }>;
   posts: Array<{
     blog_id: string;
@@ -116,7 +131,7 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
   
   // Filter hit blogs (blogs with TOP3 keywords that have SERP rank 1-10)
   const blogsWithKeywords = blogs.map((blog: any) => {
-    const blogKeywords = keywords.find((k: any) => k.blog_id === blog.blog_id)?.top3 || [];
+    const blogKeywords = keywords.find((k: any) => k.blog_id === blog.blog_id)?.top4 || [];
     const blogPosts = posts.filter((p: any) => p.blog_id === blog.blog_id);
     return {
       blog,
@@ -239,27 +254,51 @@ export default function SerpResults({ jobId }: SerpResultsProps) {
                       </div>
                       
                       <div className="space-y-2">
-                        <div className="text-sm font-medium text-foreground">
-                          노출된 키워드들:
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-medium text-foreground">
+                            Top4 키워드 (조회량 70% + 종합점수 30%):
+                          </div>
+                          {(() => {
+                            const blogKeywordData = keywords.find((k: any) => k.blog_id === result.blog.blog_id);
+                            if (blogKeywordData?.mode) {
+                              return (
+                                <Badge 
+                                  variant={blogKeywordData.mode === "DB-only" ? "default" : 
+                                          blogKeywordData.mode === "API-refresh" ? "secondary" : "outline"}
+                                  className="flex items-center gap-1 text-xs"
+                                  data-testid={`mode-badge-${result.blog.blog_id}`}
+                                >
+                                  {blogKeywordData.mode === "DB-only" && <Database className="w-3 h-3" />}
+                                  {blogKeywordData.mode === "API-refresh" && <RefreshCw className="w-3 h-3" />}
+                                  {blogKeywordData.mode === "DB-only" ? "DB 전용" : 
+                                   blogKeywordData.mode === "API-refresh" ? "API 갱신" : "미적용"}
+                                </Badge>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {result.topKeywords.map((keyword, keywordIndex) => {
-                            const tierNum = keywordIndex + 1;
-                            const tierClass = 
-                              keywordIndex === 0 ? "bg-blue-100 text-blue-800 border-blue-200" :
-                              keywordIndex === 1 ? "bg-green-100 text-green-800 border-green-200" : 
-                              "bg-orange-100 text-orange-800 border-orange-200";
+                          {result.topKeywords.map((keyword: any, keywordIndex: number) => {
+                            // 색상 규칙: 10만↑ 빨강, 5만~10만 초록, 0 회색
+                            const volumeClass = 
+                              keyword.raw_volume >= 100000 ? "bg-red-100 text-red-800 border-red-200" :
+                              keyword.raw_volume >= 50000 ? "bg-green-100 text-green-800 border-green-200" : 
+                              "bg-gray-100 text-gray-600 border-gray-200";
                             
                             return (
                               <Badge
                                 key={keywordIndex}
-                                className={`flex items-center gap-2 ${tierClass} font-medium`}
+                                className={`flex items-center gap-2 ${volumeClass} font-medium px-3 py-1`}
                                 data-testid={`keyword-${result.blog.blog_id}-${keywordIndex}`}
                               >
-                                <span className="font-bold">TIER{tierNum}</span>
-                                <span>{keyword.keyword}</span>
+                                <span className="font-bold">#{keywordIndex + 1}</span>
+                                <span>{keyword.text}</span>
                                 <span className="text-xs font-normal">
-                                  ({keyword.volume ? keyword.volume.toLocaleString() : '0'})
+                                  ({keyword.raw_volume.toLocaleString()})
+                                </span>
+                                <span className="text-xs font-normal">
+                                  • {keyword.combined_score}pts
                                 </span>
                                 {keyword.rank && keyword.rank > 0 ? (
                                   <span className="text-xs font-normal">

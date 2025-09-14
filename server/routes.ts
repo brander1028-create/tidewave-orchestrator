@@ -207,18 +207,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
             blog_name: blog.blogName, // Added for UI display
             blog_url: blog.blogUrl,
             base_rank: blog.baseRank, // Added for rank badge
-            gathered_posts: posts.length
+            gathered_posts: posts.length,
+            hit_count_30: Math.min(posts.length, 30) // Hit count for recent 30 posts
           });
           
-          // Add keywords for this blog with raw_volume
+          // Add keywords for this blog with enhanced data format
+          const keywordDetails = top3Keywords.map((kw, index) => {
+            const rawVolume = keywordVolumeMap[kw.keyword] || 0;
+            const volumeScore = rawVolume > 0 ? Math.min(100, Math.round(Math.log10(Math.max(1, rawVolume)) / 5 * 100)) : 0;
+            const score = 70; // Default score if not available
+            const combinedScore = Math.round(0.7 * volumeScore + 0.3 * score);
+            
+            return {
+              text: kw.keyword,
+              raw_volume: rawVolume,
+              score: score,
+              volume_score: volumeScore,
+              combined_score: combinedScore,
+              rank: kw.rank || 0
+            };
+          });
+          
           allKeywords.push({
             blog_id: blog.blogId,
-            top3: top3Keywords.map(kw => ({
-              text: kw.keyword,
-              volume: kw.volume || 0, // For ranking weight
-              raw_volume: keywordVolumeMap[kw.keyword] || 0, // For display
-              rank: kw.rank || 0
-            }))
+            top4: keywordDetails, // Changed from top3 to top4 for consistency
+            mode: keywordDetails.some(kw => kw.raw_volume > 0) ? "DB-only" : "None" // Determine mode based on volume data
           });
         }
         
@@ -231,10 +244,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         })));
       }
 
-      // Calculate counters
+      // Calculate counters  
       const uniqueKeywords = new Set();
       allKeywords.forEach(blogKw => {
-        blogKw.top3.forEach(kw => uniqueKeywords.add(kw.text));
+        blogKw.top4.forEach(kw => uniqueKeywords.add(kw.text));
       });
 
       // Calculate searched_keywords from ALL blogs (not just hit blogs)
