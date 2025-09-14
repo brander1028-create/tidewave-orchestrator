@@ -157,52 +157,59 @@ export function calculateOverallScore(
 
 // ===== 시드 확장 Providers (명세서 3-1 ~ 3-5) =====
 
-// 3-1) Variants Provider: 형태/연령/의도/IU/붙임띄움
+// 3-1) Variants Provider: 형태/연령/의도/IU/붙임띄움 (확장 강화)
 function expandVariants(seed: string): string[] {
   const variants: string[] = [];
   
-  // 형태 변형
-  const forms = ['정', '스틱', '캡슐', '젤리', '분말', '환', '액기스'];
+  // 형태 변형 - 모든 조합 생성
+  const forms = ['정', '스틱', '캡슐', '젤리', '분말', '환', '액기스', '오일', '즙', '차'];
   forms.forEach(form => {
-    if (!seed.includes(form)) {
-      variants.push(`${seed} ${form}`);
-    }
+    variants.push(`${seed} ${form}`);
+    variants.push(`${form} ${seed}`);
   });
   
-  // 연령 변형
-  const ages = ['어린이', '키즈', '성인', '임산부', '시니어'];
+  // 연령 변형 - 모든 조합 생성
+  const ages = ['어린이', '키즈', '성인', '임산부', '시니어', '유아', '청소년', '중년', '노인'];
   ages.forEach(age => {
-    if (!seed.includes(age)) {
-      variants.push(`${age} ${seed}`);
-    }
+    variants.push(`${age} ${seed}`);
+    variants.push(`${seed} ${age}`);
   });
   
-  // 상업적 의도 변형 (상위 5개)
-  const intents = ['추천', '가격', '최저가', '할인', '쿠폰'];
+  // 상업적 의도 변형 - 확장된 리스트
+  const intents = ['추천', '가격', '최저가', '할인', '쿠폰', '구매', '비교', '효과', '복용법', '부작용', '후기', '리뷰', '순위'];
   intents.forEach(intent => {
-    if (!seed.includes(intent)) {
-      variants.push(`${seed} ${intent}`);
-    }
+    variants.push(`${seed} ${intent}`);
+    variants.push(`${intent} ${seed}`);
   });
   
-  // 비타민D IU 변형
-  if (seed.includes('비타민d') || seed.includes('비타민D')) {
-    const ius = ['1000IU', '2000IU', '3000IU', '4000IU'];
-    ius.forEach(iu => {
-      if (!seed.includes(iu)) {
-        variants.push(`${seed} ${iu}`);
-      }
+  // 건강/영양 관련 일반 확장
+  const healthTerms = ['건강', '영양제', '보충제', '영양', '건강식품', '유기농', '천연'];
+  healthTerms.forEach(term => {
+    variants.push(`${term} ${seed}`);
+    variants.push(`${seed} ${term}`);
+  });
+  
+  // 비타민D/홍삼 특화 확장
+  if (seed.includes('비타민d') || seed.includes('비타민D') || seed.includes('vitamin')) {
+    const vitaminVariants = ['1000IU', '2000IU', '3000IU', '4000IU', '5000IU', '비타민D3', '비타민d3', 'vitamin d3'];
+    vitaminVariants.forEach(variant => {
+      variants.push(`${seed} ${variant}`);
+      variants.push(`${variant} ${seed}`);
     });
   }
   
-  // 띄어쓰기/동의어 변형
+  if (seed.includes('홍삼')) {
+    const ginseVariants = ['홍삼정', '홍삼스틱', '홍삼캡슐', '홍삼차', '홍삼즙', '6년근 홍삼', '프리미엄 홍삼'];
+    ginseVariants.forEach(variant => {
+      variants.push(variant);
+      variants.push(`${variant} 추천`);
+    });
+  }
+  
+  // 띄어쓰기/동의어 변형 확장
   const spacingVariants: string[] = [];
-  if (seed.includes('블루투스 이어폰')) {
-    spacingVariants.push('블루투스이어폰', '무선 이어폰', '무선이어폰');
-  }
-  if (seed.includes('vitamin d')) {
-    spacingVariants.push('비타민D', '비타민 D');
-  }
+  spacingVariants.push(seed.replace(/\s+/g, ''));  // 공백 제거
+  spacingVariants.push(seed.replace(/([가-힣])([a-zA-Z])/g, '$1 $2')); // 한글-영문 사이 공백
   
   return [...variants, ...spacingVariants];
 }
@@ -239,18 +246,15 @@ function expandLocal(seed: string): string[] {
   // 맛집 관련 키워드
   const eateryTerms = ['맛집', '맛집 추천', '핫플', '맛있는 집', '유명한 집'];
   
-  // 음식 관련 키워드면 지역 조합 생성
-  const foodKeywords = ['음식', '요리', '식당', '카페', '커피', '치킨', '피자', '한식', '중식', '일식', '양식'];
-  const isFoodRelated = foodKeywords.some(keyword => seed.includes(keyword));
-  
-  if (isFoodRelated) {
-    locations.forEach(location => {
-      eateryTerms.forEach(term => {
+  // 모든 키워드에 대해 지역 조합 생성 (커버리지 향상)
+  locations.forEach(location => {
+    eateryTerms.forEach(term => {
+      if (!seed.includes(location) && !seed.includes(term)) {
         variants.push(`${location} ${term}`);
-        variants.push(`${location} ${seed} ${term}`);
-      });
+        variants.push(`${location} ${seed}`);
+      }
     });
-  }
+  });
   
   return variants;
 }
@@ -540,8 +544,14 @@ export class BFSKeywordCrawler {
           continue;
         }
         
-        const rawVolume = volumeData.total || 0;
-        const hasAds = (volumeData.plAvgDepth || 0) > 0;
+        // NaN 안전 처리 (DB integer 삽입 에러 방지)
+        const safeParseNumber = (value: any): number => {
+          const parsed = Number(value);
+          return isNaN(parsed) ? 0 : parsed;
+        };
+        
+        const rawVolume = safeParseNumber(volumeData.total);
+        const hasAds = safeParseNumber(volumeData.plAvgDepth) > 0;
         
         // 필터 적용 - ONLY in searchads mode (Phase 1: 임시 저장 정책)
         if (mode === 'searchads') {
@@ -558,13 +568,16 @@ export class BFSKeywordCrawler {
           console.log(`📝 "${keyword}" saving with raw_volume=${rawVolume} (${mode} mode - no filters)`);
         }
         
-        // 키워드 저장 (Phase 1: 임시 저장 정책)
+        // 키워드 저장 (Phase 1: 임시 저장 정책) - NaN 안전 처리 적용
+        const adDepth = safeParseNumber(volumeData.plAvgDepth);
+        const estCpc = safeParseNumber(volumeData.avePcCpc);
+        
         const overallScore = mode === 'searchads' 
           ? calculateOverallScore(
               rawVolume,
               compIdxToScore(volumeData.compIdx || '중간'),
-              volumeData.plAvgDepth || 0,
-              volumeData.avePcCpc || 0
+              adDepth,
+              estCpc
             )
           : 40; // 임시 보수적 점수 for fallback/partial mode
         
@@ -572,9 +585,9 @@ export class BFSKeywordCrawler {
           text: keyword,
           raw_volume: mode === 'searchads' ? rawVolume : 0, // fallback/partial에서는 0으로 저장
           comp_idx: volumeData.compIdx || '중간',
-          ad_depth: volumeData.plAvgDepth || 0,
-          est_cpc_krw: volumeData.avePcCpc || 0,
-          score: overallScore,
+          ad_depth: adDepth,
+          est_cpc_krw: estCpc,
+          score: Math.round(safeParseNumber(overallScore)), // overallScore도 NaN 방지
           excluded: false
         };
         

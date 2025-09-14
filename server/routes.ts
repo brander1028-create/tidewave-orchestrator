@@ -936,7 +936,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`📁 Using ${seeds.length} seeds from uploaded file "${uploadedFile.originalName}": ${seeds.slice(0, 5).join(', ')}...`);
         
       } else { // source === 'builtin' 
-        const csvPath = join(process.cwd(), 'server/data/seed_keywords_v2_ko.csv');
+        const csvPath = require('path').join(process.cwd(), 'server/data/seed_keywords_v2_ko.csv');
         seeds = loadSeedsFromCSV(csvPath); // 명시적 경로 전달
         if (seeds.length === 0) {
           return res.status(400).json({ error: `No seeds found in builtin CSV file: ${csvPath}` });
@@ -1008,8 +1008,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         strict
       });
 
-      // Initialize with seeds (Phase 3: 중복 크롤링 방지)
-      await crawler.initializeWithSeeds(seeds);
+      // Initialize with seeds (명세서: 프론티어 = seeds ∪ expandAll(seeds))
+      try {
+        await crawler.initializeWithSeeds(seeds);
+      } catch (error) {
+        // Empty frontier error → HTTP 400 (명세서 요구사항)
+        if (String(error).includes('Empty frontier')) {
+          return res.status(400).json({ error: 'Empty frontier after expansion - no valid keywords to crawl' });
+        }
+        throw error;
+      }
 
       // Start crawling in background
       crawler.crawl().catch(error => {
