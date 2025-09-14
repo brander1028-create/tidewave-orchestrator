@@ -1,0 +1,123 @@
+[최신 요청] 키워드 카운트 표기 + 엑셀/CSV 시드 업로드 기반 BFS 크롤 + 진행상황 표시
+
+(헬스체크: 최초 1회 OK 이후 실행 시 생략, 오류 시에만 1회 재검)
+
+1) 카운트 표기(혼선 제거)
+
+상단 요약: 전체 N (활성 A | 제외 B) 항상 표기 (data-testid="kw-counts").
+
+“활성 키워드 관리” 테이블 헤더 옆에는 활성 A만 표기.
+
+2) 시드 업로드 → BFS 크롤 (엑셀/CSV)
+
+목표: 내가 1000/2000/그 이상의 시드를 엑셀/CSV로 넣으면, 그 시드로 연관 키워드 확장(BFS).
+시드 자체도 조건(조회량≥1000 & has_ads) 통과 시 DB에 기본 추가.
+
+헬스체크 정책: 평소엔 안 함. 처음 1회 OK or 사용자가 강제 새로고침 → LKG 저장. 이후 실행 시 헬스 생략. 실행 중 SearchAds/OpenAPI 실패(401/403/429/5xx) 시에만 degraded=true로 표시하고 다음 실행에 1회 재검.
+
+백엔드
+
+업로드(신규)
+POST /api/uploads (multipart; CSV/XLSX 둘 다 지원) → { fileId, rows }
+
+스키마: seed[, category] (헤더 1행, UTF-8)
+
+서버가 임시 저장(메타/메모리/디스크)하고 fileId 반환.
+
+BFS 시작(확장)
+POST /api/keywords/crawl
+
+{
+  "mode": "exhaustive",
+  "source": "file",            // "manual" | "file" | "builtin"
+  "seeds": [],                 // source=manual일 때만 사용
+  "seedsFileId": "<fileId>",   // source=file
+  "target": 20000,
+  "minVolume": 1000,
+  "hasAdsOnly": true,
+  "chunkSize": 10,
+  "concurrency": 1,
+  "maxHops": 3,
+  "stopIfNoNewPct": 0.5,
+  "strict": false
+}
+
+
+시드 로딩: fileId가 있으면 업로드 파일의 seed 전부를 frontier로 초기화. 없으면 builtin(v2 CSV) 사용.
+
+keywordstool(showDetail=1) →
+raw_volume = pc+mobile(-1→0), comp_idx/comp_score, ad_depth(has_ads), est_cpc_krw(null 허용), score 계산 후 조건 통과만 업서트(5지표 저장).
+
+신규 연관어는 trim+lower+다중공백1로 정규화, 중복 제거 후 frontier에 푸시.
+
+시드 원본도 조건 통과 시 기본 추가.
+
+상태/취소
+
+GET /api/keywords/crawl/:jobId/status →
+{ state: "running"|"done"|"error", progress:0..100, requested, ok, fail, queue, collected, mode }
+
+POST /api/keywords/crawl/:jobId/cancel → { ok:true }
+
+헬스(LKG, 낙관 모드)
+
+서버 부팅 or GET /api/health?force=true 시 실측 후 LKG 저장.
+
+이후 실행 엔드포인트에서는 헬스 생략(optimistic). 실행 중 오류 발생 시 degraded=true로 마킹 → 다음 실행 1회만 프리플라이트.
+
+정렬/리스트: /api/keywords?excluded=false&sort=score|raw_volume|comp_score|ad_depth|est_cpc_krw|text&order=desc|asc
+기본 정렬은 score DESC. 응답: { items, total }.
+
+프론트(UI)
+
+상단 카드:
+
+[파일 업로드(XLSX/CSV)] → POST /api/uploads → fileId 저장 (data-testid="kw-upload")
+
+[BFS 크롤 시작] → POST /api/keywords/crawl(source=file, seedsFileId)
+
+(보조) 멀티라인 시드 직접 입력 → source:"manual", seeds:[…]
+
+진행상황 박스(버튼 아래 실시간):
+
+퍼센트/바 + requested / ok / fail / queue / collected + mode 배지(searchads=초록, partial=노랑, fallback=회색)
+
+[중지] 버튼(옵션) → cancel 호출
+
+테이블(활성/제외 탭 분리 유지):
+
+컬럼: 키워드 | 조회량(raw) | 경쟁도(comp_score) | 광고깊이(ad_depth) | 예상CPC | 종합점수(score) | 액션
+
+정렬 기본=score DESC (ASC/DESC 토글)
+
+액션: 활성 탭 [X](excluded=true), 제외 탭 [↩](excluded=false)
+
+3) 수락 기준
+
+상단: 전체 N (활성 A | 제외 B) 일관 표기, “활성 관리”엔 활성 A만.
+
+업로드 → BFS 시작 시 {jobId} 수신, 하단 진행상황에서 1초 단위 갱신.
+
+완료 후 /api/keywords?excluded=false&sort=score&order=desc에 새 키워드 반영(시드도 조건 충족 시 포함).
+
+헬스: 평소엔 호출 없음. 실행 중 오류 발생 시 다음 실행 1회만 재검(프리플라이트).
+
+오류 시 토스트/배지로 원인 표시(OpenAPI/SearchAds).
+
+참고(내부 구현 메모·가드)
+
+가급적 변경:
+
+loadSeedsFromCSV(path)로 경로 인자 받도록 (빌트인 v2 CSV 경로 명시)
+
+listKeywords 정렬 맵에 score/comp_score/ad_depth/est_cpc_krw 추가(기본 score).
+
+getKeywordVolumeMap는 inArray()로 안전하게.
+
+compIdxToScore: 높음=100/중간=60/낮음=20.
+
+calculateOverallScore: volume(로그)·comp·depth·cpc 모두 +방향 가중(35/35/20/10).
+
+헬스 모드: .env에 HEALTH_MODE=optimistic (필요 시 preflight로 전환 가능).
+
+레이트리밋: chunk 10, concurrency 1, 429/5xx 백오프(최대 2회).
