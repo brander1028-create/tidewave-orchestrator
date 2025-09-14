@@ -708,7 +708,7 @@ export default function KeywordsPage() {
                   
                   {/* 조회량 */}
                   <TableCell className={`text-right font-mono ${getVolumeColor(keyword.raw_volume)}`} data-testid={`kw-volume-${keyword.id}`}>
-                    {keyword.raw_volume.toLocaleString()}
+                    {(keyword.raw_volume || 0).toLocaleString()}
                   </TableCell>
                   
                   {/* 경쟁도 (낮음/중간/높음) */}
@@ -729,7 +729,7 @@ export default function KeywordsPage() {
                   
                   {/* 예상CPC */}
                   <TableCell className="text-right font-mono text-sm" data-testid={`kw-cpc-${keyword.id}`}>
-                    {keyword.est_cpc_krw ? `₩${keyword.est_cpc_krw.toLocaleString()}` : '-'}
+                    {keyword.est_cpc_krw ? `₩${(keyword.est_cpc_krw || 0).toLocaleString()}` : '-'}
                   </TableCell>
                   
                   {/* 종합점수 */}
@@ -808,7 +808,7 @@ export default function KeywordsPage() {
                       <div className="flex justify-between items-center">
                         <span className="text-sm text-muted-foreground">키워드 현황</span>
                         <span className="font-mono text-lg" data-testid="kw-counts">
-                          전체 {(keywordsStats as KeywordsStatsResponse).total.toLocaleString()} (활성 {(keywordsStats as KeywordsStatsResponse).active.toLocaleString()} | 제외 {(keywordsStats as KeywordsStatsResponse).excluded.toLocaleString()})
+                          전체 {((keywordsStats as KeywordsStatsResponse).total || 0).toLocaleString()} (활성 {((keywordsStats as KeywordsStatsResponse).active || 0).toLocaleString()} | 제외 {((keywordsStats as KeywordsStatsResponse).excluded || 0).toLocaleString()})
                         </span>
                       </div>
                       <div className="flex justify-between items-center">
@@ -820,7 +820,7 @@ export default function KeywordsPage() {
                       <div className="flex justify-between items-center">
                         <span className="text-sm text-muted-foreground">마지막 업데이트</span>
                         <span className="text-sm font-mono">
-                          {new Date((keywordsStats as KeywordsStatsResponse).lastUpdated).toLocaleString()}
+                          {(keywordsStats as KeywordsStatsResponse).lastUpdated ? new Date((keywordsStats as KeywordsStatsResponse).lastUpdated).toLocaleString() : '-'}
                         </span>
                       </div>
                     </div>
@@ -1087,7 +1087,7 @@ export default function KeywordsPage() {
                       </div>
                       <div className="text-sm text-gray-600">
                         <div>파일명: {uploadedFile.name}</div>
-                        <div>시드 개수: {uploadedFile.rows.toLocaleString()}개</div>
+                        <div>시드 개수: {(uploadedFile.rows || 0).toLocaleString()}개</div>
                         <div className="text-xs text-green-600 mt-1">✓ 업로드 완료</div>
                       </div>
                     </div>
@@ -1190,7 +1190,7 @@ export default function KeywordsPage() {
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">수집 진행률</span>
                       <span className="font-mono">
-                        {(crawlProgress.progress?.collected || 0).toLocaleString()} / {(crawlProgress.config?.target || 20000).toLocaleString()}
+                        {((crawlProgress.progress?.collected || 0)).toLocaleString()} / {((crawlProgress.config?.target || 20000)).toLocaleString()}
                       </span>
                     </div>
                     <Progress 
@@ -1239,13 +1239,13 @@ export default function KeywordsPage() {
                     <div className="space-y-1">
                       <div className="text-muted-foreground">수집됨</div>
                       <div className="font-medium text-green-600 font-mono" data-testid="text-collected">
-                        {(crawlProgress.progress?.collected || 0).toLocaleString()}
+                        {((crawlProgress.progress?.collected || 0)).toLocaleString()}
                       </div>
                     </div>
                     <div className="space-y-1">
                       <div className="text-muted-foreground">요청됨</div>
                       <div className="font-medium font-mono" data-testid="text-requested">
-                        {(crawlProgress.progress?.totalProcessed || 0).toLocaleString()}
+                        {((crawlProgress.progress?.totalProcessed || 0)).toLocaleString()}
                       </div>
                     </div>
                     <div className="space-y-1">
@@ -1259,8 +1259,8 @@ export default function KeywordsPage() {
                     <div className="space-y-1">
                       <div className="text-muted-foreground">프론티어</div>
                       <div className="text-xs font-mono" data-testid="text-frontier">
-                        <div>큐: {(crawlProgress.progress?.frontierSize || 0).toLocaleString()}</div>
-                        <div>방문: {(crawlProgress.progress?.visitedSize || 0).toLocaleString()}</div>
+                        <div>큐: {((crawlProgress.progress?.frontierSize || 0)).toLocaleString()}</div>
+                        <div>방문: {((crawlProgress.progress?.visitedSize || 0)).toLocaleString()}</div>
                       </div>
                     </div>
                   </div>
@@ -1347,7 +1347,7 @@ export default function KeywordsPage() {
                     활성 키워드 관리
                     {keywordsStats && (
                       <Badge variant="outline" className="text-xs">
-                        {((keywordsStats as KeywordsStatsResponse)?.active || 0).toLocaleString()}개
+                        {(((keywordsStats as KeywordsStatsResponse)?.active || 0)).toLocaleString()}개
                       </Badge>
                     )}
                   </CardTitle>
