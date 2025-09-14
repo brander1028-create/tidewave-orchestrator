@@ -1556,8 +1556,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`🎯 Title analysis request: ${titles.length} titles → Top ${N}`);
       console.log(`📋 Sample titles: ${titles.slice(0, 3).map(t => `"${t}"`).join(', ')}...`);
       
-      // DB 우선 → API 갱신 → 재선별 파이프라인 실행
-      const result = await titleKeywordExtractor.extractTopNByCombined(titles, N);
+      // DB 우선 → API 갱신 → 재선별 파이프라인 실행 (originalKeywords 없음)
+      const result = await titleKeywordExtractor.extractTopNByCombined(titles, N, []);
       
       console.log(`✅ Title analysis complete: ${result.mode} mode, ${result.topN.length} keywords extracted`);
       
@@ -1773,7 +1773,8 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         if (titleExtract) {
           console.log(`   🔤 [Title Extract] Extracting Top4 keywords (70% volume + 30% combined) from ${titles.length} titles for ${blog.blogName}`);
           try {
-            const titleResult = await titleKeywordExtractor.extractTopNByCombined(titles, 4);
+            // ✅ 원래 검색 키워드들 전달 (관련성 체크용)
+            const titleResult = await titleKeywordExtractor.extractTopNByCombined(titles, 4, keywords);
             keywordResults = {
               detail: titleResult.topN.map((kw, index) => ({
                 keyword: kw.text,

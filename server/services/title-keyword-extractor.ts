@@ -43,7 +43,10 @@ export class TitleKeywordExtractor {
     // 제목 분석용 추가 불용어
     '추천', '후기', '정보', '제품', '선택', '비교', '리뷰', '가격', '쿠폰', '할인', '특가', '세일', '무료',
     '베스트', '인기', '핫딜', '이벤트', '혜택', '구매', '판매', '쇼핑', '상품', '브랜드',
-    '사용법', '방법', '팁', '노하우', '가이드', '설명', '소개', '이야기', '경험', '느낌'
+    '사용법', '방법', '팁', '노하우', '가이드', '설명', '소개', '이야기', '경험', '느낌',
+    // ✅ 일반적 단어 추가 (업체, 시공 등)
+    '업체', '회사', '서비스', '시공', '설치', '선택했어요', '가능해요', '만족스러운', '공간',
+    '최고를', '즉시출고', '애프터', '쉐이브', '수딩', '클라랑스맨', '오뚜기와사비'
   ]);
 
   /**
@@ -75,12 +78,16 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * 제목에서 토큰 추출 및 n-gram 생성
+   * 제목에서 토큰 추출 및 n-gram 생성 (원래 키워드 관련성 체크)
    */
-  private extractCandidates(titles: string[]): Map<string, number> {
+  private extractCandidates(titles: string[], originalKeywords: string[] = []): Map<string, number> {
     const candidateFreq = new Map<string, number>();
     
-    for (const title of titles) {
+    // ✅ 원래 키워드가 포함된 제목만 사용 (관련성 체크)
+    const relevantTitles = this.filterRelevantTitles(titles, originalKeywords);
+    console.log(`🎯 Filtering titles: ${titles.length} → ${relevantTitles.length} relevant titles`);
+    
+    for (const title of relevantTitles) {
       const normalized = this.normalizeText(title);
       const words = normalized.split(' ').filter(word => 
         word.length >= 2 && 
@@ -109,6 +116,40 @@ export class TitleKeywordExtractor {
       .slice(0, this.MAX_CANDIDATES);
     
     return new Map(sortedCandidates);
+  }
+
+  /**
+   * ✅ 원래 키워드와 관련된 제목만 필터링
+   */
+  private filterRelevantTitles(titles: string[], originalKeywords: string[] = []): string[] {
+    if (originalKeywords.length === 0) return titles; // 원래 키워드가 없으면 모든 제목 사용
+    
+    const relevantTitles: string[] = [];
+    
+    for (const title of titles) {
+      const normalizedTitle = this.normalizeText(title).toLowerCase();
+      
+      // 🔍 디버깅: 각 제목별 키워드 매칭 로그
+      console.log(`🔍 Title: "${title.substring(0, 30)}..."`);
+      
+      // 원래 키워드 중 하나라도 포함되면 관련 제목으로 판단
+      const isRelevant = originalKeywords.some(keyword => {
+        const normalizedKeyword = this.normalizeText(keyword).toLowerCase();
+        const contains = normalizedTitle.includes(normalizedKeyword);
+        console.log(`   • "${keyword}" in title? ${contains ? '✅' : '❌'}`);
+        return contains;
+      });
+      
+      if (isRelevant) {
+        relevantTitles.push(title);
+        console.log(`   → RELEVANT ✅`);
+      } else {
+        console.log(`   → SKIPPED ❌`);
+      }
+    }
+    
+    // 관련 제목이 없으면 모든 제목 사용 (폴백)
+    return relevantTitles.length > 0 ? relevantTitles : titles;
   }
 
   /**
@@ -237,11 +278,12 @@ export class TitleKeywordExtractor {
   /**
    * 메인 추출 함수 - DB 우선 → API 갱신 → 재선별 파이프라인
    */
-  async extractTopNByCombined(titles: string[], N: number = 4): Promise<TitleExtractionResult> {
+  async extractTopNByCombined(titles: string[], N: number = 4, originalKeywords: string[] = []): Promise<TitleExtractionResult> {
     console.log(`🎯 Starting title keyword extraction from ${titles.length} titles (Top ${N})`);
+    console.log(`📌 Original keywords for relevance: [${originalKeywords.join(', ')}]`);
     
-    // A. 토크나이징 & 정규화
-    const candidateFreq = this.extractCandidates(titles);
+    // A. 토크나이징 & 정규화 (원래 키워드 기반 필터링)
+    const candidateFreq = this.extractCandidates(titles, originalKeywords);
     const candidates = Array.from(candidateFreq.keys());
     
     const stats = {
