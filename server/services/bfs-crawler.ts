@@ -339,7 +339,7 @@ let lastDayReset = Date.now();
 const DAILY_CALL_LIMIT = 2000;
 const PER_MINUTE_LIMIT = 40;
 
-export function checkAndConsumeCallBudget(calls: number = 1): boolean {
+export function checkAndConsumeCallBudget(calls: number = 1): { allowed: boolean; reason?: string } {
   const now = Date.now();
   
   // Reset minute counter if needed
@@ -356,18 +356,18 @@ export function checkAndConsumeCallBudget(calls: number = 1): boolean {
   
   // Check if we can make the calls
   if (minuteCallCount + calls > PER_MINUTE_LIMIT) {
-    return false;
+    return { allowed: false, reason: `Per-minute limit exceeded: ${minuteCallCount + calls}/${PER_MINUTE_LIMIT}` };
   }
   
   if (dailyCallCount + calls > DAILY_CALL_LIMIT) {
-    return false;
+    return { allowed: false, reason: `Daily limit exceeded: ${dailyCallCount + calls}/${DAILY_CALL_LIMIT}` };
   }
   
   // Consume the calls
   minuteCallCount += calls;
   dailyCallCount += calls;
   
-  return true;
+  return { allowed: true };
 }
 
 export function getCallBudgetStatus(): CallBudgetStatus {
