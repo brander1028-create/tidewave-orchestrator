@@ -1200,6 +1200,24 @@ export default function KeywordsPage() {
                     </div>
                   )}
                   
+                  {/* 청크 진행률과 호출 예산 정보 */}
+                  {(crawlProgress.progress?.currentChunk > 0) && (
+                    <div className="bg-blue-50 dark:bg-blue-950 p-3 rounded-lg border border-blue-200 dark:border-blue-800 text-sm">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-medium text-blue-900 dark:text-blue-100">진행 상황</span>
+                        <span className="text-blue-700 dark:text-blue-300 font-mono">
+                          청크 {crawlProgress.progress.currentChunk}/{crawlProgress.progress.totalChunks}
+                        </span>
+                      </div>
+                      {crawlProgress.progress?.callBudget && (
+                        <div className="text-xs text-blue-600 dark:text-blue-400 space-y-1">
+                          <div>일일 한도: {crawlProgress.progress.callBudget.dailyRemaining}/{crawlProgress.progress.callBudget.dailyLimit}</div>
+                          <div>분당 한도: {crawlProgress.progress.callBudget.perMinuteRemaining}/{crawlProgress.progress.callBudget.perMinuteLimit}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div className="space-y-1">
                       <div className="text-muted-foreground">수집됨</div>
@@ -1210,14 +1228,14 @@ export default function KeywordsPage() {
                     <div className="space-y-1">
                       <div className="text-muted-foreground">요청됨</div>
                       <div className="font-medium font-mono" data-testid="text-requested">
-                        {(crawlProgress.progress?.requested || 0).toLocaleString()}
+                        {(crawlProgress.progress?.totalProcessed || 0).toLocaleString()}
                       </div>
                     </div>
                     <div className="space-y-1">
                       <div className="text-muted-foreground">처리속도</div>
                       <div className="font-medium text-blue-600 font-mono" data-testid="text-processing-speed">
-                        {crawlProgress.progress?.requested > 0 ? 
-                          `${Math.round(crawlProgress.progress.requested / ((Date.now() - new Date(crawlProgress.startedAt).getTime()) / 1000 / 60))}/분` : 
+                        {crawlProgress.progress?.totalProcessed > 0 ? 
+                          `${Math.round(crawlProgress.progress.totalProcessed / ((Date.now() - new Date(crawlProgress.startedAt).getTime()) / 1000 / 60))}/분` : 
                           '계산중...'}
                       </div>
                     </div>

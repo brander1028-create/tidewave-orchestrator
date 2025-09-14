@@ -92,7 +92,17 @@ export class BFSKeywordCrawler {
     keywordsSaved: 0,
     frontierSize: 0,
     visitedSize: 0,
-    estimatedTimeLeft: '계산 중...'
+    estimatedTimeLeft: '계산 중...',
+    // 청크 진행률
+    currentChunk: 0,
+    totalChunks: 0,
+    // 호출 예산 정보
+    callBudget: {
+      dailyRemaining: 2000,
+      perMinuteRemaining: 40,
+      dailyLimit: 2000,
+      perMinuteLimit: 40
+    }
   };
 
   constructor(config: {
@@ -176,12 +186,19 @@ export class BFSKeywordCrawler {
     const currentFrontierArray = Array.from(this.frontier);
     const nextFrontier = new Set<string>();
     
+    // 청크 총 개수 계산
+    const totalChunks = Math.ceil(currentFrontierArray.length / this.chunkSize);
+    this.progress.totalChunks = totalChunks;
+    
     // 현재 frontier를 chunk 단위로 처리
     for (let i = 0; i < currentFrontierArray.length; i += this.chunkSize) {
       if (this.collected >= this.maxTarget) break;
       
       const chunk = currentFrontierArray.slice(i, i + this.chunkSize);
-      console.log(`📦 Processing chunk ${Math.floor(i/this.chunkSize) + 1}/${Math.ceil(currentFrontierArray.length/this.chunkSize)}: ${chunk.length} keywords`);
+      const currentChunk = Math.floor(i/this.chunkSize) + 1;
+      this.progress.currentChunk = currentChunk;
+      
+      console.log(`📦 Processing chunk ${currentChunk}/${totalChunks}: ${chunk.length} keywords`);
       
       // Phase 3: 호출 예산 체크
       const budgetCheck = checkAndConsumeCallBudget(1);
@@ -191,8 +208,10 @@ export class BFSKeywordCrawler {
         continue;
       }
       
-      // Phase 3: lastUpdated 갱신
+      // Phase 3: lastUpdated 갱신 및 호출 예산 정보 업데이트
       this.lastUpdated = new Date();
+      const budgetStatus = getCallBudgetStatus();
+      this.progress.callBudget = budgetStatus;
       
       // 검색량 조회 (health-aware)
       const volumeResult = await getVolumesWithHealth(db, chunk);
