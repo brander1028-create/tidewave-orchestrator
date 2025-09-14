@@ -1784,8 +1784,8 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
             };
             
             // 🎯 C. 제목 선별 결과 검증 로그
-            const candidateCount = titleResult.stats?.candidateCount || 0;
-            const eligibleCount = titleResult.stats?.eligibleCount || 0;
+            const candidateCount = titleResult.stats?.candidates || 0;
+            const eligibleCount = titleResult.stats?.db_hits || 0;
             console.log(`🔤 TITLE_TOP: blog=${blog.blogName}, titles=${titles.length}, cands=${candidateCount}, dbHits1000=${eligibleCount}, mode=${titleResult.mode}, top4=[${titleResult.topN.map(k => `${k.text}(${k.combined_score})`).join(', ')}]`);
             
             console.log(`   🏆 [Title Extract] Top ${titleResult.topN.length} keywords for ${blog.blogName} (${titleResult.mode}): ${titleResult.topN.map(kw => `${kw.text} (${kw.combined_score}pts)`).join(', ')}`);
