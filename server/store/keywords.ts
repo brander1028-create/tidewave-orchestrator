@@ -1,30 +1,46 @@
 import { db } from '../db';
 import { managedKeywords } from '../../shared/schema';
-import { eq, sql, desc, asc } from 'drizzle-orm';
+import { eq, sql, desc, asc, inArray } from 'drizzle-orm';
 import type { ManagedKeyword, InsertManagedKeyword } from '../../shared/schema';
 import { getVolumes, type SearchAdResult } from '../services/searchad';
 
 /**
  * Convert compIdx string to numeric score (0-100)
+ * 수정: 높음=100, 중간=60, 낮음=20 (상업성 지표 통일)
  */
 export function compIdxToScore(idx?: string | null): number {
-  if (!idx) return 60; // default medium
-  const normalized = idx.toLowerCase();
-  if (normalized.includes('낮음') || normalized.includes('low') || normalized === '0') return 100;
-  if (normalized.includes('높음') || normalized.includes('high') || normalized === '2') return 20;
-  return 60; // medium/중간/1
+  if (!idx) return 60; // 중간
+  const s = String(idx).toLowerCase();
+  if (s.includes('높음') || s.includes('high') || s === '2') return 100;
+  if (s.includes('중간') || s.includes('mid') || s === '1') return 60;
+  if (s.includes('낮음') || s.includes('low') || s === '0') return 20;
+  return 60;
 }
 
 /**
  * Calculate overall score (0-100) based on 5 metrics
- * Formula: volume_norm(35%) + comp_score(35%) + depth_norm(20%) + cpc_norm(10%)
+ * 수정: volume 로그스케일, depth/cpc 상업성 지표 같은 방향으로 통일
  */
-export function calculateOverallScore(raw_volume: number, comp_score: number, ad_depth: number, est_cpc: number): number {
-  const volumeNorm = Math.min(100, Math.round(raw_volume / 1000));
-  const depthNorm = ad_depth <= 0 ? 100 : Math.max(0, 100 - Math.round(ad_depth * 10));
-  const cpcNorm = est_cpc <= 0 ? 50 : Math.max(0, 100 - Math.round(est_cpc / 20));
+export function calculateOverallScore(
+  raw_volume: number,
+  comp_score: number,
+  ad_depth: number,
+  est_cpc: number
+): number {
+  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
   
-  return Math.round(volumeNorm * 0.35 + comp_score * 0.35 + depthNorm * 0.20 + cpcNorm * 0.10);
+  // 10만 조회 기준 정규화(로그 스케일)
+  const volume_norm = clamp01(Math.log10(Math.max(1, raw_volume)) / 5); // 1..100000 → 0..1
+  const depth_norm = clamp01((ad_depth || 0) / 5); // 0..5 → 0..1
+  const cpc_norm = est_cpc ? clamp01(est_cpc / 5000) : 0; // 0..5000원 cap
+  
+  const score =
+    0.35 * (volume_norm * 100) +
+    0.35 * clamp01(comp_score / 100) * 100 +
+    0.20 * (depth_norm * 100) +
+    0.10 * (cpc_norm * 100);
+  
+  return Math.round(clamp01(score / 100) * 100);
 }
 
 /**
@@ -50,59 +66,93 @@ export async function keywordsCount(): Promise<number> {
 }
 
 /**
- * Upsert multiple keywords with volume data
+ * Upsert multiple keywords with volume data (배치 처리로 멈춤 방지)
  */
 export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Promise<number> {
   if (keywords.length === 0) return 0;
   
-  let insertedCount = 0;
+  // 1단계: 입력 데이터 정리 및 중복 제거
+  const uniqueKeywords = new Map<string, Partial<InsertManagedKeyword>>();
+  for (const kw of keywords) {
+    if (!kw.text || kw.text.trim() === '') continue;
+    const text = kw.text.trim();
+    uniqueKeywords.set(text, { ...kw, text });
+  }
   
-  for (const keyword of keywords) {
+  const cleanKeywords = Array.from(uniqueKeywords.values());
+  if (cleanKeywords.length === 0) return 0;
+  
+  console.log(`📦 Upserting ${cleanKeywords.length} keywords in batches...`);
+  
+  // 2단계: 배치별 처리 (500개씩)
+  const BATCH_SIZE = 500;
+  let totalSaved = 0;
+  
+  for (let i = 0; i < cleanKeywords.length; i += BATCH_SIZE) {
+    const batch = cleanKeywords.slice(i, i + BATCH_SIZE);
+    
     try {
-      await db.insert(managedKeywords)
-        .values({
-          text: keyword.text!,
-          raw_volume: keyword.raw_volume || 0,
-          volume: keyword.volume || 0,
-          grade: keyword.grade || 'C',
-          commerciality: keyword.commerciality || 0,
-          difficulty: keyword.difficulty || 0,
-          source: keyword.source || 'searchads',
-          // 5개 지표 필드 추가
-          comp_idx: keyword.comp_idx || null,
-          comp_score: keyword.comp_score || 0,
-          ad_depth: keyword.ad_depth || 0,
-          has_ads: keyword.has_ads || false,
-          est_cpc_krw: keyword.est_cpc_krw || null,
-          est_cpc_source: keyword.est_cpc_source || 'unknown',
-          score: keyword.score || 0,
-        })
-        .onConflictDoUpdate({
-          target: managedKeywords.text,
-          set: {
-            raw_volume: keyword.raw_volume || 0,
-            volume: keyword.volume || 0,
-            grade: keyword.grade || 'C',
-            commerciality: keyword.commerciality || 0,
-            difficulty: keyword.difficulty || 0,
-            // 5개 지표 필드 업데이트
-            comp_idx: keyword.comp_idx || null,
-            comp_score: keyword.comp_score || 0,
-            ad_depth: keyword.ad_depth || 0,
-            has_ads: keyword.has_ads || false,
-            est_cpc_krw: keyword.est_cpc_krw || null,
-            est_cpc_source: keyword.est_cpc_source || 'unknown',
-            score: keyword.score || 0,
-            updated_at: sql`NOW()`,
+      // 트랜잭션으로 배치 처리
+      const batchResult = await db.transaction(async (tx) => {
+        let batchSaved = 0;
+        
+        for (const kw of batch) {
+          try {
+            await tx.insert(managedKeywords)
+              .values({
+                text: kw.text!,
+                raw_volume: kw.raw_volume ?? 0,
+                volume: kw.volume ?? 0,
+                grade: kw.grade ?? 'C',
+                commerciality: kw.commerciality ?? 0,
+                difficulty: kw.difficulty ?? 0,
+                source: kw.source ?? 'searchads',
+                comp_idx: kw.comp_idx ?? null,
+                comp_score: kw.comp_score ?? 0,
+                ad_depth: kw.ad_depth ?? 0,
+                has_ads: !!kw.has_ads,
+                est_cpc_krw: kw.est_cpc_krw ?? null,
+                est_cpc_source: kw.est_cpc_source ?? 'unknown',
+                score: kw.score ?? 0,
+                updated_at: sql`NOW()`
+              })
+              .onConflictDoUpdate({
+                target: managedKeywords.text,
+                set: {
+                  raw_volume: sql`excluded.raw_volume`,
+                  volume: sql`excluded.volume`,
+                  grade: sql`excluded.grade`,
+                  commerciality: sql`excluded.commerciality`,
+                  difficulty: sql`excluded.difficulty`,
+                  comp_idx: sql`excluded.comp_idx`,
+                  comp_score: sql`excluded.comp_score`,
+                  ad_depth: sql`excluded.ad_depth`,
+                  has_ads: sql`excluded.has_ads`,
+                  est_cpc_krw: sql`excluded.est_cpc_krw`,
+                  est_cpc_source: sql`excluded.est_cpc_source`,
+                  score: sql`excluded.score`,
+                  updated_at: sql`NOW()`
+                }
+              });
+            batchSaved++;
+          } catch (error) {
+            console.error(`Failed to upsert "${kw.text}":`, error);
           }
-        });
-      insertedCount++;
+        }
+        
+        return batchSaved;
+      });
+      
+      totalSaved += batchResult;
+      console.log(`✅ Batch ${Math.floor(i/BATCH_SIZE) + 1}: ${batchResult}/${batch.length} saved`);
+      
     } catch (error) {
-      console.error(`Failed to upsert keyword "${keyword.text}":`, error);
+      console.error(`❌ Batch ${Math.floor(i/BATCH_SIZE) + 1} failed:`, error);
     }
   }
   
-  return insertedCount;
+  console.log(`🎯 Total upserted: ${totalSaved}/${cleanKeywords.length} keywords`);
+  return totalSaved;
 }
 
 /**
@@ -110,10 +160,19 @@ export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Pro
  */
 export async function listKeywords(opts: {
   excluded: boolean;
-  orderBy: 'raw_volume' | 'text';
+  orderBy: 'score' | 'raw_volume' | 'comp_score' | 'ad_depth' | 'est_cpc_krw' | 'text';
   dir: 'asc' | 'desc';
 }): Promise<ManagedKeyword[]> {
-  const orderField = opts.orderBy === 'raw_volume' ? managedKeywords.raw_volume : managedKeywords.text;
+  const fieldMap: any = {
+    score: managedKeywords.score,
+    raw_volume: managedKeywords.raw_volume,
+    comp_score: managedKeywords.comp_score,
+    ad_depth: managedKeywords.ad_depth,
+    est_cpc_krw: managedKeywords.est_cpc_krw,
+    text: managedKeywords.text
+  };
+  
+  const orderField = fieldMap[opts.orderBy] ?? managedKeywords.score;
   const orderDir = opts.dir === 'desc' ? desc(orderField) : asc(orderField);
   
   return await db.select()
@@ -176,7 +235,7 @@ export async function getKeywordVolumeMap(keywordTexts: string[]): Promise<Recor
     raw_volume: managedKeywords.raw_volume
   })
     .from(managedKeywords)
-    .where(sql`${managedKeywords.text} = ANY(${keywordTexts})`);
+    .where(inArray(managedKeywords.text, keywordTexts));
     
   const volumeMap: Record<string, number> = {};
   for (const result of results) {
