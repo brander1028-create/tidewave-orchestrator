@@ -67,10 +67,16 @@ export async function loadOptimizedSeeds(maxSeeds: number = 200): Promise<string
     for (const category of categories) {
       const categorySeeds = seedsByCategory[category];
       
-      // 카테고리 내에서 랜덤 선택 (항상 앞부분만 사용하지 않음)
-      const shuffled = [...categorySeeds].sort(() => Math.random() - 0.5);
-      const selected = shuffled.slice(0, seedsPerCategory);
+      // 🎯 기본/일반적인 키워드 우선 선택 (검색량이 있을 가능성 높음)
+      const prioritizedSeeds = categorySeeds.sort((a, b) => {
+        // 짧고 일반적인 키워드 우선 (길이 기준)
+        const aScore = a.length + (a.includes(' ') ? 10 : 0) + (a.includes('할인') || a.includes('쿠폰') || a.includes('설치') || a.includes('렌탈') ? 50 : 0);
+        const bScore = b.length + (b.includes(' ') ? 10 : 0) + (b.includes('할인') || b.includes('쿠폰') || b.includes('설치') || b.includes('렌탈') ? 50 : 0);
+        return aScore - bScore;
+      });
       
+      // 상위 기본 키워드들 선택
+      const selected = prioritizedSeeds.slice(0, seedsPerCategory);
       selectedSeeds.push(...selected);
     }
     
