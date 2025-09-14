@@ -845,11 +845,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Parse parameters with defaults
+      // Parse parameters with defaults (enhanced version)
       const {
         mode = 'exhaustive',
-        seeds: userSeeds = [],
-        seedsCsv = '/mnt/data/seed_keywords_v2_ko.csv',
+        source = 'builtin',         // "manual" | "file" | "builtin" 
+        seeds: userSeeds = [],       // for source="manual"
+        seedsFileId,                 // for source="file"
         target = 20000,
         maxHops = 3,
         minVolume = 1000,
@@ -857,23 +858,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
         chunkSize = 10,
         concurrency = 1,
         stopIfNoNewPct = 0.5,
-        dailyCallBudget = 2000
+        strict = false
       } = req.body;
 
       console.log(`🚀 Starting BFS keyword crawl (${mode} mode) with target: ${target}`);
-      console.log(`⚙️ Config: minVolume=${minVolume}, hasAdsOnly=${hasAdsOnly}, chunk=${chunkSize}, concurrency=${concurrency}`);
+      console.log(`⚙️ Config: source=${source}, minVolume=${minVolume}, hasAdsOnly=${hasAdsOnly}, chunk=${chunkSize}, concurrency=${concurrency}`);
+      console.log(`📊 Advanced: maxHops=${maxHops}, stopIfNoNewPct=${stopIfNoNewPct}, strict=${strict}`);
 
-      // Determine seeds to use
+      // Determine seeds to use based on source
       let seeds: string[];
-      if (userSeeds && userSeeds.length > 0) {
+      
+      if (source === 'manual') {
+        if (!userSeeds || userSeeds.length === 0) {
+          return res.status(400).json({ error: 'Seeds array is required when source="manual"' });
+        }
         seeds = userSeeds;
-        console.log(`🌱 Using ${seeds.length} user-provided seeds: ${seeds.slice(0, 5).join(', ')}...`);
-      } else {
+        console.log(`🌱 Using ${seeds.length} manual seeds: ${seeds.slice(0, 5).join(', ')}...`);
+        
+      } else if (source === 'file') {
+        if (!seedsFileId) {
+          return res.status(400).json({ error: 'seedsFileId is required when source="file"' });
+        }
+        
+        const uploadedFile = uploadedFiles.get(seedsFileId);
+        if (!uploadedFile) {
+          return res.status(404).json({ error: 'File not found. Please upload file first.' });
+        }
+        
+        seeds = uploadedFile.rows.map(row => row.seed);
+        console.log(`📁 Using ${seeds.length} seeds from uploaded file "${uploadedFile.originalName}": ${seeds.slice(0, 5).join(', ')}...`);
+        
+      } else { // source === 'builtin'
         seeds = loadSeedsFromCSV();
         if (seeds.length === 0) {
-          return res.status(400).json({ error: 'No seeds found in CSV file' });
+          return res.status(400).json({ error: 'No seeds found in builtin CSV file' });
         }
-        console.log(`🌱 Using ${seeds.length} seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
+        console.log(`📂 Using ${seeds.length} builtin seeds from CSV: ${seeds.slice(0, 5).join(', ')}...`);
       }
 
       // ✅ STEP: Process seeds FIRST (add to database, skip duplicates)
@@ -923,14 +943,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Create and configure crawler
+      // Create and configure crawler with enhanced parameters  
       const crawler = createGlobalCrawler({
         target,
         maxHops,
         minVolume,
         hasAdsOnly,
         chunkSize,
-        concurrency
+        concurrency,
+        stopIfNoNewPct,
+        strict
       });
 
       // Initialize with seeds
@@ -941,7 +963,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error('❌ BFS crawl failed:', error);
       });
 
-      // Return job ID and initial status
+      // Return job ID and initial status with enhanced config info
       const jobId = 'crawl-' + Date.now();
       const initialProgress = crawler.getProgress();
       console.log(`✅ BFS crawl started - Job ID: ${jobId}, Frontier size: ${initialProgress.frontierSize}`);
@@ -949,9 +971,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         jobId,
         message: 'BFS keyword crawl started successfully',
-        config: { mode, target, maxHops, minVolume, hasAdsOnly, chunkSize, concurrency },
+        config: { 
+          mode, 
+          source,
+          target, 
+          maxHops, 
+          minVolume, 
+          hasAdsOnly, 
+          chunkSize, 
+          concurrency,
+          stopIfNoNewPct,
+          strict
+        },
         seedsLoaded: seeds.length,
-        progress: initialProgress
+        seedsProcessed,
+        progress: initialProgress,
+        // 추가 메타데이터
+        sourceInfo: source === 'file' ? { 
+          fileId: seedsFileId, 
+          fileName: uploadedFiles.get(seedsFileId)?.originalName 
+        } : { type: source }
       });
 
     } catch (error) {

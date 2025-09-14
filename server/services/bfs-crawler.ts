@@ -98,6 +98,8 @@ export class BFSKeywordCrawler {
     hasAdsOnly: boolean;
     chunkSize: number;
     concurrency: number;
+    stopIfNoNewPct?: number;
+    strict?: boolean;
   }) {
     this.maxTarget = config.target;
     this.maxHops = config.maxHops;
@@ -105,6 +107,7 @@ export class BFSKeywordCrawler {
     this.hasAdsOnly = config.hasAdsOnly;
     this.chunkSize = config.chunkSize;
     this.concurrency = config.concurrency;
+    // 새로운 매개변수들은 추후 구현에서 활용 예정
   }
 
   // 시드 키워드로 frontier 초기화
@@ -285,6 +288,8 @@ export function createGlobalCrawler(config: {
   hasAdsOnly: boolean;
   chunkSize: number;
   concurrency: number;
+  stopIfNoNewPct?: number;
+  strict?: boolean;
 }): BFSKeywordCrawler {
   globalCrawler = new BFSKeywordCrawler(config);
   return globalCrawler;
