@@ -107,6 +107,97 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// 수익성 계산 및 최적화 점수
+export const profitabilityAnalysis = pgTable("profitability_analysis", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productKey: varchar("product_key").notNull(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  
+  // 비용 구조
+  productCost: decimal("product_cost", { precision: 10, scale: 2 }),
+  shippingCost: decimal("shipping_cost", { precision: 10, scale: 2 }),
+  advertisingCost: decimal("advertising_cost", { precision: 10, scale: 2 }),
+  platformFee: decimal("platform_fee", { precision: 10, scale: 2 }),
+  otherCosts: decimal("other_costs", { precision: 10, scale: 2 }),
+  
+  // 매출 데이터
+  sellingPrice: decimal("selling_price", { precision: 10, scale: 2 }),
+  avgDailySales: integer("avg_daily_sales"),
+  conversionRate: decimal("conversion_rate", { precision: 5, scale: 4 }),
+  
+  // 계산된 수익성 지표
+  grossProfit: decimal("gross_profit", { precision: 10, scale: 2 }),
+  grossMargin: decimal("gross_margin", { precision: 5, scale: 4 }),
+  roi: decimal("roi", { precision: 5, scale: 4 }),
+  breakEvenPoint: integer("break_even_point"),
+  
+  // 최적화 점수 (0-100)
+  optimizationScore: integer("optimization_score"),
+  
+  // 최적화 제안사항
+  recommendations: json("recommendations"),
+  
+  // 경쟁력 분석
+  competitivenessScore: integer("competitiveness_score"),
+  marketPosition: varchar("market_position"),
+});
+
+// 리스팅 최적화 체크리스트
+export const listingOptimization = pgTable("listing_optimization", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productKey: varchar("product_key").notNull(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  
+  // SEO 최적화 점수
+  titleScore: integer("title_score"), // 0-100
+  descriptionScore: integer("description_score"),
+  keywordDensity: decimal("keyword_density", { precision: 5, scale: 2 }),
+  
+  // 이미지 최적화
+  imageCount: integer("image_count"),
+  imageQualityScore: integer("image_quality_score"),
+  hasLifestyleImages: boolean("has_lifestyle_images"),
+  
+  // 가격 경쟁력
+  priceCompetitiveness: integer("price_competitiveness"),
+  pricePosition: varchar("price_position"), // 'lowest' | 'competitive' | 'premium' | 'overpriced'
+  
+  // 리뷰 및 평점
+  reviewOptimization: integer("review_optimization"),
+  avgRating: decimal("avg_rating", { precision: 3, scale: 2 }),
+  reviewCount: integer("review_count"),
+  
+  // 카테고리 최적화
+  categoryAccuracy: integer("category_accuracy"),
+  attributeCompleteness: integer("attribute_completeness"),
+  
+  // 전체 최적화 점수
+  overallScore: integer("overall_score"),
+  grade: varchar("grade"), // 'A+' | 'A' | 'B+' | 'B' | 'C+' | 'C' | 'D'
+  
+  // 개선 제안
+  improvements: json("improvements"),
+});
+
+// Type exports
+export type RankTimeSeries = typeof rankTimeSeries.$inferSelect;
+export type InsertRankTimeSeries = z.infer<typeof insertRankTimeSeriesSchema>;
+
+export type RankAggregated = typeof rankAggregated.$inferSelect;
+export type MetricTimeSeries = typeof metricTimeSeries.$inferSelect;
+export type Event = typeof events.$inferSelect;
+export type Alert = typeof alerts.$inferSelect;
+export type Submission = typeof submissions.$inferSelect;
+export type InsertSubmission = z.infer<typeof insertSubmissionSchema>;
+export type TrackedTarget = typeof trackedTargets.$inferSelect;
+export type InsertTrackedTarget = z.infer<typeof insertTrackedTargetSchema>;
+export type Settings = typeof settings.$inferSelect;
+
+export type ProfitabilityAnalysis = typeof profitabilityAnalysis.$inferSelect;
+export type InsertProfitabilityAnalysis = z.infer<typeof insertProfitabilityAnalysisSchema>;
+export type ListingOptimization = typeof listingOptimization.$inferSelect;
+export type InsertListingOptimization = z.infer<typeof insertListingOptimizationSchema>;
+
 // Insert schemas
 export const insertRankTimeSeriesSchema = createInsertSchema(rankTimeSeries).omit({
   id: true,
@@ -121,6 +212,16 @@ export const insertSubmissionSchema = createInsertSchema(submissions).omit({
 export const insertTrackedTargetSchema = createInsertSchema(trackedTargets).omit({
   id: true,
   createdAt: true,
+});
+
+export const insertProfitabilityAnalysisSchema = createInsertSchema(profitabilityAnalysis).omit({
+  id: true,
+  timestamp: true,
+});
+
+export const insertListingOptimizationSchema = createInsertSchema(listingOptimization).omit({
+  id: true,
+  timestamp: true,
 });
 
 export const insertSettingsSchema = createInsertSchema(settings).omit({
