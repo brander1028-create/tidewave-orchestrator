@@ -3,6 +3,8 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Sidebar, MobileMenuButton } from "@/components/sidebar";
+import { useState } from "react";
 import Dashboard from "@/pages/dashboard";
 import KeywordsPage from "@/pages/keywords";
 import TitleAnalysisPage from "@/pages/title-analysis";
@@ -25,12 +27,38 @@ function Router() {
   );
 }
 
+function AppLayout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const toggleSidebar = () => {
+    setSidebarOpen(!sidebarOpen);
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex">
+      {/* Sidebar */}
+      <Sidebar isOpen={sidebarOpen} onToggle={toggleSidebar} />
+      
+      {/* Main Content */}
+      <div className="flex-1 lg:ml-0">
+        {/* Mobile menu button */}
+        <MobileMenuButton onClick={toggleSidebar} />
+        
+        {/* Page content */}
+        <div className="h-full">
+          <Router />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router />
+        <AppLayout />
       </TooltipProvider>
     </QueryClientProvider>
   );
