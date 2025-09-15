@@ -1,0 +1,94 @@
+[강제 UI 업데이트 요청 — 결과 화면 v3 (업데이트만, 재구축 금지)]
+
+■ 문제
+- 현재 결과 페이지가 기존 블로그 카드 UI를 그대로 보여줍니다.
+- 제가 요구한 “키워드별 요약 카드 → 자세히(신규/Phase2)” 구조가 적용되지 않았습니다.
+- “DB 전용/미적용” 배지와 0/미노출 표기가 혼란을 줍니다.
+
+■ 지시(반드시 이 순서로 적용)
+0) 재구축 금지
+   - 새 테이블/마이그/엔드포인트 생성 금지. 기존 응답 사용.
+   - 서버가 results에 제공하는 summaryByKeyword 필드가 없다면, 먼저 추가.
+     (이미 있다면 프론트에서 그것만 사용하도록 강제)
+
+1) 서버 응답 점검(필요 시 보강)
+   - GET /api/serp/jobs/:id/results 내부에 아래 구조가 반드시 존재하도록 합니다.
+     (스키마 추가가 아니라 "응답 조립"만 보강)
+   {
+     "summaryByKeyword":[
+       {
+         "keyword":"홍삼",
+         "searchVolume":39840|null,
+         "totalBlogs":12,
+         "newBlogs":7,
+         "phase2ExposedNew":3,
+         "items":[
+           {
+             "blogName":"happy-321",
+             "blogUrl":"https://…",
+             "scannedPosts":10,
+             "titlesSample":["제목1","제목2","제목3"],
+             "topKeywords":[
+               {"text":"홍삼스틱","volume":39840|null,"score":86,"rank":3|null, "related":true|false}
+             ]
+           }
+         ]
+       }
+     ]
+   }
+   - 값 표기 규칙(엄수): volume=null→"–", 0→"0"; rank=null→"미확인", >10→"미노출", ≤10→"모바일 1p #N"(또는 PC)
+   - 혼동 배지(“DB 전용/미적용”)는 응답에서 전달하지 말고 내부 로그로만 유지.
+
+2) 프론트 페이지 교체 렌더(리스트 헤더 유지, 본문만 교체)
+   - 파일: client/src/pages/advanced_analysis.tsx (또는 현재 결과 페이지: client/src/pages/results.tsx)
+   - 본문 렌더를 "summaryByKeyword" 기반 **카드 리스트**로 전환.
+   - 정렬: (phase2ExposedNew/newBlogs) 비율 내림차순 → 동률 시 newBlogs 내림차순.
+   - 기존 “블로그별 Top4 칩 나열” 섹션은 숨김/삭제.
+
+3) 카드 컴포넌트(새 컴포넌트 1개만 추가)
+   - 파일: client/src/components/keyword-summary-card.tsx
+   - 구성:
+     [헤더] {키워드} · "검색량 {천단위 or –}" · 우측 버튼: "자세히"
+     [KPI줄] "신규 {newBlogs}/{totalBlogs} · Phase2(신규) {phase2ExposedNew}/{newBlogs}"
+     [자세히 토글 펼침] 두 섹션을 순서대로 출력
+       ① 신규 블로그(New)
+          - [블로그명(새창) | 스캔 포스트수 | 제목 샘플 최대 3개 | 최초수집일(있으면)]
+          - "제목 더보기"로 10개까지 펼침(선택)
+       ② Phase2(신규)
+          - [블로그명(새창) | 키워드 칩 Top10 | 비고]
+          - 칩 형식: "{키워드}{[관련X]} · {볼륨} · {점수}pts · {순위표기}"
+          - 정렬: (조회량정규 70 + 콘텐츠점수 30) 내림차순
+          - ‘더보기’로 10개씩 추가
+   - 유틸 포맷 함수(필수):
+     fmtVol(v) => v===null?"–":v.toLocaleString()
+     fmtRank(r) => r==null?"미확인":(r<=10?`모바일 1p #${r}`:"미노출")
+   - 화면에서 “DB 전용/미적용” 배지/문구는 **절대 노출 금지**.
+
+4) 상단 요약/CSV 버튼 유지
+   - 기존 상단 “분석 결과” 헤더, CSV 내보내기 버튼은 유지.
+   - 카드 리스트 바로 위에 "키워드 노출 블로그 (N개)" 타이틀 유지 가능.
+
+5) 널/0 처리 버그 방지(엄수)
+   - rank, volume 등에 `|| 0`처럼 기본값을 강제로 주지 말 것.
+   - null은 그대로 전달하고, 화면에서 위 포맷 규칙으로 표시.
+   - “미노출”은 rank>10일 때만. rank=null은 "미확인".
+
+■ 파일 수정 목록(정확한 위치)
+- client/src/pages/advanced_analysis.tsx (또는 client/src/pages/results.tsx): 본문 렌더 교체
+- client/src/components/keyword-summary-card.tsx: 신규 추가
+- server/routes.ts (필요 시): results.summaryByKeyword 조립 보강, null/0 처리 수정
+
+■ 수용 기준(이 항목 전부 충족해야 완료)
+- [ ] 결과 페이지가 “키워드 요약 카드 리스트”로 시작한다.
+- [ ] 각 카드에 "신규 {new}/{total} · Phase2(신규) {exposedNew}/{new}"가 숫자로 표시된다.
+- [ ] “자세히”를 누르면 ①신규 블로그, ②Phase2(신규) 두 섹션이 펼쳐진다.
+- [ ] 키워드 칩이 "{키워드}{[관련X]} · {볼륨} · {점수}pts · {순위}" 형식으로 보이고 기본 10개만 나타난다(더보기 동작).
+- [ ] 볼륨 null은 "–", rank null은 "미확인"으로 보이며 0/미노출과 혼동되지 않는다.
+- [ ] “DB 전용/미적용” 배지가 화면에서 완전히 사라졌다.
+- [ ] 카드 정렬이 (exposedNew/new) 비율 → newBlogs 순으로 적용되었다.
+- [ ] 기존 블로그 카드형 Top4 UI는 더 이상 보이지 않는다.
+
+■ 커밋 메시지 예시
+feat(ui): replace results list with Keyword Summary Cards + details (New/Phase2)
+fix(null): exact handling for volume/rank (– / 미확인)
+chore: hide legacy DB-only badges in UI
