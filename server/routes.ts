@@ -398,11 +398,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
             for (let tierNum = 1; tierNum <= T; tierNum++) {
               const tierCheck = postTierData.find(check => check.tier === tierNum);
               if (tierCheck) {
+                // Calculate score based on volume and rank (similar to keyword scoring)
+                let score = 0;
+                if (tierCheck.volume !== null && tierCheck.rank !== null) {
+                  if (tierCheck.rank >= 1 && tierCheck.rank <= 10) {
+                    // Score calculation: volume-based with rank multiplier
+                    const volumeScore = Math.min(tierCheck.volume / 1000, 50); // Max 50 for volume
+                    const rankMultiplier = (11 - tierCheck.rank) / 10; // Rank 1 = 1.0, Rank 10 = 0.1
+                    score = Math.round(volumeScore * rankMultiplier);
+                  }
+                }
+                
                 tiers.push({
                   tier: tierNum,
                   text: tierCheck.textSurface,
                   volume: tierCheck.volume,
-                  rank: tierCheck.rank
+                  rank: tierCheck.rank,
+                  score
                 });
               } else {
                 // Add empty tier if no data found
@@ -410,7 +422,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   tier: tierNum,
                   text: "",
                   volume: null,
-                  rank: null
+                  rank: null,
+                  score: 0
                 });
               }
             }

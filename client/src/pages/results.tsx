@@ -46,6 +46,7 @@ type V8ResultsResponse = {
           text: string;
           volume: number | null;
           rank: number | null;
+          score: number;
         }>;
       }>;
     }>;
@@ -480,20 +481,22 @@ export default function ResultsPage() {
                                                       <h6 className="font-medium text-sm mb-2" data-testid={`post-title-${pidx}`}>{post.title}</h6>
                                                       <div className="text-xs space-y-1">
                                                         {post.tiers.map((tierData) => (
-                                                          <div key={tierData.tier} className="flex items-center gap-2">
+                                                          <div key={tierData.tier} className="flex items-center gap-2 flex-wrap">
                                                             <span className="font-medium min-w-12">{tierData.tier}티어:</span>
-                                                            <div className="flex items-center gap-2">
-                                                              <span className="text-gray-700 font-medium">{tierData.text || "비어있음"}</span>
-                                                              {tierData.text && (
-                                                                <>
-                                                                  <Badge className={getVolumeColor(tierData.volume)}>
-                                                                    {fmtVol(tierData.volume)}
-                                                                  </Badge>
-                                                                  <Badge className={getRankColor(tierData.rank)}>
-                                                                    {fmtRank(tierData.rank)}
-                                                                  </Badge>
-                                                                </>
-                                                              )}
+                                                            <div className="flex items-center gap-2 flex-wrap">
+                                                              <span className="text-gray-700 font-medium" data-testid={`tier-text-${tierData.tier}`}>
+                                                                {tierData.text || "비어있음"}
+                                                              </span>
+                                                              {/* 조회량·점수·순위 항상 표시 */}
+                                                              <Badge className={getVolumeColor(tierData.volume)} data-testid={`tier-volume-${tierData.tier}`}>
+                                                                조회량 {fmtVol(tierData.volume)}
+                                                              </Badge>
+                                                              <Badge className={getScoreColor(tierData.score || 0)} data-testid={`tier-score-${tierData.tier}`}>
+                                                                점수 {tierData.score || 0}pts
+                                                              </Badge>
+                                                              <Badge className={getRankColor(tierData.rank)} data-testid={`tier-rank-${tierData.tier}`}>
+                                                                순위 {fmtRank(tierData.rank)}
+                                                              </Badge>
                                                             </div>
                                                           </div>
                                                         ))}
