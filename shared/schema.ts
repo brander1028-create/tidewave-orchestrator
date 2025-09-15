@@ -366,3 +366,16 @@ export const insertMetricSnapshotSchema = createInsertSchema(metricSnapshots).om
 export const insertReviewStateSchema = createInsertSchema(reviewState).omit({
   lastCheckedAt: true,
 });
+
+// Update Review State schema
+export const updateReviewStateSchema = z.object({
+  lastReviewId: z.string().optional(),
+});
+
+// Blog check API schema for v6 real-time scraping
+export const blogCheckSchema = z.object({
+  targetId: z.string().min(1, "Target ID는 필수입니다"),
+  query: z.string().min(1, "검색 키워드는 필수입니다"),
+  device: z.enum(['pc', 'mobile']).default('pc'),
+  maxPages: z.number().min(1).max(5).default(3),
+});

@@ -9,8 +9,11 @@ import {
   insertBlogTargetSchema,
   insertProductTargetSchema,
   insertRankSnapshotSchema,
-  insertMetricSnapshotSchema
+  insertMetricSnapshotSchema,
+  blogCheckSchema,
+  updateReviewStateSchema
 } from "@shared/schema";
+import { naverBlogScraper } from "./blog-scraper";
 import { z } from "zod";
 import { scrapingService } from "./scraping-service";
 
@@ -587,6 +590,90 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(reviewState);
     } catch (error) {
       res.status(500).json({ message: "리뷰 상태 수정에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v6-4: 실제 네이버 블로그 SERP 크롤링 API
+  app.post("/api/rank/blog/check", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = blogCheckSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 블로그 체크 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+
+      const { targetId, query, device, maxPages } = validation.data;
+
+      // 1. 대상 블로그 타겟이 해당 owner 소유인지 확인
+      const blogTarget = await storage.getBlogTargetById(owner, targetId);
+      if (!blogTarget) {
+        return res.status(404).json({ message: "블로그 타겟을 찾을 수 없거나 권한이 없습니다" });
+      }
+
+      console.log(`[BlogCheck] 시작: ${blogTarget.title} - "${query}" (${device})`);
+
+      // 2. 네이버 블로그 스크래핑 실행
+      const scrapingResult = await naverBlogScraper.scrapeNaverBlog({
+        query,
+        targetUrl: blogTarget.url,
+        device,
+        maxPages
+      });
+
+      if (!scrapingResult.success) {
+        return res.status(500).json({
+          success: false,
+          message: "블로그 크롤링에 실패했습니다",
+          error: scrapingResult.error
+        });
+      }
+
+      // 3. 결과를 rank_snapshots 테이블에 저장 (owner-aware)
+      const snapshotData = {
+        targetId,
+        kind: 'blog' as const,
+        query,
+        rank: scrapingResult.data?.rank || null,
+        page: scrapingResult.data?.page || 1,
+        position: scrapingResult.data?.position || null,
+        device,
+        source: 'naver_blog_scraper',
+        metadata: {
+          title: scrapingResult.data?.title || '',
+          url: scrapingResult.data?.url || '',
+          snippet: scrapingResult.data?.snippet || '',
+          date: scrapingResult.data?.date || '',
+          ...scrapingResult.data?.metadata
+        }
+      };
+
+      const snapshot = await storage.insertRankSnapshot(owner, snapshotData);
+
+      console.log(`[BlogCheck] 완료: ${blogTarget.title} - 순위 ${snapshotData.rank} 저장됨`);
+
+      res.json({
+        success: true,
+        data: {
+          snapshot,
+          scrapingResult: scrapingResult.data
+        },
+        message: `"${query}" 키워드에서 ${blogTarget.title} 블로그 순위 체크 완료`
+      });
+
+    } catch (error) {
+      console.error('[BlogCheck] 오류:', error);
+      res.status(500).json({ 
+        success: false,
+        message: "블로그 순위 체크에 실패했습니다", 
+        error: String(error) 
+      });
     }
   });
 
