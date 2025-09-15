@@ -47,6 +47,12 @@ export interface IStorage {
   updateSetting(key: string, value: any): Promise<Settings>;
   getSetting(key: string): Promise<Settings | undefined>;
   
+  // Manual Blog Entries
+  getManualBlogEntries(): Promise<ManualBlogEntry[]>;
+  createManualBlogEntry(data: InsertManualBlogEntry): Promise<ManualBlogEntry>;
+  updateManualBlogEntry(id: string, updates: Partial<ManualBlogEntry>): Promise<ManualBlogEntry>;
+  deleteManualBlogEntry(id: string): Promise<void>;
+  
   // Analytics
   getKPIData(period?: string): Promise<any>;
   getRankDistribution(): Promise<any>;
@@ -391,6 +397,39 @@ export class DatabaseStorage implements IStorage {
       }
     }
   }
+
+  // Manual Blog Entries Implementation
+  async getManualBlogEntries(): Promise<ManualBlogEntry[]> {
+    return await db.select()
+      .from(manualBlogEntries)
+      .where(eq(manualBlogEntries.isActive, true))
+      .orderBy(desc(manualBlogEntries.submittedAt));
+  }
+
+  async createManualBlogEntry(data: InsertManualBlogEntry): Promise<ManualBlogEntry> {
+    const [created] = await db.insert(manualBlogEntries)
+      .values(data)
+      .returning();
+    return created;
+  }
+
+  async updateManualBlogEntry(id: string, updates: Partial<ManualBlogEntry>): Promise<ManualBlogEntry> {
+    const [updated] = await db.update(manualBlogEntries)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(manualBlogEntries.id, id))
+      .returning();
+    if (!updated) {
+      throw new Error(`Manual blog entry not found: ${id}`);
+    }
+    return updated;
+  }
+
+  async deleteManualBlogEntry(id: string): Promise<void> {
+    // Soft delete by setting isActive to false
+    await db.update(manualBlogEntries)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(manualBlogEntries.id, id));
+  }
 }
 
 export class MemStorage implements IStorage {
@@ -402,6 +441,7 @@ export class MemStorage implements IStorage {
   private settings: Map<string, Settings>;
   private reviewMetrics: Map<string, MetricTimeSeries>;
   private exportJobs: Map<string, any>;
+  private manualBlogEntries: Map<string, ManualBlogEntry>;
 
   constructor() {
     this.rankSeries = new Map();
@@ -412,6 +452,7 @@ export class MemStorage implements IStorage {
     this.settings = new Map();
     this.reviewMetrics = new Map();
     this.exportJobs = new Map();
+    this.manualBlogEntries = new Map();
     this.initializeMockData();
   }
 
@@ -1291,6 +1332,48 @@ export class MemStorage implements IStorage {
       data: job.data || 'No data available',
       mimeType: mimeTypes[job.format] || 'text/plain'
     };
+  }
+
+  // Manual Blog Entries Implementation
+  async getManualBlogEntries(): Promise<ManualBlogEntry[]> {
+    return Array.from(this.manualBlogEntries.values())
+      .filter(entry => entry.isActive)
+      .sort((a, b) => b.submittedAt.getTime() - a.submittedAt.getTime());
+  }
+
+  async createManualBlogEntry(data: InsertManualBlogEntry): Promise<ManualBlogEntry> {
+    const id = randomUUID();
+    const now = new Date();
+    const entry: ManualBlogEntry = {
+      id,
+      ...data,
+      rank: data.rank ?? null,
+      submittedAt: now,
+      updatedAt: now,
+      isActive: true,
+    };
+    this.manualBlogEntries.set(id, entry);
+    return entry;
+  }
+
+  async updateManualBlogEntry(id: string, updates: Partial<ManualBlogEntry>): Promise<ManualBlogEntry> {
+    const entry = this.manualBlogEntries.get(id);
+    if (!entry) {
+      throw new Error(`Manual blog entry not found: ${id}`);
+    }
+    const updated = { ...entry, ...updates, updatedAt: new Date() };
+    this.manualBlogEntries.set(id, updated);
+    return updated;
+  }
+
+  async deleteManualBlogEntry(id: string): Promise<void> {
+    const entry = this.manualBlogEntries.get(id);
+    if (!entry) {
+      throw new Error(`Manual blog entry not found: ${id}`);
+    }
+    // Soft delete by setting isActive to false
+    const updated = { ...entry, isActive: false, updatedAt: new Date() };
+    this.manualBlogEntries.set(id, updated);
   }
 }
 

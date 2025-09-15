@@ -66,23 +66,25 @@ type AddManualBlogForm = z.infer<typeof addManualBlogSchema>;
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
-  const [isAddTargetOpen, setIsAddTargetOpen] = React.useState(false);
+  const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
   const queryClient = useQueryClient();
   
   // Fetch tracked targets from API
-  const { data: trackedTargets = [], isLoading: targetsLoading } = useQuery({
+  const { data: trackedTargets = [], isLoading: targetsLoading } = useQuery<TrackedTarget[]>({
     queryKey: ['/api/tracked-targets'],
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
   
   // Form for adding new targets
-  const form = useForm<AddTargetForm>({
-    resolver: zodResolver(addTargetSchema),
+  const form = useForm<AddManualBlogForm>({
+    resolver: zodResolver(addManualBlogSchema),
     defaultValues: {
-      query: "",
-      kind: "blog",
-      device: "mobile",
-      owner: "admin",
+      keyword: "",
+      url: "",
+      title: "",
+      rank: undefined,
+      notes: "",
+      submittedBy: "admin",
     },
   });
   
@@ -325,7 +327,7 @@ export default function Rank() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <Button 
-                  onClick={() => setIsAddTargetOpen(true)}
+                  onClick={() => setIsAddBlogOpen(true)}
                   size="sm"
                   className="w-full"
                   data-testid="button-add-target"
@@ -679,25 +681,25 @@ export default function Rank() {
         </DialogContent>
       </Dialog>
 
-      {/* Add Target Dialog */}
-      <Dialog open={isAddTargetOpen} onOpenChange={setIsAddTargetOpen}>
+      {/* Add Manual Blog Entry Dialog */}
+      <Dialog open={isAddBlogOpen} onOpenChange={setIsAddBlogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>새 키워드 추가</DialogTitle>
+            <DialogTitle>수동 블로그 입력</DialogTitle>
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               <FormField
                 control={form.control}
-                name="query"
+                name="keyword"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>키워드</FormLabel>
                     <FormControl>
                       <Input 
-                        placeholder="모니터링할 키워드를 입력하세요" 
+                        placeholder="키워드를 입력하세요" 
                         {...field}
-                        data-testid="input-target-query"
+                        data-testid="input-keyword"
                       />
                     </FormControl>
                     <FormMessage />
@@ -707,21 +709,17 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="kind"
+                name="url"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>타입</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-target-kind">
-                          <SelectValue placeholder="타입을 선택하세요" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="blog">블로그 순위</SelectItem>
-                        <SelectItem value="shop">쇼핑몰 순위</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <FormLabel>블로그 URL</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="https://blog.naver.com/..." 
+                        {...field}
+                        data-testid="input-url"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -729,21 +727,55 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="device"
+                name="title"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>디바이스</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-target-device">
-                          <SelectValue placeholder="디바이스를 선택하세요" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="mobile">모바일</SelectItem>
-                        <SelectItem value="pc">PC</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <FormLabel>블로그 제목</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="블로그 제목을 입력하세요" 
+                        {...field}
+                        data-testid="input-title"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={form.control}
+                name="rank"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>순위 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        type="number" 
+                        placeholder="1-100" 
+                        {...field}
+                        onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
+                        data-testid="input-rank"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={form.control}
+                name="notes"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>특이사항 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="참고 사항을 입력하세요" 
+                        {...field}
+                        data-testid="input-notes"
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -753,7 +785,7 @@ export default function Rank() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setIsAddTargetOpen(false)}
+                  onClick={() => setIsAddBlogOpen(false)}
                   className="flex-1"
                   data-testid="button-cancel-target"
                 >
@@ -762,10 +794,10 @@ export default function Rank() {
                 <Button 
                   type="submit" 
                   className="flex-1"
-                  disabled={addTargetMutation.isPending}
+                  disabled={addBlogMutation.isPending}
                   data-testid="button-submit-target"
                 >
-                  {addTargetMutation.isPending ? "추가 중..." : "추가"}
+                  {addBlogMutation.isPending ? "추가 중..." : "추가"}
                 </Button>
               </div>
             </form>
