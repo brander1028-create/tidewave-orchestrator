@@ -21,7 +21,7 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
 import { nanoid } from 'nanoid';
-import { blogRegistry, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
+import { blogRegistry, discoveredBlogs, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
 import { eq, and, desc } from 'drizzle-orm';
 
 export async function registerRoutes(app: Express): Promise<Server> {
