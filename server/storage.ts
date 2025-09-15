@@ -1292,7 +1292,4 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new DatabaseStorage();
-
-// Initialize database defaults on startup
-storage.initializeDefaults().catch(console.error);
+export const storage = new MemStorage();

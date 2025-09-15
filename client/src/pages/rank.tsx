@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +11,9 @@ import { Switch } from "@/components/ui/switch";
 import { DataTable } from "@/components/ui/data-table";
 import { Sparkline } from "@/components/ui/sparkline";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
 import { RankTrendChart } from "@/components/charts/rank-trend-chart";
+import { toast } from "@/hooks/use-toast";
 import { 
   Search, 
   Settings, 
@@ -29,6 +32,11 @@ import {
   Minus
 } from "lucide-react";
 import { ColumnDef } from "@tanstack/react-table";
+import { targetsApi, scrapingApi, rankApi } from "@/lib/api";
+import type { TrackedTarget, InsertTrackedTarget } from "@shared/schema";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 
 interface RankingData {
   id: string;
@@ -43,76 +51,131 @@ interface RankingData {
   lastCheck: string;
 }
 
+// Form schema for adding keywords
+const addTargetSchema = z.object({
+  query: z.string().min(1, "키워드를 입력해주세요"),
+  kind: z.enum(["blog", "shop"], { required_error: "타입을 선택해주세요" }),
+  device: z.enum(["mobile", "pc"], { required_error: "디바이스를 선택해주세요" }),
+  owner: z.string().default("admin"),
+});
+
+type AddTargetForm = z.infer<typeof addTargetSchema>;
+
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
-  const [keywords, setKeywords] = React.useState(["홍삼", "홍삼스틱", "홍삼 효능"]);
-  const [newKeyword, setNewKeyword] = React.useState("");
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
-
-  // Function to generate ranking data based on current keywords
-  const generateRankingData = (keywordList: string[]): RankingData[] => {
-    return keywordList.map((keyword, index) => {
-      const baseRank = [8, 15, 12, 20, 7, 25, 11][index] || Math.floor(Math.random() * 30) + 1;
-      const baseChange = [3, -7, 0, -5, 8, -2, 1][index] || Math.floor(Math.random() * 21) - 10;
-      const statuses: ("active" | "warning" | "error")[] = ["active", "warning", "active"];
-      
-      return {
-        id: (index + 1).toString(),
-        keyword,
-        rank: baseRank,
-        change: baseChange,
-        page: Math.floor((baseRank - 1) / 10) + 1,
-        position: ((baseRank - 1) % 10) + 1,
-        url: `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
-        trend: Array.from({ length: 10 }, () => Math.floor(Math.random() * 30) + 1),
-        status: statuses[index] || "active",
-        lastCheck: index === 0 ? "2분 전" : index === 1 ? "5분 전" : "1분 전"
+  const [isAddTargetOpen, setIsAddTargetOpen] = React.useState(false);
+  const queryClient = useQueryClient();
+  
+  // Fetch tracked targets from API
+  const { data: trackedTargets = [], isLoading: targetsLoading } = useQuery({
+    queryKey: ['/api/tracked-targets'],
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+  
+  // Form for adding new targets
+  const form = useForm<AddTargetForm>({
+    resolver: zodResolver(addTargetSchema),
+    defaultValues: {
+      query: "",
+      kind: "blog",
+      device: "mobile",
+      owner: "admin",
+    },
+  });
+  
+  // Add target mutation
+  const addTargetMutation = useMutation({
+    mutationFn: async (data: AddTargetForm) => {
+      const targetData: InsertTrackedTarget = {
+        ...data,
+        windowMin: 1,
+        windowMax: 10,
+        thresholds: { warning: 15, critical: 25 },
+        schedule: "1h",
+        enabled: true,
+        tags: [],
       };
-    });
+      return await targetsApi.create(targetData);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
+      form.reset();
+      setIsAddTargetOpen(false);
+      toast({
+        title: "키워드 추가 완료",
+        description: "새 키워드 추적이 시작되었습니다.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "추가 실패",
+        description: "키워드 추가 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
+  
+  // Delete target mutation
+  const deleteTargetMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await targetsApi.remove(id);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
+      toast({
+        title: "키워드 삭제 완료",
+        description: "키워드 추적이 중단되었습니다.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "삭제 실패",
+        description: "키워드 삭제 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Convert tracked targets to ranking data
+  const convertTargetsToRankingData = (targets: TrackedTarget[]): RankingData[] => {
+    return targets
+      .filter(target => target.kind === selectedTab)
+      .map((target, index) => {
+        // Use stable data based on target ID to avoid re-rendering
+        const idNum = parseInt(target.id?.slice(-1) || '0') || index;
+        const baseRank = [8, 15, 12, 20, 7, 25, 11][idNum % 7] || (idNum % 30) + 1;
+        const baseChange = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
+        
+        return {
+          id: target.id || (index + 1).toString(),
+          keyword: target.query || `키워드 ${index + 1}`,
+          rank: baseRank,
+          change: baseChange,
+          page: Math.floor((baseRank - 1) / 10) + 1,
+          position: ((baseRank - 1) % 10) + 1,
+          url: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
+          trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
+          status: target.enabled ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
+          lastCheck: "5분 전"
+        };
+      });
   };
 
-  // Generate dynamic ranking data based on current keywords
-  const currentRankingData = generateRankingData(keywords);
+  // Current ranking data based on tracked targets
+  const currentRankingData = convertTargetsToRankingData(trackedTargets);
 
-  // Static mock data for reference (now unused)
-  const staticMockData: RankingData[] = [
-    {
-      id: "1",
-      keyword: "홍삼",
-      rank: 8,
-      change: 3,
-      page: 1,
-      position: 8,
-      url: "blog.naver.com/user123/post456",
-      trend: [5, 8, 6, 9, 12, 15, 18, 16, 19, 22],
-      status: "active",
-      lastCheck: "2분 전"
-    },
-    {
-      id: "2", 
-      keyword: "홍삼스틱",
-      rank: 15,
-      change: -7,
-      page: 2,
-      position: 5,
-      url: "blog.naver.com/healthstore/789",
-      trend: [22, 19, 21, 18, 15, 12, 9, 11, 8, 5],
-      status: "warning",
-      lastCheck: "5분 전"
-    },
-    {
-      id: "3",
-      keyword: "홍삼 효능", 
-      rank: 12,
-      change: 0,
-      page: 2,
-      position: 2,
-      url: "blog.naver.com/wellness/112",
-      trend: [12, 13, 11, 12, 14, 12, 13, 11, 12, 13],
-      status: "active",
-      lastCheck: "1분 전"
+  // Handle form submission
+  const onSubmit = (data: AddTargetForm) => {
+    addTargetMutation.mutate(data);
+  };
+  
+  // Handle target deletion
+  const handleDeleteTarget = (targetId: string) => {
+    if (confirm("정말로 이 키워드 추적을 중단하시겠습니까?")) {
+      deleteTargetMutation.mutate(targetId);
     }
-  ];
+  };
 
   const columns: ColumnDef<RankingData>[] = [
     {
@@ -232,16 +295,7 @@ export default function Rank() {
     },
   ];
 
-  const addKeyword = () => {
-    if (newKeyword.trim() && !keywords.includes(newKeyword.trim())) {
-      setKeywords([...keywords, newKeyword.trim()]);
-      setNewKeyword("");
-    }
-  };
-
-  const removeKeyword = (keyword: string) => {
-    setKeywords(keywords.filter(k => k !== keyword));
-  };
+  // These functions are now handled by mutations above
 
   const detailTrendData = selectedRankingDetail ? Array.from({ length: 30 }, (_, i) => {
     const date = new Date();
@@ -276,38 +330,31 @@ export default function Rank() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="키워드 입력..."
-                    value={newKeyword}
-                    onChange={(e) => setNewKeyword(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && addKeyword()}
-                    className="flex-1"
-                    data-testid="input-keyword"
-                  />
-                  <Button 
-                    onClick={addKeyword} 
-                    size="sm"
-                    data-testid="button-add-keyword"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </Button>
-                </div>
+                <Button 
+                  onClick={() => setIsAddTargetOpen(true)}
+                  size="sm"
+                  className="w-full"
+                  data-testid="button-add-target"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  키워드 추가
+                </Button>
                 
                 <div className="flex flex-wrap gap-2 max-h-20 overflow-y-auto custom-scrollbar">
-                  {keywords.map((keyword, index) => (
+                  {currentRankingData.map((item) => (
                     <Badge 
-                      key={index} 
+                      key={item.id} 
                       variant="secondary" 
                       className="flex items-center gap-1"
                     >
-                      {keyword}
+                      {item.keyword}
                       <Button
                         variant="ghost"
                         size="sm"
                         className="h-4 w-4 p-0 hover:text-destructive"
-                        onClick={() => removeKeyword(keyword)}
-                        data-testid={`button-remove-keyword-${index}`}
+                        onClick={() => handleDeleteTarget(item.id)}
+                        data-testid={`button-remove-keyword-${item.id}`}
+                        disabled={deleteTargetMutation.isPending}
                       >
                         <X className="h-3 w-3" />
                       </Button>
@@ -635,6 +682,100 @@ export default function Rank() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Target Dialog */}
+      <Dialog open={isAddTargetOpen} onOpenChange={setIsAddTargetOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>새 키워드 추가</DialogTitle>
+          </DialogHeader>
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              <FormField
+                control={form.control}
+                name="query"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>키워드</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="모니터링할 키워드를 입력하세요" 
+                        {...field}
+                        data-testid="input-target-query"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={form.control}
+                name="kind"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>타입</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl>
+                        <SelectTrigger data-testid="select-target-kind">
+                          <SelectValue placeholder="타입을 선택하세요" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="blog">블로그 순위</SelectItem>
+                        <SelectItem value="shop">쇼핑몰 순위</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={form.control}
+                name="device"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>디바이스</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl>
+                        <SelectTrigger data-testid="select-target-device">
+                          <SelectValue placeholder="디바이스를 선택하세요" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="mobile">모바일</SelectItem>
+                        <SelectItem value="pc">PC</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <div className="flex gap-2 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsAddTargetOpen(false)}
+                  className="flex-1"
+                  data-testid="button-cancel-target"
+                >
+                  취소
+                </Button>
+                <Button 
+                  type="submit" 
+                  className="flex-1"
+                  disabled={addTargetMutation.isPending}
+                  data-testid="button-submit-target"
+                >
+                  {addTargetMutation.isPending ? "추가 중..." : "추가"}
+                </Button>
+              </div>
+            </form>
+          </Form>
         </DialogContent>
       </Dialog>
     </div>

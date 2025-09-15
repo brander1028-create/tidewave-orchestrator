@@ -229,20 +229,4 @@ export const insertSettingsSchema = createInsertSchema(settings).omit({
   updatedAt: true,
 });
 
-// Types
-export type RankTimeSeries = typeof rankTimeSeries.$inferSelect;
-export type InsertRankTimeSeries = z.infer<typeof insertRankTimeSeriesSchema>;
-
-export type RankAggregated = typeof rankAggregated.$inferSelect;
-export type MetricTimeSeries = typeof metricTimeSeries.$inferSelect;
-export type Event = typeof events.$inferSelect;
-export type Alert = typeof alerts.$inferSelect;
-
-export type Submission = typeof submissions.$inferSelect;
-export type InsertSubmission = z.infer<typeof insertSubmissionSchema>;
-
-export type TrackedTarget = typeof trackedTargets.$inferSelect;
-export type InsertTrackedTarget = z.infer<typeof insertTrackedTargetSchema>;
-
-export type Settings = typeof settings.$inferSelect;
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;

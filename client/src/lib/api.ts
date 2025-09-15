@@ -142,44 +142,44 @@ export const submissionsApi = {
   }
 };
 
-// Tracked targets API
+// Tracked targets API (Real endpoints)
 export const targetsApi = {
   // Get all tracked targets
   getAll: async (owner?: string): Promise<TrackedTarget[]> => {
     const params = owner ? `?owner=${owner}` : '';
-    const response = await apiRequest("GET", `/api/mock/targets${params}`);
+    const response = await apiRequest("GET", `/api/tracked-targets${params}`);
     return response.json();
   },
 
   // Create new tracked target
   create: async (target: InsertTrackedTarget): Promise<TrackedTarget> => {
-    const response = await apiRequest("POST", "/api/mock/targets", target);
+    const response = await apiRequest("POST", "/api/tracked-targets", target);
     return response.json();
   },
 
   // Delete tracked target
   remove: async (id: string): Promise<void> => {
-    await apiRequest("DELETE", `/api/mock/targets/${id}`);
+    await apiRequest("DELETE", `/api/tracked-targets/${id}`);
   },
 
   // Update tracked target
   update: async (id: string, updates: Partial<TrackedTarget>): Promise<TrackedTarget> => {
-    const response = await apiRequest("PATCH", `/api/mock/targets/${id}`, updates);
+    const response = await apiRequest("PATCH", `/api/tracked-targets/${id}`, updates);
     return response.json();
   }
 };
 
-// Settings API
+// Settings API (Real endpoints)
 export const settingsApi = {
   // Get all settings
   getAll: async (): Promise<Settings[]> => {
-    const response = await apiRequest("GET", "/api/mock/settings");
+    const response = await apiRequest("GET", "/api/settings");
     return response.json();
   },
 
   // Update specific setting
   update: async (key: string, value: any): Promise<Settings> => {
-    const response = await apiRequest("POST", "/api/mock/settings", { key, value });
+    const response = await apiRequest("POST", "/api/settings", { key, value });
     return response.json();
   },
 

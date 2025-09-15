@@ -20,6 +20,124 @@ const batchScrapingSchema = z.object({
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Real CRUD API routes for user data management
+  
+  // Tracked Targets API
+  app.get("/api/tracked-targets", async (req, res) => {
+    try {
+      const { owner } = req.query;
+      const targets = await storage.getTrackedTargets(owner as string);
+      res.json(targets);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch tracked targets", error: String(error) });
+    }
+  });
+
+  app.post("/api/tracked-targets", async (req, res) => {
+    try {
+      const validation = insertTrackedTargetSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "Invalid target data",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.createTrackedTarget(validation.data);
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create target", error: String(error) });
+    }
+  });
+
+  app.patch("/api/tracked-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const target = await storage.updateTrackedTarget(id, req.body);
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update target", error: String(error) });
+    }
+  });
+
+  app.delete("/api/tracked-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteTrackedTarget(id);
+      res.json({ message: "Target deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete target", error: String(error) });
+    }
+  });
+
+  // Settings API  
+  app.get("/api/settings", async (req, res) => {
+    try {
+      const settings = await storage.getSettings();
+      res.json(settings);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch settings", error: String(error) });
+    }
+  });
+
+  app.post("/api/settings", async (req, res) => {
+    try {
+      const { key, value } = req.body;
+      if (!key || value === undefined) {
+        return res.status(400).json({ message: "key and value are required" });
+      }
+      
+      const setting = await storage.updateSetting(key, value);
+      res.json(setting);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update setting", error: String(error) });
+    }
+  });
+
+  // Submissions API
+  app.get("/api/submissions", async (req, res) => {
+    try {
+      const { status } = req.query;
+      const submissions = await storage.getSubmissions(status as string);
+      res.json(submissions);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch submissions", error: String(error) });
+    }
+  });
+
+  app.post("/api/submissions", async (req, res) => {
+    try {
+      const validation = insertSubmissionSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "Invalid submission data",
+          errors: validation.error.errors
+        });
+      }
+      
+      const submission = await storage.createSubmission(validation.data);
+      res.json(submission);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create submission", error: String(error) });
+    }
+  });
+
+  app.patch("/api/submissions/:id/:action", async (req, res) => {
+    try {
+      const { id, action } = req.params;
+      const { comment } = req.body;
+      
+      if (action !== 'approve' && action !== 'reject') {
+        return res.status(400).json({ message: "Invalid action. Use approve or reject" });
+      }
+      
+      const submission = await storage.updateSubmissionStatus(id, action === 'approve' ? 'approved' : 'rejected', comment);
+      res.json(submission);
+    } catch (error) {
+      res.status(500).json({ message: `Failed to ${req.params.action} submission`, error: String(error) });
+    }
+  });
+
   // Real-time web scraping API routes
   
   // Health check for scraping service
