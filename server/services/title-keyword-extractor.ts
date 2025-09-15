@@ -61,6 +61,16 @@ export class TitleKeywordExtractor {
   }
 
   /**
+   * ✅ DB·API 조회용 변형 후보 생성 (표면형 + 공백제거형)
+   */
+  private variants(surface: string): string[] {
+    const s1 = surface.trim();                   // 원문
+    const s2 = s1.replace(/\s+/g, '');           // 공백제거형
+    const s3 = s1.replace(/\s+/g, '-');          // 하이픈형(보조)
+    return Array.from(new Set([s1, s2, s3]));
+  }
+
+  /**
    * Canonicalize 함수 - 키워드 정규화 및 그룹화
    */
   private canonicalize(keyword: string): string {
@@ -78,6 +88,39 @@ export class TitleKeywordExtractor {
   }
 
   /**
+   * ✅ 조사 꼬리 제거 함수
+   */
+  private cleanToken(token: string): string {
+    const STOP_TAIL = /(은|는|이|가|을|를|으로|로|에|에서|와|과|도|만|까지|부터)$/;
+    return token.replace(STOP_TAIL, '');
+  }
+
+  /**
+   * ✅ 품질 개선된 n-gram 생성 (조사/불용어 제거 + 길이 제한)
+   */
+  private generateNgrams(title: string): string[] {
+    // 1) 한글/숫자/영문만 남기고 조각
+    const tokens = title
+      .replace(/[^\uac00-\ud7a3a-zA-Z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .map(t => this.cleanToken(t))
+      .filter(t => t && !this.stopWords.has(t));
+
+    // 2) 1~3그램 생성하되, 평균 길이 2~12자 범위만 채택
+    const grams: string[] = [];
+    for (let n = 1; n <= 3; n++) {
+      for (let i = 0; i + n <= tokens.length; i++) {
+        const gram = tokens.slice(i, i + n).join(' ');
+        const len = gram.replace(/\s+/g, '').length;
+        if (len >= 2 && len <= 12) {
+          grams.push(gram);
+        }
+      }
+    }
+    return Array.from(new Set(grams));
+  }
+
+  /**
    * ✅ 모든 제목에서 n-gram 후보 생성 (필터링 금지)
    */
   private extractCandidates(titles: string[]): Map<string, { originalText: string; frequency: number }> {
@@ -86,32 +129,25 @@ export class TitleKeywordExtractor {
     
     // ✅ 모든 제목 사용 (필터링 금지)
     for (const title of titles) {
-      // ✅ 원문 단어 분리 (정규화 전) 
-      const originalWords = title.replace(/[^\uac00-\ud7a3a-zA-Z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter(word => word.length >= 2 && !this.stopWords.has(word) && !/^\d+$/.test(word));
+      const ngrams = this.generateNgrams(title);
       
-      // 1-gram, 2-gram, 3-gram 추출
-      for (let n = 1; n <= 3; n++) {
-        for (let i = 0; i <= originalWords.length - n; i++) {
-          const originalNgram = originalWords.slice(i, i + n).join(' ');
-          if (originalNgram.length >= 2) {
-            // ✅ 동치키로 중복 제거, 원문은 가장 많이 등장한 것 우선
-            const normalizedKey = this.normalizeText(originalNgram);
-            if (normalizedKey.length >= 2) {
-              const existing = candidateMap.get(normalizedKey);
-              if (!existing || existing.frequency < n) {
-                candidateMap.set(normalizedKey, {
-                  originalText: originalNgram,
-                  frequency: (existing?.frequency || 0) + n
-                });
-              } else {
-                candidateMap.set(normalizedKey, {
-                  ...existing,
-                  frequency: existing.frequency + n
-                });
-              }
-            }
+      for (const gram of ngrams) {
+        // ✅ 동치키로 중복 제거, 원문은 가장 많이 등장한 것 우선
+        const normalizedKey = this.normalizeText(gram);
+        if (normalizedKey.length >= 2) {
+          const existing = candidateMap.get(normalizedKey);
+          const frequency = (existing?.frequency || 0) + 1;
+          
+          if (!existing || existing.frequency < frequency) {
+            candidateMap.set(normalizedKey, {
+              originalText: gram,
+              frequency: frequency
+            });
+          } else {
+            candidateMap.set(normalizedKey, {
+              ...existing,
+              frequency: frequency
+            });
           }
         }
       }
@@ -142,27 +178,53 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * 스코어 계산 함수
+   * ✅ 콘텐츠 기반 점수 계산 (빈도, 위치, 길이)
    */
-  private calculateScores(rawVolume: number, baseScore: number): { volume_score: number; combined_score: number } {
+  private contentScore(content: { freq: number; avgPos: number; len: number }): number {
+    // freq: 제목 10개 중 등장 횟수(0~10) → 0~100
+    const sFreq = (content.freq / 10) * 100;
+    // avgPos: 제목 내 위치(1=좋음) → 0~100로 역산
+    const sPos = Math.max(0, 100 - (content.avgPos - 1) * 20);
+    // 길이 패널티(가독성): 2~12자 사이 가산
+    const sLen = (content.len >= 2 && content.len <= 12) ? 100 : 60;
+    return Math.round(0.5 * sFreq + 0.3 * sPos + 0.2 * sLen); // 0~100
+  }
+
+  /**
+   * ✅ 총 점수 계산 (70% 볼륨 + 30% 콘텐츠)
+   */
+  private totalScore(volume: number, content: number): number {
+    const vol100 = Math.min(100, Math.log10(Math.max(1, volume)) * 25); // 0~100 근사
+    return Math.round(0.7 * vol100 + 0.3 * content); // 0~100
+  }
+
+  /**
+   * 스코어 계산 함수 (개선된 버전) - 70/30 비율 정정
+   */
+  private calculateScores(rawVolume: number, frequency: number, avgPos: number = 1, len: number = 5): { volume_score: number; combined_score: number } {
     // volume_score(0~100) = clamp01(log10(max(1, raw_volume)) / 5) * 100
     const volume_score = Math.min(100, Math.max(0, (Math.log10(Math.max(1, rawVolume)) / 5) * 100));
     
-    // combined_score = round(0.7 * volume_score + 0.3 * score)
-    const combined_score = Math.round(0.7 * volume_score + 0.3 * baseScore);
+    // 콘텐츠 점수 계산 (빈도, 위치, 길이 기반)
+    const content_score = this.contentScore({ freq: frequency, avgPos, len });
+    
+    // ✅ 정정: 70% volume_score + 30% content_score (totalScore 대신 직접 계산)
+    const combined_score = Math.round(0.7 * volume_score + 0.3 * content_score);
     
     return { volume_score: Math.round(volume_score), combined_score };
   }
 
   /**
-   * ✅ DB에서 동치키 기준 메트릭 로드
+   * ✅ DB에서 동치키 기준 메트릭 로드 (향상된 variants 매칭)
    */
-  private async loadFromDB(normalizedKeys: string[]): Promise<Map<string, any>> {
+  private async loadFromDB(normalizedKeys: string[], candidateData?: Map<string, { originalText: string; frequency: number }>): Promise<Map<string, any>> {
     const dbKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
     const keywordMap = new Map();
     
     for (const keyword of dbKeywords) {
       const normalizedDbKey = this.normalizeText(keyword.text);
+      
+      // 기본 매칭
       if (normalizedKeys.includes(normalizedDbKey)) {
         keywordMap.set(normalizedDbKey, {
           original_text: keyword.text,
@@ -171,6 +233,22 @@ export class TitleKeywordExtractor {
           excluded: keyword.excluded || false,
           updated_at: keyword.updated_at
         });
+      }
+      
+      // ✅ 추가: variants 기반 매칭 (candidateData 있을 때만)
+      if (candidateData) {
+        for (const [candKey, candInfo] of Array.from(candidateData.entries())) {
+          const variants = this.variants(candInfo.originalText);
+          if (variants.includes(keyword.text) && !keywordMap.has(candKey)) {
+            keywordMap.set(candKey, {
+              original_text: keyword.text,
+              raw_volume: keyword.raw_volume || 0,
+              score: keyword.commerciality || 0,
+              excluded: keyword.excluded || false,
+              updated_at: keyword.updated_at
+            });
+          }
+        }
       }
     }
     
@@ -187,12 +265,19 @@ export class TitleKeywordExtractor {
       if (!dbData.excluded && dbData.raw_volume > 0) {
         const candidateInfo = candidateData.get(normalizedKey);
         if (candidateInfo) {
-          const { volume_score, combined_score } = this.calculateScores(dbData.raw_volume, dbData.score);
+          // ✅ 수정: frequency, avgPos, len을 올바르게 전달
+          const textLen = candidateInfo.originalText.replace(/\s+/g, '').length;
+          const { volume_score, combined_score } = this.calculateScores(
+            dbData.raw_volume, 
+            candidateInfo.frequency, // ✅ 올바른 frequency 전달
+            1, // avgPos 기본값 (향후 개선 가능)
+            textLen // 실제 텍스트 길이
+          );
           
           eligible.push({
             text: candidateInfo.originalText, // ✅ 원문 표시
             raw_volume: dbData.raw_volume,
-            score: dbData.score,
+            score: dbData.score, // commerciality는 별도 유지
             volume_score,
             combined_score,
             frequency: candidateInfo.frequency,
@@ -219,30 +304,43 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * API 갱신 조건 체크
+   * ✅ API 갱신 조건 체크 (DB 미스 시 강제 폴백)
    */
-  private async shouldRefreshAPI(candidates: string[], fromDB: Map<string, any>): Promise<boolean> {
+  private async shouldRefreshAPI(candidates: string[], fromDB: Map<string, any>): Promise<{ shouldRefresh: boolean; missingCandidates: string[] }> {
     // 조건 1: 후보 수 ≤ 50
-    if (candidates.length > this.MAX_CANDIDATES) return false;
+    if (candidates.length > this.MAX_CANDIDATES) {
+      return { shouldRefresh: false, missingCandidates: [] };
+    }
     
     // 조건 2: 예산 체크
     const budget = await getCallBudgetStatus();
     if (!budget || budget.dailyRemaining <= 0 || budget.perMinuteRemaining <= 0) {
-      return false;
+      return { shouldRefresh: false, missingCandidates: [] };
     }
     
-    // 조건 3: TTL 체크 (30일 지난 키워드만 갱신 대상)
+    // ✅ 조건 3: DB 미스 우선 + TTL 체크
     const now = new Date();
     const ttlThreshold = new Date(now.getTime() - this.TTL_DAYS * 24 * 60 * 60 * 1000);
     
-    const needsRefresh = candidates.some(candidate => {
-      const dbData = fromDB.get(candidate);
-      if (!dbData) return true; // DB에 없으면 갱신 필요
-      if (!dbData.updated_at) return true; // 업데이트 시간 없으면 갱신 필요
-      return new Date(dbData.updated_at) < ttlThreshold; // TTL 지났으면 갱신 필요
-    });
+    const missingCandidates: string[] = [];
+    const expiredCandidates: string[] = [];
     
-    return needsRefresh;
+    for (const candidate of candidates) {
+      const dbData = fromDB.get(candidate);
+      if (!dbData) {
+        // DB에 없으면 즉시 API 조회 필요 (TTL 우회)
+        missingCandidates.push(candidate);
+      } else if (!dbData.updated_at || new Date(dbData.updated_at) < ttlThreshold) {
+        // TTL 지난 경우 갱신 대상
+        expiredCandidates.push(candidate);
+      }
+    }
+    
+    const shouldRefresh = missingCandidates.length > 0 || expiredCandidates.length > 0;
+    return { 
+      shouldRefresh, 
+      missingCandidates: [...missingCandidates, ...expiredCandidates] 
+    };
   }
 
   /**
@@ -289,8 +387,8 @@ export class TitleKeywordExtractor {
     
     console.log(`📊 Extracted ${normalizedKeys.length} candidates: ${Array.from(candidateData.values()).slice(0, 5).map(c => c.originalText).join(', ')}...`);
     
-    // ✅ B. DB 우선 선별 (조회량 기준)
-    const fromDB = await this.loadFromDB(normalizedKeys);
+    // ✅ B. DB 우선 선별 (조회량 기준) - variants 매칭 포함
+    const fromDB = await this.loadFromDB(normalizedKeys, candidateData);
     const eligible = this.selectFromDB(fromDB, candidateData);
     stats.db_hits = eligible.length;
     
@@ -309,16 +407,28 @@ export class TitleKeywordExtractor {
       };
     }
     
-    // ✅ C. API 갱신 (TTL 체크)
-    const shouldRefresh = await this.shouldRefreshAPI(normalizedKeys, fromDB);
+    // ✅ C. API 갱신 (DB 미스 강제 + variants 조회)
+    const { shouldRefresh, missingCandidates } = await this.shouldRefreshAPI(normalizedKeys, fromDB);
     
     if (shouldRefresh) {
-      console.log(`🔄 API refresh mode: Updating ${normalizedKeys.length} candidates`);
+      console.log(`🔄 API refresh mode: Updating ${missingCandidates.length} candidates`);
       
       try {
-        // 원문 리스트로 API 호출
-        const originalTexts = normalizedKeys.map(key => candidateData.get(key)?.originalText).filter((text): text is string => Boolean(text));
-        const volumeResults = await getVolumes(originalTexts);
+        // ✅ variants 기반 API 조회: 표면형 + 공백제거형 모두 시도
+        const variantsToQuery: string[] = [];
+        for (const candidate of missingCandidates) {
+          const candidateInfo = candidateData.get(candidate);
+          if (candidateInfo) {
+            const variants = this.variants(candidateInfo.originalText);
+            variantsToQuery.push(...variants);
+          }
+        }
+        
+        // 중복 제거 후 API 호출
+        const uniqueVariants = Array.from(new Set(variantsToQuery));
+        console.log(`📡 API querying ${uniqueVariants.length} variants for ${missingCandidates.length} candidates`);
+        
+        const volumeResults = await getVolumes(uniqueVariants);
         
         // ✅ 조건 제거: 모든 키워드 저장
         const toSave = [];
@@ -343,8 +453,8 @@ export class TitleKeywordExtractor {
         
         stats.api_refreshed = Object.keys(volumeResults.volumes).length;
         
-        // ✅ D. 갱신 후 재선별
-        const reloadedFromDB = await this.loadFromDB(normalizedKeys);
+        // ✅ D. 갱신 후 재선별 - variants 매칭 포함
+        const reloadedFromDB = await this.loadFromDB(normalizedKeys, candidateData);
         const eligible2 = this.selectFromDB(reloadedFromDB, candidateData);
         
         if (eligible2.length > 0) {

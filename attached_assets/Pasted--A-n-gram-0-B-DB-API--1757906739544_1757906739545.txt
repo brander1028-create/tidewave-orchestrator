@@ -1,0 +1,174 @@
+한줄 결론: 화면이 저렇게 나온 건 (A) n-gram/정규화 버그로 ‘공백 없는 문자열’을 볼륨 조회에 써서 0이 찍힘 + (B) DB-우선이지만 API 폴백이 꺼져(또는 막혀) “미적용/0”이 유지 + (C) 조사가 섞인 구문을 그대로 후보로 올려 품질 하락 + (D) 종합점수 계산이 상수(21pts)처럼 굳어 Top4가 엉킴 — 이 네 가지가 동시에 겹친 결과입니다.
+
+원인 진단(스크린샷 대응)
+
+0 볼륨 & “미적용” 뱃지: DB에서 못 찾았는데 API 폴백이 비활성(또는 429 후 단락)되어 그대로 0 유지.
+
+어색한 문구(“…부작용은”, “키크는…”, “생일 10명돌잔치…”): 한국어 조사/불용어 포함 2~3그램을 그대로 사용. SearchAds는 이런 구문을 잘 매치 못 함.
+
+“DB 전용” 뱃지 한 곳만 정상(유모차 39,840): 우연히 DB 캐시에 존재하는 표면형(띄어쓰기 있는 형태)을 집었을 때만 정상 볼륨 노출.
+
+모두 21pts: 종합점수 산식이 상수로 남았거나 빈 값 분기에서 기본값(=21)만 반영.
+
+
+
+---
+
+바로 잡는 방법(“업데이트만”, 새 파일/스키마 금지)
+
+1) 키워드 조회 파이프라인 고정(핵심)
+
+DB 미스 → API 폴백 강제 → DB upsert → 같은 요청 안에서 재스코어
+
+// title-keyword-extractor.ts
+const norm = (s:string)=>
+  s.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g,'').trim();
+
+function variants(surface:string){             // DB·API 조회용 후보
+  const s1 = surface.trim();                   // 원문
+  const s2 = s1.replace(/\s+/g,'');           // 공백제거형
+  const s3 = s1.replace(/\s+/g,'-');          // 하이픈형(보조)
+  return Array.from(new Set([s1,s2,s3]));
+}
+
+// searchads.ts (혹은 호출부)
+async function getVolume(surface:string){
+  const nrm = norm(surface);
+  const cands = variants(surface);
+
+  // 1) DB 우선 탐색(표면형 매칭 우선, 없으면 nrm)
+  const hit = await keywordsRepo.findFirstBySurfacesOrNrm(cands, nrm, {ttlDays:30});
+  if (hit) return hit.volume;
+
+  // 2) API 폴백(필수): 청크 호출 + 429 백오프
+  const apiRes = await searchAds.bulk(cands);              // 400 분할, retry-after 준수
+  const best = pickBestByVolume(apiRes) ?? {surface, vol:0};
+
+  // 3) upsert(표면형/정규형 연결 저장)
+  await keywordsRepo.upsert({ nrm, surface: best.surface, volume: best.vol, ttlDays:30 });
+
+  return best.vol;
+}
+
+> 포인트: DB 조회는 “원문 & 공백제거형 둘 다” 시도, API는 둘 다 호출. 지금은 공백제거형만 건드려 0이 찍히는 것으로 보입니다.
+
+
+
+2) n-gram 후보 품질 개선(조사/불용어 제거 + 과도한 3그램 억제)
+
+const STOP_TAIL = /(은|는|이|가|을|를|으로|로|에|에서|와|과|도|만|까지|부터)$/;
+const STOP_WORDS = new Set(["업체","방법","후기","추천","정리","최고","가장","그","이","저","및"]); // 최소셋
+
+function cleanToken(t:string){
+  return t.replace(STOP_TAIL,'');
+}
+
+function generateNgrams(title:string){
+  // 1) 한글/숫자/영문만 남기고 조각
+  const toks = title
+    .replace(/[^\p{L}\p{N}\s]/gu,' ')
+    .split(/\s+/).map(cleanToken).filter(x=>x && !STOP_WORDS.has(x));
+
+  // 2) 1~3그램 생성하되, 평균 길이 2~12자 범위만 채택(너무 긴 구문 배제)
+  const grams:string[] = [];
+  for (let n=1;n<=3;n++){
+    for (let i=0;i+n<=toks.length;i++){
+      const g = toks.slice(i,i+n).join(' ');
+      const len = g.replace(/\s+/g,'').length;
+      if (len>=2 && len<=12) grams.push(g);
+    }
+  }
+  return Array.from(new Set(grams));
+}
+
+> “부작용은”, “키크는” 같은 꼬리 조사 제거로 후보가 정상화됩니다.
+
+
+
+3) 종합점수(30%)를 진짜 점수로 환산(상수 21 제거)
+
+// score.ts
+function contentScore(c:{freq:number, avgPos:number, len:number}){
+  // freq: 제목 10개 중 등장 횟수(0~10) → 0~100
+  const sFreq = (c.freq/10)*100;
+  // avgPos: 제목 내 위치(1=좋음) → 0~100로 역산
+  const sPos  = Math.max(0, 100 - (c.avgPos-1)*20);
+  // 길이 패널티(가독성): 2~12자 사이 가산
+  const sLen  = (c.len>=2 && c.len<=12) ? 100 : 60;
+  return Math.round(0.5*sFreq + 0.3*sPos + 0.2*sLen);      // 0~100
+}
+
+function totalScore(volume:number, content:number){
+  const vol100 = Math.min(100, Math.log10(Math.max(1,volume))*25); // 0~100 근사
+  return Math.round(0.7*vol100 + 0.3*content);                      // 0~100
+}
+
+> 지금은 빈 값 분기에서 “21pts” 같은 상수만 들어간 것으로 보입니다. 위처럼 가변 점수로 바꾸면 랭킹이 정상화됩니다.
+
+
+
+4) 결과 조립 & 라벨(필터링 금지, 라벨만)
+
+라벨만: meta.related = true/false (원 키워드 포함 여부).
+
+표시는 [관련X] 배지로, 저장은 그대로(스키마 변경 없음).
+
+
+results.keywords = top4.map(k => ({
+  text: k.surface, volume: k.volume, score: k.total,
+  meta: { related: isRelated(k.surface, originalKeywords) }
+}));
+
+5) 폴백 강제 & 단락 금지(429/400)
+
+429 수신 시 Retry-After 대기 후 반드시 재시도(최대 3회).
+
+일부 실패여도 partial results 반환 + counters.attempted/success 반영.
+
+“DB 전용/미적용” 뱃지는 디버그용으로만 유지(사용자 혼란 방지).
+
+
+
+---
+
+수용 기준(바로 체크할 항목)
+
+1. 같은 화면에서 0 볼륨이 대폭 감소(대부분 숫자 채워짐).
+
+
+2. “부작용은/가장/방법…” 같은 꼬리/불용어가 사라지고, 핵심 명사구 위주로 Top4 정리.
+
+
+3. “21pts”가 사라지고 키워드별 서로 다른 점수가 표시.
+
+
+4. DB 미스가 발생해도 같은 요청 안에서 API 폴백 후 Top4가 재계산.
+
+
+5. “DB 전용/미적용” 뱃지 없이도 이해 가능한 라벨만 남김(필요 시 내부 로그로 대체).
+
+
+
+
+---
+
+Replit에 보낼 짧은 지시(업데이트만)
+
+[수정요청 — Phase2 품질 정상화 / 재구축 금지]
+
+이상 현상 원인: ① 공백제거형으로만 볼륨 조회 → 0 다발, ② DB 미스 시 API 폴백 미동작(또는 429 단락), ③ 조사/불용어 포함 n-gram 후보로 품질 하락, ④ 종합점수 상수(21pts).
+
+필수 수정:
+- DB 조회·API 호출 모두 표면형+공백제거형을 함께 시도하고, DB 미스면 즉시 API 폴백→upsert→동일 요청에서 재스코어.
+- n-gram 생성 시 조사 꼬리 제거·불용어 필터·(2~12자) 길이 제한으로 후보 정제.
+- 종합점수 30%를 가변 산식으로 환산(빈 값 기본치 제거), 총점=0.7*볼륨+0.3*콘텐츠 점수.
+- 결과는 필터링 금지, meta.related 라벨만 부여. 스키마/엔드포인트/페이지 변경 금지.
+- 429는 Retry-After 준수(최대 3회), 부분 실패여도 partial results와 counters 반영.
+
+합격 기준:
+- Top4의 볼륨이 0 위주가 아님, 조사 꼬리/불용어 제거된 핵심 명사구 위주.
+- “21pts” 고정값 제거, 서로 다른 점수 노출.
+- 같은 요청에서 DB→API→DB업데이트→재계산이 관찰됨.
+
+원하시는 “조회량 높은 Top4”를 위해 핵심은 표면형+변형 동시 조회, API 폴백 강제, 후보 정제, 진짜 점수화 이 네 가지예요. 이대로 적용하면 지금 캡처처럼 “전부 0, 어색한 문구, 21pts 고정” 문제는 사라집니다.
+

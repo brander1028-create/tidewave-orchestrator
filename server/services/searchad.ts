@@ -108,9 +108,8 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
           'X-Signature': sig,
         };
         
-        // Phase 2: URL 인코딩 추가
-        const encodedKeywords = encodeURIComponent(batch.join(','));
-        const qs = new URLSearchParams({ hintKeywords: encodedKeywords, showDetail: '1' });
+        // ✅ 수정: URLSearchParams가 자동 인코딩하므로 이중 인코딩 방지
+        const qs = new URLSearchParams({ hintKeywords: batch.join(','), showDetail: '1' });
         const res = await fetch(`${BASE}${PATH}?${qs.toString()}`, { method: 'GET', headers });
         
         const status = res.status;
@@ -157,6 +156,14 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
           console.log(`⏳ 429 Rate limit - waiting ${waitTime}ms (retry ${retryCount + 1}/${maxRetries + 1})`);
           await new Promise(resolve => setTimeout(resolve, waitTime));
           retryCount++;
+          
+          // ✅ 수정: maxRetries 초과 시 배치 건너뛰기 (무한 루프 방지)
+          if (retryCount > maxRetries) {
+            console.log(`❌ 429 Rate limit - max retries exceeded, skipping batch`);
+            stats.fail += batch.length;
+            i += batch.length;
+            success = true;
+          }
           
         } else if (status === 400) {
           // 🔄 400: 청크 크기 반으로 줄여 재시도
