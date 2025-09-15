@@ -5,13 +5,15 @@ import {
   type Submission, type InsertSubmission,
   type TrackedTarget, type InsertTrackedTarget,
   type Settings,
+  type ManualBlogEntry, type InsertManualBlogEntry,
   rankTimeSeries,
   metricTimeSeries,
   events,
   alerts,
   submissions,
   trackedTargets,
-  settings
+  settings,
+  manualBlogEntries
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { db } from "./db";

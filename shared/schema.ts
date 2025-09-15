@@ -107,6 +107,20 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// 수동 블로그 입력 데이터
+export const manualBlogEntries = pgTable("manual_blog_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  keyword: text("keyword").notNull(),
+  url: text("url").notNull(),
+  title: text("title").notNull(),
+  rank: integer("rank"),
+  notes: text("notes"), // 특이사항
+  submittedBy: varchar("submitted_by").notNull(), // 입력자
+  submittedAt: timestamp("submitted_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  isActive: boolean("is_active").default(true),
+});
+
 // 수익성 계산 및 최적화 점수
 export const profitabilityAnalysis = pgTable("profitability_analysis", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -192,6 +206,8 @@ export type InsertSubmission = z.infer<typeof insertSubmissionSchema>;
 export type TrackedTarget = typeof trackedTargets.$inferSelect;
 export type InsertTrackedTarget = z.infer<typeof insertTrackedTargetSchema>;
 export type Settings = typeof settings.$inferSelect;
+export type ManualBlogEntry = typeof manualBlogEntries.$inferSelect;
+export type InsertManualBlogEntry = z.infer<typeof insertManualBlogEntrySchema>;
 
 export type ProfitabilityAnalysis = typeof profitabilityAnalysis.$inferSelect;
 export type InsertProfitabilityAnalysis = z.infer<typeof insertProfitabilityAnalysisSchema>;
@@ -226,6 +242,12 @@ export const insertListingOptimizationSchema = createInsertSchema(listingOptimiz
 
 export const insertSettingsSchema = createInsertSchema(settings).omit({
   id: true,
+  updatedAt: true,
+});
+
+export const insertManualBlogEntrySchema = createInsertSchema(manualBlogEntries).omit({
+  id: true,
+  submittedAt: true,
   updatedAt: true,
 });
 

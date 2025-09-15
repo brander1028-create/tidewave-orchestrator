@@ -439,7 +439,7 @@ export default function Rank() {
               <CardContent className="space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-muted-foreground">추적 키워드</span>
-                  <span className="text-sm font-medium text-foreground">{keywords.length}개</span>
+                  <span className="text-sm font-medium text-foreground">{currentRankingData.length}개</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-muted-foreground">평균 순위</span>
@@ -511,7 +511,7 @@ export default function Rank() {
             columns={columns}
             data={currentRankingData}
             title="블로그 순위 현황"
-            description={`총 ${keywords.length}개 키워드`}
+            description={`총 ${currentRankingData.length}개 키워드`}
             onRowClick={(row) => setSelectedRankingDetail(row)}
           />
         </TabsContent>
