@@ -1,13 +1,42 @@
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { ArrowLeft, Clock, Download } from "lucide-react";
-import KeywordSummaryCard from "@/components/keyword-summary-card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { ArrowLeft, Clock, Download, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { useState } from "react";
 import type { SerpJob, SerpResultsData } from "../../../shared/schema";
+
+// Format functions as specified in the requirements
+const fmtVol = (v: number | null) => v === null ? "–" : v.toLocaleString();
+const fmtRank = (r: number | null) => r === null ? "미확인" : (r <= 10 ? `모바일 1p #${r}` : "미노출");
+
+// Color coding for volumes, scores, and rankings
+const getVolumeColor = (volume: number | null) => {
+  if (volume === null) return "bg-gray-100 text-gray-600";
+  if (volume >= 10000) return "bg-emerald-100 text-emerald-800 font-medium";
+  if (volume >= 1000) return "bg-blue-100 text-blue-800";
+  return "bg-yellow-100 text-yellow-800";
+};
+
+const getScoreColor = (score: number) => {
+  if (score >= 80) return "bg-emerald-100 text-emerald-800 font-medium";
+  if (score >= 60) return "bg-blue-100 text-blue-800";
+  if (score >= 40) return "bg-yellow-100 text-yellow-800";
+  return "bg-red-100 text-red-800";
+};
+
+const getRankColor = (rank: number | null) => {
+  if (rank === null) return "bg-gray-100 text-gray-600";
+  if (rank <= 3) return "bg-emerald-100 text-emerald-800 font-medium";
+  if (rank <= 10) return "bg-blue-100 text-blue-800";
+  return "bg-red-100 text-red-800";
+};
 
 export default function ResultsPage() {
   const { jobId } = useParams<{ jobId: string }>();
+  const [expandedKeywords, setExpandedKeywords] = useState<Set<string>>(new Set());
+  const [expandedBlogs, setExpandedBlogs] = useState<Set<string>>(new Set());
 
   // Get job status to show basic info
   const { data: job } = useQuery<SerpJob>({
@@ -93,24 +122,17 @@ export default function ResultsPage() {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
       <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-4">
-            <Link href="/">
-              <Button variant="ghost" size="sm" data-testid="back-to-dashboard">
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                대시보드로
-              </Button>
-            </Link>
-            <Link href="/history">
-              <Button variant="outline" size="sm" data-testid="history-button">
-                <Clock className="h-4 w-4 mr-2" />
-                히스토리
-              </Button>
-            </Link>
-          </div>
-          
-          <div className="flex items-center gap-2">
+        {/* Header with keyword chips as specified */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-4">
+              <Link href="/">
+                <Button variant="ghost" size="sm" data-testid="back-to-dashboard">
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  대시보드로
+                </Button>
+              </Link>
+            </div>
             <Button 
               variant="outline" 
               size="sm"
@@ -121,65 +143,226 @@ export default function ResultsPage() {
               CSV 내보내기
             </Button>
           </div>
-        </div>
-
-        {/* Job Info Header */}
-        <Card className="mb-6">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h1 className="text-2xl font-bold mb-2" data-testid="job-title">
-                  검색값 보고서 ({job.keywords?.join(", ") || "Unknown Keywords"})
-                </h1>
-                <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+          
+          {/* Keyword chips header as specified */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-xl font-bold">검색값 보고서</CardTitle>
+                </div>
+                <div className="flex items-center gap-4 text-sm text-muted-foreground">
                   <span data-testid="job-status">상태: {job.status === "completed" ? "완료" : "진행 중"}</span>
                   <span data-testid="job-date">
-                    분석 날짜: {job.createdAt ? new Date(job.createdAt).toLocaleString("ko-KR") : "Unknown"}
+                    {job.createdAt ? new Date(job.createdAt).toLocaleString("ko-KR") : "Unknown"}
                   </span>
-                  {results.counters && (
-                    <>
-                      <span data-testid="total-blogs">
-                        전체 블로그: {results.counters.discovered_blogs || results.counters.blogs || 0}개
-                      </span>
-                      <span data-testid="hit-blogs">
-                        Phase2 노출: {results.counters.hit_blogs || 0}개
-                      </span>
-                      <span data-testid="unique-keywords">
-                        분석 키워드: {results.counters.searched_keywords || 0}개
-                      </span>
-                    </>
-                  )}
                 </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+              <div className="flex flex-wrap gap-2 mt-3">
+                {job.keywords?.map((keyword) => (
+                  <Badge key={keyword} variant="secondary" className="text-sm px-3 py-1">
+                    {keyword}
+                  </Badge>
+                ))}
+              </div>
+            </CardHeader>
+          </Card>
+        </div>
 
-        {/* Main Content: Keyword Summary Cards */}
-        <div className="mb-6">
-          <h2 className="text-xl font-semibold mb-4" data-testid="keyword-cards-title">
-            키워드별 요약 분석
-          </h2>
-          
-          {/* Render keyword summary cards according to specification */}
-          <div className="space-y-4" data-testid="keyword-summary-list">
-            {results.summaryByKeyword && results.summaryByKeyword.length > 0 ? (
-              results.summaryByKeyword
-                .sort((a: any, b: any) => 
-                  (b.phase2ExposedNew / b.newBlogs || 0) - (a.phase2ExposedNew / a.newBlogs || 0)
-                  || (b.newBlogs - a.newBlogs)
-                )
-                .map((row: any) => <KeywordSummaryCard key={row.keyword} data={row} />)
-            ) : (
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-center text-gray-600 dark:text-gray-400" data-testid="no-keywords-message">
-                    키워드 분석 데이터가 없습니다.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-          </div>
+        {/* Keyword Summary Cards - New Design as Specified */}
+        <div className="space-y-4" data-testid="keyword-summary-list">
+          {results.summaryByKeyword && results.summaryByKeyword.length > 0 ? (
+            results.summaryByKeyword
+              .sort((a: any, b: any) => 
+                (b.phase2ExposedNew / b.newBlogs || 0) - (a.phase2ExposedNew / a.newBlogs || 0)
+                || (b.newBlogs - a.newBlogs)
+              )
+              .map((keywordData: any) => {
+                const isExpanded = expandedKeywords.has(keywordData.keyword);
+                
+                return (
+                  <Card key={keywordData.keyword} className="border-2">
+                    <CardHeader>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <h3 className="text-lg font-semibold">{keywordData.keyword}</h3>
+                          <Badge className={getVolumeColor(keywordData.searchVolume)}>
+                            검색량 {fmtVol(keywordData.searchVolume)}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="sm" onClick={() => {
+                            if (isExpanded) {
+                              setExpandedKeywords(prev => {
+                                const newSet = new Set(prev);
+                                newSet.delete(keywordData.keyword);
+                                return newSet;
+                              });
+                            } else {
+                              setExpandedKeywords(prev => new Set(prev).add(keywordData.keyword));
+                            }
+                          }}>
+                            {isExpanded ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
+                            {isExpanded ? "접기" : "자세히"}
+                          </Button>
+                          <Button variant="secondary" size="sm">
+                            블로그DB 이동
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4 text-sm">
+                        <Badge variant="outline" className="bg-blue-50">
+                          NEW {keywordData.newBlogs}/{keywordData.totalBlogs}
+                        </Badge>
+                        <Badge variant="outline" className="bg-emerald-50">
+                          Phase2(신규) {keywordData.phase2ExposedNew}/{keywordData.newBlogs}
+                        </Badge>
+                      </div>
+                    </CardHeader>
+                    
+                    {isExpanded && (
+                      <CardContent>
+                        {/* Blog List Table */}
+                        <div className="mb-6">
+                          <h4 className="text-md font-medium mb-3">블로그 리스트 (신규만)</h4>
+                          <div className="border rounded-lg overflow-hidden">
+                            <table className="w-full">
+                              <thead className="bg-gray-50">
+                                <tr>
+                                  <th className="px-4 py-2 text-left">블로그명</th>
+                                  <th className="px-4 py-2 text-left">총 노출 수</th>
+                                  <th className="px-4 py-2 text-left">총합 점수</th>
+                                  <th className="px-4 py-2 text-left">상태</th>
+                                  <th className="px-4 py-2 text-left">액션</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {keywordData.items.map((blog: any, idx: number) => {
+                                  const blogKey = `${keywordData.keyword}-${idx}`;
+                                  const isBlogExpanded = expandedBlogs.has(blogKey);
+                                  
+                                  // Calculate totals as specified
+                                  const totalExposed = blog.topKeywords.filter((k: any) => k.rank !== null && k.rank <= 10).length;
+                                  const totalScore = blog.topKeywords
+                                    .filter((k: any) => k.rank !== null && k.rank <= 10)
+                                    .reduce((sum: number, k: any) => sum + k.score, 0);
+                                  
+                                  return (
+                                    <>
+                                      <tr key={idx} className="border-t hover:bg-gray-50">
+                                        <td className="px-4 py-2">
+                                          <div className="flex items-center gap-2">
+                                            <a 
+                                              href={blog.blogUrl} 
+                                              target="_blank" 
+                                              rel="noopener noreferrer"
+                                              className="font-medium hover:text-blue-600"
+                                            >
+                                              {blog.blogName}
+                                              <ExternalLink className="inline h-3 w-3 ml-1" />
+                                            </a>
+                                            <button
+                                              onClick={() => {
+                                                if (isBlogExpanded) {
+                                                  setExpandedBlogs(prev => {
+                                                    const newSet = new Set(prev);
+                                                    newSet.delete(blogKey);
+                                                    return newSet;
+                                                  });
+                                                } else {
+                                                  setExpandedBlogs(prev => new Set(prev).add(blogKey));
+                                                }
+                                              }}
+                                              className="text-gray-500 hover:text-gray-700"
+                                            >
+                                              {isBlogExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                            </button>
+                                          </div>
+                                        </td>
+                                        <td className="px-4 py-2">
+                                          <Badge className={totalExposed > 0 ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-600"}>
+                                            {totalExposed}개
+                                          </Badge>
+                                        </td>
+                                        <td className="px-4 py-2">
+                                          <Badge className={getScoreColor(totalScore)}>
+                                            {Math.round(totalScore)}pts
+                                          </Badge>
+                                        </td>
+                                        <td className="px-4 py-2">
+                                          <Badge variant="outline">수집됨</Badge>
+                                        </td>
+                                        <td className="px-4 py-2">
+                                          <div className="flex gap-1">
+                                            <Button size="sm" variant="outline">수집됨</Button>
+                                            <Button size="sm" variant="outline">블랙</Button>
+                                            <Button size="sm" variant="outline">섭외</Button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                      
+                                      {isBlogExpanded && (
+                                        <tr>
+                                          <td colSpan={5} className="px-4 py-4 bg-gray-50">
+                                            <div className="space-y-4">
+                                              {/* A. 블로그 통합 Top 키워드 */}
+                                              <div>
+                                                <h5 className="font-medium mb-2">블로그 총 Top 키워드(통합)</h5>
+                                                <div className="flex flex-wrap gap-2">
+                                                  {blog.topKeywords.slice(0, 10).map((keyword: any, kidx: number) => (
+                                                    <Badge key={kidx} variant="outline" className={`${getVolumeColor(keyword.volume)} border`}>
+                                                      {keyword.text}
+                                                      {!keyword.related && " [관련X]"}
+                                                      · {fmtVol(keyword.volume)}
+                                                      · {keyword.score}pts
+                                                      · <span className={getRankColor(keyword.rank).split(' ')[1]}>{fmtRank(keyword.rank)}</span>
+                                                    </Badge>
+                                                  ))}
+                                                  {blog.topKeywords.length > 10 && (
+                                                    <Button size="sm" variant="ghost">더보기</Button>
+                                                  )}
+                                                </div>
+                                              </div>
+                                              
+                                              {/* B. 포스트별 1-4티어 (placeholder) */}
+                                              <div>
+                                                <h5 className="font-medium mb-2">포스트별 1-4티어</h5>
+                                                <div className="space-y-2">
+                                                  {blog.titlesSample.map((title: string, pidx: number) => (
+                                                    <Card key={pidx} className="p-3">
+                                                      <h6 className="font-medium text-sm mb-2">{title}</h6>
+                                                      <div className="text-xs text-gray-600">
+                                                        1티어: 샘플키워드 · 검색량 · 순위 | 2티어: ... | 3티어: ... | 4티어: ...
+                                                      </div>
+                                                    </Card>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </CardContent>
+                    )}
+                  </Card>
+                );
+              })
+          ) : (
+            <Card>
+              <CardContent className="pt-6">
+                <p className="text-center text-gray-600 dark:text-gray-400">
+                  키워드 분석 데이터가 없습니다.
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Footer */}

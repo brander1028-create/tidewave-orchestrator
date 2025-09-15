@@ -21,6 +21,8 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
 import { nanoid } from 'nanoid';
+import { blogRegistry, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
+import { eq, and, desc } from 'drizzle-orm';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -562,6 +564,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error exporting keywords CSV:', error);
       res.status(500).json({ error: "Failed to export keywords data" });
+    }
+  });
+
+  // ===========================================
+  // BLOG REGISTRY MANAGEMENT API
+  // ===========================================
+
+  // Get blogs with optional status filtering and pagination
+  app.get("/api/blogs", async (req, res) => {
+    try {
+      const { status, limit = 50, offset = 0 } = req.query;
+      
+      let blogs;
+      
+      if (status && status !== 'all') {
+        blogs = await db.select()
+          .from(blogRegistry)
+          .where(eq(blogRegistry.status, status as string))
+          .orderBy(desc(blogRegistry.lastSeenAt), desc(blogRegistry.createdAt))
+          .limit(Number(limit))
+          .offset(Number(offset));
+      } else {
+        blogs = await db.select()
+          .from(blogRegistry)
+          .orderBy(desc(blogRegistry.lastSeenAt), desc(blogRegistry.createdAt))
+          .limit(Number(limit))
+          .offset(Number(offset));
+      }
+
+      res.json({ blogs });
+    } catch (error) {
+      console.error('Error fetching blogs:', error);
+      res.status(500).json({ error: "Failed to fetch blogs" });
+    }
+  });
+
+  // Update blog status
+  app.post("/api/blogs/:blogId/status", async (req, res) => {
+    try {
+      const { blogId } = req.params;
+      const { status } = req.body;
+      
+      if (!['collected', 'blacklist', 'outreach'].includes(status)) {
+        return res.status(400).json({ error: "Invalid status. Must be 'collected', 'blacklist', or 'outreach'" });
+      }
+
+      await db.update(blogRegistry)
+        .set({ 
+          status,
+          updatedAt: new Date()
+        })
+        .where(eq(blogRegistry.blogId, blogId));
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating blog status:', error);
+      res.status(500).json({ error: "Failed to update blog status" });
+    }
+  });
+
+  // Update blog note and tags
+  app.post("/api/blogs/:blogId/note", async (req, res) => {
+    try {
+      const { blogId } = req.params;
+      const { note, tags } = req.body;
+
+      await db.update(blogRegistry)
+        .set({ 
+          note,
+          tags,
+          updatedAt: new Date()
+        })
+        .where(eq(blogRegistry.blogId, blogId));
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating blog note:', error);
+      res.status(500).json({ error: "Failed to update blog note" });
     }
   });
 
