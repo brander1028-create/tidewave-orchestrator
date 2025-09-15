@@ -45,12 +45,37 @@ interface RankingData {
 
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
-  const [keywords, setKeywords] = React.useState(["홍삼", "홍삼스틱"]);
+  const [keywords, setKeywords] = React.useState(["홍삼", "홍삼스틱", "홍삼 효능"]);
   const [newKeyword, setNewKeyword] = React.useState("");
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
 
-  // Mock data
-  const mockRankingData: RankingData[] = [
+  // Function to generate ranking data based on current keywords
+  const generateRankingData = (keywordList: string[]): RankingData[] => {
+    return keywordList.map((keyword, index) => {
+      const baseRank = [8, 15, 12, 20, 7, 25, 11][index] || Math.floor(Math.random() * 30) + 1;
+      const baseChange = [3, -7, 0, -5, 8, -2, 1][index] || Math.floor(Math.random() * 21) - 10;
+      const statuses: ("active" | "warning" | "error")[] = ["active", "warning", "active"];
+      
+      return {
+        id: (index + 1).toString(),
+        keyword,
+        rank: baseRank,
+        change: baseChange,
+        page: Math.floor((baseRank - 1) / 10) + 1,
+        position: ((baseRank - 1) % 10) + 1,
+        url: `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
+        trend: Array.from({ length: 10 }, () => Math.floor(Math.random() * 30) + 1),
+        status: statuses[index] || "active",
+        lastCheck: index === 0 ? "2분 전" : index === 1 ? "5분 전" : "1분 전"
+      };
+    });
+  };
+
+  // Generate dynamic ranking data based on current keywords
+  const currentRankingData = generateRankingData(keywords);
+
+  // Static mock data for reference (now unused)
+  const staticMockData: RankingData[] = [
     {
       id: "1",
       keyword: "홍삼",
@@ -367,7 +392,7 @@ export default function Rank() {
               <CardContent className="space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-muted-foreground">추적 키워드</span>
-                  <span className="text-sm font-medium text-foreground">{mockRankingData.length}개</span>
+                  <span className="text-sm font-medium text-foreground">{keywords.length}개</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-muted-foreground">평균 순위</span>
@@ -437,9 +462,9 @@ export default function Rank() {
           {/* Ranking Table */}
           <DataTable
             columns={columns}
-            data={mockRankingData}
+            data={currentRankingData}
             title="블로그 순위 현황"
-            description={`총 ${mockRankingData.length}개 키워드`}
+            description={`총 ${keywords.length}개 키워드`}
             onRowClick={(row) => setSelectedRankingDetail(row)}
           />
         </TabsContent>
