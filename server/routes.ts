@@ -227,15 +227,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // If volume is missing, try API fallback and upsert immediately
         if (searchVolumes[keyword] === null) {
           try {
-            // TODO: Implement API fallback to SearchAds API
-            // const apiVolume = await fetchVolumeFromAPI(keyword);
-            // if (apiVolume !== null) {
-            //   await upsertKeyword(keyword, apiVolume);
-            //   searchVolumes[keyword] = apiVolume;
-            // }
-            console.log(`⚠️ Missing volume for keyword: ${keyword}, API fallback not implemented yet`);
+            console.log(`🔄 API fallback for missing volume: ${keyword}`);
+            const result = await upsertKeywordsFromSearchAds(keyword, 1);
+            if (result.count > 0) {
+              // Re-fetch the volume from DB after upsert
+              const volumeMap = await getKeywordVolumeMap([keyword]);
+              const apiVolume = volumeMap[keyword];
+              if (apiVolume !== null && apiVolume !== undefined) {
+                searchVolumes[keyword] = apiVolume;
+                console.log(`✅ API fallback success: ${keyword} → ${apiVolume}`);
+              } else {
+                console.log(`⚠️ API fallback upserted but volume still null: ${keyword}`);
+              }
+            } else {
+              console.log(`⚠️ API fallback returned no data for: ${keyword}`);
+            }
           } catch (e) {
-            console.log(`❌ API fallback failed for keyword: ${keyword}`);
+            console.log(`❌ API fallback failed for keyword: ${keyword}`, e);
           }
         }
       }

@@ -1,0 +1,149 @@
+[수정요청 — 결과 보고서 v9 (검색량 0/잘못된 라벨/전수표시/BlogDB 미적재 모두 해결)]
+
+■ 문제 요약(스샷 기준)
+1) 카드/헤더의 검색량이 계속 0(–)으로 뜸 → DB 캐시 미스 시 API 폴백 결과가 같은 응답에 반영 안 됨.
+2) “자세히”의 블로그 리스트에 블로그명이 아니라 포스트 제목이 뜨고, 블로그 이동/자세히 버튼 분리가 안 됨.
+   액션(수집됨/블랙/섭외) 버튼이 동작하지 않고 BlogDB에도 데이터가 안 쌓임.
+3) 1~4티어 전수검사에서 조회량·점수 표기가 누락되거나 이상치(예: ‘<도움되>’)가 보이고,
+   순위가 과도하게 ‘모바일 1p #1’로 찍힘(순위 체크/포맷/기본값 처리 문제).
+   “갱년기영양제”처럼 티어가 모자라면 API로 보충해 DB에 저장해야 하는데 미작동.
+4) BlogDB 페이지가 비어 있음(Phase1에서 blog_registry 업서트/표시/필터 미작동).
+
+────────────────────────────────────────────────
+
+■ 해야 할 것(업데이트만, 재구축 금지 / 필요한 최소 마이그는 유지)
+A) 검색량 0(–) 문제 — 즉시 폴백·동일응답 반영
+  - results 조립 시 `searchVolumes[keyword]` 채울 때:
+    ① KEYWORD_DB TTL(기본 30d) 조회
+    ② 미스/만료면 SearchAds 호출(청크+429 Retry-After) → upsert
+    ③ **같은 응답 객체에** 최종 숫자 반영(비동기 누락 금지: `await` 사용, `Promise.all` 종결 확인)
+  - 화면 표기: null→"–", 0→"0"(절대 `|| 0` 사용 금지).
+
+B) “자세히” 상단 리스트 — **블로그명/ID 표시 + 두 개 버튼 + 액션 동작**
+  - 리스트 컬럼을 다음으로 고정:
+    [블로그명/ID(새창) | 총 노출수 | 총합 점수 | 상태 | 액션]
+    - 블로그명: blog_registry.name 또는 Naver ID(정규화) 표시 + ↗ 외부 새창
+    - 액션 버튼 2개: [10개 포스트 보기] (행 펼침) · [블로그 바로가기] (외부)
+    - 상태 토글: [수집됨/블랙/섭외] → POST /api/blogs/:blogId/status {status}
+      · 성공 시 낙관적 갱신, 실패 시 롤백/토스트
+  - 현재 포스트 제목을 블로그명 자리에 넣는 매핑 버그 제거:
+    `row.blogName = discoveredBlogs.find(b=>b.blogId===row.blogId)?.name ?? row.blogId`
+
+C) BlogDB 적재/조회 — Phase1 연동 확실화
+  - Phase1 큐잉 직전:
+    ① URL→blog_id 정규화(소문자, 추적파라미터 제거)
+    ② blog_registry 조회: status in ('blacklist','outreach')면 수집 제외
+    ③ 없으면 insert(status='collected', first_seen_at=now) → **이번 실행에 NEW로 카운트**
+    ④ 있으면 last_seen_at=now 업데이트
+  - BlogDB 페이지(/blog-database):
+    - 목록 소스: blog_registry LEFT JOIN 집계(exposed_count,total_score)
+    - 키워드 필터가 오면(결과 화면에서 이동) 해당 run의 후보집합과 교차필터 지원
+
+D) 1~4티어 전수검사 — 조회량·점수·순위 **항상** 채워서 보여주기
+  - 포스트 P개, 티어 T개(기본 10×4)를 전수 loop:
+    - text_surface(표시용), text_nrm(DB키용) **둘 다** 저장
+    - volume: DB→미스시 API 폴백→upsert→**이번 응답에도 숫자 반영**
+    - rank:
+      · SERP 체크 성공 시 1..N
+      · 1p 바깥은 **rank=0**
+      · 미검사/실패는 **rank=null**
+    - 점수(totalScore): 현재 산식 유지(볼륨 스케일 70 + 콘텐츠 30)
+  - 저장 테이블(post_tier_checks)이 이미 없다면 생성(최소 마이그):
+    id(PK), job_id, input_keyword, blog_id, post_id, post_title,
+    tier(1..T), text_surface, text_nrm, volume(INT?),
+    rank(INT?), device, related(BOOL), created_at
+    UNIQUE(job_id,input_keyword,blog_id,post_id,tier,text_nrm)
+
+E) 토큰 정제/표시 — ‘<도움되>’ 같은 어색어 제거
+  - 정규화는 **DB 키에서만** 사용(nrm). 화면에는 **surface** 그대로 노출.
+  - 토큰 생성 시 HTML/특수문자 제거: `replace(/[^\p{L}\p{N}\s]/gu,' ')`
+  - 조사꼬리 제거 후 어색어 방지:
+    · 제거 전 원문(surface)를 별도 유지하고, 표시엔 surface 사용
+    · STOP_WORDS 최소셋: ["가장","방법","후기","정리","추천","업체","시공"] 등
+    · 길이 2~12자, 공백 결합 1~3그램
+  - 라벨: `[관련X]`는 표시만, 필터링 금지.
+
+F) 순위 1p #1 남발 방지(정확도 보장)
+  - rank 채우는 함수에서 기본값 금지(`|| 1` 등 제거)
+  - fmtRank:
+    `null→"미확인"`, `0→"0"`, `1..10→"모바일 1p #N"`, `>10→"미노출"`
+  - 디버그로그(실행 로그 탭):
+    각 rank 계산에 대해 `query`, `first_result_url`, `computed_rank` 1줄 기록
+    (개인정보/쿠키 제외)
+
+G) 티어 부족 시 자동 보강(2~4티어 생성 + DB 업서트)
+  - 어떤 포스트에서 티어 후보가 1개 미만/부족하면:
+    ① 제목 n-gram 후보에서 상위 스코어로 보충
+    ② 부족분은 SearchAds 연관키워드 API로 보충(볼륨>0 우선)
+    ③ 보강된 키워드를 KEYWORD_DB에 upsert
+  - 보강 후에도 전수검사(볼륨/순위/점수) 처리 동일.
+
+H) 결과 응답(contracts) — 누락 필드 보강/정확화
+  - GET /api/serp/jobs/:id/results 에 다음이 **반드시** 있음:
+    {
+      "keywords": [...],
+      "status": "...",
+      "analyzedAt": "...",
+      "params": { "postsPerBlog": P, "tiersPerPost": T },
+      "searchVolumes": { "<키워드>": <숫자|null>, ... },
+      "attemptsByKeyword": { "K": NEW_K * P * T, ... },
+      "exposureStatsByKeyword": { "K": { "page1": n, "zero": m, "unknown": u } },
+      "summaryByKeyword": [
+        {
+          "keyword": "K",
+          "searchVolume": <숫자|null>,
+          "totalBlogs": <int>,
+          "newBlogs": <int>,
+          "phase2ExposedNew": <int>,
+          "blogs": [
+            {
+              "blogId": "naverId",
+              "blogName": "표시명(없으면 ID)",
+              "blogUrl": "https://blog.naver.com/…",
+              "status": "collected|blacklist|outreach",
+              "totalExposed": <int>,   // rank≤10 개수
+              "totalScore": <int>,     // rank≤10의 totalScore 합
+              "topKeywords": [ {text, volume, score, rank, related}, ... ],
+              "posts": [
+                {
+                  "title": "포스트 제목",
+                  "tiers": [
+                    {"tier":1,"text":surface,"volume":<int|null>,"rank":<int|null>},
+                    ...
+                  ]
+                }, // P개
+              ]
+            } // NEW만
+          ]
+        }
+      ]
+    }
+
+I) 프론트 — 확정 UI 동작
+  - 키워드 카드: “검색량 {fmtVol} · NEW {new}/{total} · Phase2(신규) {expNew}/{new} · 검사 {attempts}”
+  - 리스트 행: [블로그명/ID(↗) | 총 노출수 | 총합 점수 | 상태(토글) | 액션: (10개 포스트 보기) (블로그 바로가기)]
+  - 행 펼침: “블로그 총 Top 키워드(10개)” 칩들 + “포스트별 1~T티어” 전수
+  - 포맷 함수:
+    `fmtVol(v)=v===null?"–":v.toLocaleString()`
+    `fmtRank(r)=r===null?"미확인":(r===0?"0":(r<=10?`모바일 1p #${r}`:"미노출"))`
+
+J) 히스토리/로그(가시성)
+  - runs/logs에 키워드별 attempts/page1/zero/unknown 카운터 남기기
+  - 각 rank 체크 한 줄 디버그 추가(쿼리, 결과URL, 랭크)
+
+K) 하지 말 것
+  - null을 `|| 0`/`|| 1`로 덮어쓰지 말 것.
+  - 화면에 “DB 전용/미적용” 같은 내부 배지 표시 금지(로그 전용).
+  - 블로그명 자리에 포스트 제목 맵핑 금지.
+
+────────────────────────────────────────────────
+
+■ 수용 기준(모두 충족 시 완료)
+- [ ] 각 키워드 카드에 검색량이 숫자로 표시(미스→API 폴백 반영).  
+- [ ] “자세히” 리스트가 블로그명/ID로 나오고, (10개 포스트 보기)·(블로그 바로가기) **두 버튼**이 동작.  
+- [ ] 상태 토글(수집/블랙/섭외)이 실제로 API 호출되어 BlogDB에 반영되고, 재방문해도 유지.  
+- [ ] 블로그 행을 펼치면 포스트 P개×티어 T개 **전수가 항상 보임**(0/미확인 포함), 조회량·점수·순위가 규칙대로 표기.  
+- [ ] ‘<도움되>’ 같은 어색 토큰이 사라지고, 표시는 surface(원문) 기준.  
+- [ ] 순위가 일괄 ‘1p #1’로 찍히지 않으며, rank 디버그 로그에 쿼리/결과/랭크가 남음.  
+- [ ] 티어 부족 시 API 보강으로 1~T티어가 채워지고, 보강 키워드가 KEYWORD_DB에 upsert됨.  
+- [ ] BlogDB 페이지에서 수집 데이터가 보이고, 필터/상태 변경이 정상 작동.
