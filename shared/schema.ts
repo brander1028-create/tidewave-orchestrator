@@ -111,6 +111,32 @@ export const appMeta = pgTable("app_meta", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Post tier checks table for comprehensive tier recording (v8 requirements)
+export const postTierChecks = pgTable("post_tier_checks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").references(() => serpJobs.id).notNull(),
+  inputKeyword: text("input_keyword").notNull(), // User input keyword for grouping
+  blogId: text("blog_id").notNull(),
+  postId: text("post_id").notNull(),
+  postTitle: text("post_title").notNull(),
+  tier: integer("tier").notNull(), // 1..T (variable)
+  textSurface: text("text_surface").notNull(), // Original extracted text
+  textNrm: text("text_nrm").notNull(), // Normalized text for deduplication
+  volume: integer("volume"), // Search volume (null allowed)
+  rank: integer("rank"), // SERP rank: 0 | 1..N | null
+  device: text("device").default("mobile"), // 'mobile' | 'pc'
+  related: boolean("related").notNull().default(false), // Keyword relatedness to input
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  // Unique constraint to prevent duplicates
+  uniqueCheck: sql`UNIQUE(${table.jobId}, ${table.inputKeyword}, ${table.blogId}, ${table.postId}, ${table.tier}, ${table.textNrm})`,
+  // Indexes for efficient querying
+  jobKeywordIdx: sql`CREATE INDEX IF NOT EXISTS idx_post_tier_checks_job_keyword ON post_tier_checks(job_id, input_keyword)`,
+  blogIdx: sql`CREATE INDEX IF NOT EXISTS idx_post_tier_checks_blog ON post_tier_checks(blog_id)`,
+  postIdx: sql`CREATE INDEX IF NOT EXISTS idx_post_tier_checks_post ON post_tier_checks(post_id)`,
+  rankIdx: sql`CREATE INDEX IF NOT EXISTS idx_post_tier_checks_rank ON post_tier_checks(rank)`,
+}));
+
 // Insert schemas for new entities
 export const insertSerpJobSchema = createInsertSchema(serpJobs).omit({
   id: true,
@@ -150,6 +176,11 @@ export const insertBlogRegistrySchema = createInsertSchema(blogRegistry).omit({
   updatedAt: true,
 });
 
+export const insertPostTierCheckSchema = createInsertSchema(postTierChecks).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types for new entities
 export type SerpJob = typeof serpJobs.$inferSelect;
 export type InsertSerpJob = z.infer<typeof insertSerpJobSchema>;
@@ -165,6 +196,8 @@ export type KeywordCrawlHistory = typeof keywordCrawlHistory.$inferSelect;
 export type InsertKeywordCrawlHistory = z.infer<typeof insertKeywordCrawlHistorySchema>;
 export type BlogRegistry = typeof blogRegistry.$inferSelect;
 export type InsertBlogRegistry = z.infer<typeof insertBlogRegistrySchema>;
+export type PostTierCheck = typeof postTierChecks.$inferSelect;
+export type InsertPostTierCheck = z.infer<typeof insertPostTierCheckSchema>;
 
 // New API contract interface - matches specification document
 export interface SerpResultsData {
