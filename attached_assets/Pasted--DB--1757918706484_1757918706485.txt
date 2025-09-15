@@ -1,0 +1,198 @@
+좋아, 네가 원하는 최종 화면/흐름 + 블로그DB까지 한 번에 딱 맞게 적용되도록 “붙여넣기 지시문”으로 정리했어.
+(핵심: 결과 페이지 = 키워드 칩 → 키워드별 요약 카드 → 자세히(블로그 리스트 → 블로그별 Top 키워드/총점 → 포스트별 1~4티어), 그리고 블로그DB로 신규/중복/블랙리스트/섭외를 정확히 구분·관리)
+
+[강제 반영 — 검색 결과 보고서 v5 + 블로그DB 연동 / 최소 마이그 포함]
+
+■ 목표 요약
+1) 결과 상단: 입력 키워드들을 칩으로 나열 + 상태/날짜 요약.
+2) 키워드별 요약 카드:
+   - "{키워드}   검색량 {천단위 or –}"
+   - "NEW {new}/{total} · Phase2(신규) {exposedNew}/{new}"
+   - 버튼: [자세히] (토글), [블로그DB 이동]
+3) “자세히” 내용(정확한 순서/필드):
+   ① 블로그 리스트(신규만)
+      [블로그명(새창) | 총 노출 수 | 총합 점수 | 상태 이동 버튼(수집/블랙/섭외)]
+      - 총 노출 수 = 포스트10×각 1~4티어 중 rank≤10인 키워드의 개수 합
+      - 총합 점수 = 위 “노출된 키워드”들의 totalScore 합(정수 반올림)
+      - 행 우측 펼침(접기 토글) → 해당 블로그 상세
+   ② 블로그 상세(행 펼침 영역)
+      A. “블로그 총 Top 키워드(통합)” — 1~4티어 전부를 모아 상위 10개
+         - 칩 정렬 = (조회량 70 + 콘텐츠점수 30) 내림차순
+         - 칩 포맷 = "{키워드}{[관련X]} · {볼륨 or –} · {점수}pts · {순위표기(모바일 1p #N/미노출/미확인)}"
+         - [더보기] 클릭 시 10개씩 추가
+      B. “포스트별 1~4티어”
+         - 각 포스트 카드: [제목]
+           1티어: 키/볼륨/순위, 2티어: …, 3티어 …, 4티어 …
+           - 순위 null→“미확인”, >10→“미노출”, ≤10→“모바일 1p #N”
+           - 볼륨 null→“–”, 0→“0”
+4) 블로그DB(메인 메뉴) — 신규 페이지
+   - 탭: [수집됨] [블랙리스트] [섭외됨] [전체]
+   - 컬럼: [블로그명(새창) | 상태 | 최초수집일 | 최근본날짜 | 메모/태그 | 상태변경 버튼]
+   - 결과보고서(자세히)에서도 동일한 상태변경 버튼 제공(왕복 가능).
+5) Phase1 필터: 블로그DB에서 “블랙리스트/섭외됨”은 **수집 제외**. 나머지는 후보로.  
+   - “NEW {new}/{total}” 계산 = total=이번 키워드에서 포착된 고유 블로그 수, new=블로그DB에 없던 것.
+
+────────────────────────────────────────────────
+
+■ 최소 마이그(필요) — blog_registry (Drizzle/기존 DB)
+테이블: blog_registry
+- blog_id TEXT PRIMARY KEY   // 네이버: blog.naver.com/{아이디}에서 아이디 추출
+- url TEXT NOT NULL
+- name TEXT
+- status TEXT NOT NULL DEFAULT 'collected'  // 'collected' | 'blacklist' | 'outreach'
+- tags TEXT NULL
+- note TEXT NULL
+- first_seen_at TIMESTAMP NULL
+- last_seen_at TIMESTAMP NULL
+- created_at TIMESTAMP NOT NULL DEFAULT now()
+- updated_at TIMESTAMP NOT NULL DEFAULT now()
+
+규칙:
+- Phase1 수집 직전, URL→blog_id 정규화(소문자, 트래킹 제거) 후 blog_registry 조회.
+- status in ('blacklist','outreach') → 큐잉 스킵.
+- 없으면 upsert(insert)하고 status='collected'로 기본 등록, 해당 키워드 실행에선 NEW로 카운트.
+
+엔드포인트(경량):
+- GET  /api/blogs?status=…        // 목록(페이지네이션 포함 可)
+- POST /api/blogs/:blogId/status   {status}
+- POST /api/blogs/:blogId/note     {note,tags?}
+
+────────────────────────────────────────────────
+
+■ 서버 — 결과 응답(contracts)
+GET /api/serp/jobs/:id/results 안에 다음 구조 **반드시 포함**:
+{
+  "keywords": ["유기농 비타민D 1000IU","홍삼정"],
+  "status": "완료",
+  "analyzedAt": "2025-09-15T15:22:28+09:00",
+  "searchVolumes": { "유기농 비타민D 1000IU": null, "홍삼정": 124000 }, // DB→미스면 API 폴백
+  "summaryByKeyword": [
+    {
+      "keyword": "유기농 비타민D 1000IU",
+      "searchVolume": null,               // 표시는 “검색량 –”
+      "totalBlogs": 6,
+      "newBlogs": 3,
+      "phase2ExposedNew": 2,
+      "blogs": [                          // 신규만
+        {
+          "blogId": "happy321",
+          "blogName": "해피맘",
+          "blogUrl": "https://blog.naver.com/happy321",
+          "totalExposed": 7,              // rank≤10 키워드 합
+          "totalScore": 486,              // 노출된 키워드 totalScore 합
+          "status": "collected",          // blog_registry.status
+          "topKeywords": [                // 블로그 통합 Top10 (1~4티어 합)
+            {"text":"홍삼스틱","volume":39840,"score":86,"rank":3,"related":true},
+            {"text":"유산균 보관","volume":12300,"score":74,"rank":null,"related":false}
+          ],
+          "posts": [                      // 최근글 10개
+            {
+              "title": "임산부 비타민D 부족 셀가 유기농 1000IU로 수치 올리기",
+              "tiers": [
+                {"tier":1,"text":"맛집","volume":855600,"rank":null},
+                {"tier":2,"text":"성북","volume":6910,"rank":null},
+                {"tier":3,"text":"메뉴","volume":11040,"rank":null},
+                {"tier":4,"text":"저녁","volume":2050,"rank":null}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+주의:
+- volume null/0, rank null/>10/≤10 표기 규칙을 그대로 유지해 프론트에 전달.
+- “DB 전용/미적용” 같은 내부 배지는 **응답에 싣지 말 것**(로그 전용).
+
+집계 로직 정의:
+- totalExposed = Σ(모든 posts×tiers 중 rank≤10)
+- totalScore   = Σ(위 “노출된 키워드”의 totalScore)
+- topKeywords  = 동일 키워드(text 정규화 기준)로 그룹 → score=평균 콘텐츠점수 or 최댓값, 정렬키=0.7*volumeScale+0.3*score
+  (volumeScale=log10(volume+1)*25, score=0~100)  → 상위 10개
+
+────────────────────────────────────────────────
+
+■ 프론트 — 레이아웃/컴포넌트
+1) 결과 페이지 헤더
+   - 키워드 칩: [유기농 비타민D 1000IU] [홍삼정]
+   - 우측: 상태: 완료 · 분석일시
+   - 우측상단: [CSV 내보내기]
+
+2) 키워드별 요약 카드(컴포넌트: KeywordSummaryCard)
+   - 상단: "{키워드}   검색량 {fmtVol(searchVolume)}"
+   - KPI: "NEW {newBlogs}/{totalBlogs} · Phase2(신규) {phase2ExposedNew}/{newBlogs}"
+   - 우측버튼: [자세히] 토글, [블로그DB 이동] (키워드 필터 상태로 /blogs 열기)
+
+3) “자세히” 콘텐츠
+   3-1) 블로그 리스트(표 형태)
+        [블로그명(새창) | 총 노출수 | 총합 점수 | 상태변경 버튼(수집/블랙/섭외)]
+        - 행 클릭 → 해당 블로그 상세(아래 3-2) 접기/펼침
+   3-2) 블로그 상세
+        A. “블로그 총 Top 키워드(통합)” — 칩 10개, [더보기]
+           포맷: "{text}{[관련X]} · {fmtVol(volume)} · {score}pts · {fmtRank(rank)}"
+        B. “포스트별 1~4티어” — 각 포스트 카드에 1~4티어 나열
+
+4) 블로그DB 페이지(/blogs)
+   - 상단 탭: [수집됨] [블랙리스트] [섭외됨] [전체]
+   - 표: [블로그명(새창) | 상태 | 최초수집일 | 최근본날짜 | 메모/태그 | 상태변경]
+   - 상단 오른쪽: 검색, 태그 필터
+   - 상태 변경은 즉시 API POST /api/blogs/:id/status
+
+5) 포맷 함수(필수)
+   fmtVol(v)  ⇒ v===null?"–":v.toLocaleString()
+   fmtRank(r) ⇒ r==null?"미확인":(r<=10?`모바일 1p #${r}`:"미노출")
+
+6) 정렬 규칙
+   - 키워드 카드 정렬: (phase2ExposedNew/newBlogs) 내림차순 → newBlogs 내림차순
+   - 블로그 리스트 정렬: totalExposed 내림차순 → totalScore 내림차순
+
+7) 버튼 위치
+   - 결과 카드: [자세히], [블로그DB 이동]
+   - 블로그 리스트 각 행: [수집됨] [블랙리스트] [섭외됨] (토글형)
+   - 블로그 상세: [접기]
+
+────────────────────────────────────────────────
+
+■ Phase1 연동(필수)
+- SERP 큐잉 전에 blog_registry 조회:
+  status in ('blacklist','outreach') → **후보 제외**
+- 결과의 NEW 계산은 blog_registry 기준으로 산정.
+- 상세/결과 화면의 상태 변경이 즉시 Phase1 필터에 반영되도록 캐시 무효화.
+
+────────────────────────────────────────────────
+
+■ 널/0 처리(엄수)
+- null을 절대 `|| 0`으로 바꾸지 말 것.  
+- volume: null→"–", 0→"0"
+- rank: null→"미확인", >10→"미노출", ≤10→"모바일 1p #N"
+
+────────────────────────────────────────────────
+
+■ 커밋 가이드
+feat(results): keyword chip header + summary cards (NEW/Phase2 신규) with details
+feat(blogs): BlogDB page with status tabs + move buttons; Phase1 filter integration
+feat(api): add blog_registry and status endpoints; results include totals/score/exposed
+fix(format): strict null handling for volume/rank (– / 미확인); remove legacy badges
+
+■ DoD 체크리스트
+- [ ] 상단에 키워드 칩 + 상태/날짜가 보인다.
+- [ ] 각 키워드 카드에 “검색량 {–/숫자} · NEW {new}/{total} · Phase2(신규) {exposedNew}/{new}”
+- [ ] [자세히]에서 “블로그 리스트(신규만)”가 표로 보이고, 각 행에 “총 노출수/총합점수/상태버튼”.
+- [ ] 블로그 행을 펼치면 “통합 Top키워드 10개(더보기)”와 “포스트별 1~4티어”가 순서대로 보인다.
+- [ ] 블로그DB 페이지가 탭/검색/상태변경을 제공하고, 결과 화면에서도 상태를 바꿀 수 있다.
+- [ ] Phase1이 블랙/섭외를 자동 제외하고 NEW 산정이 정확하다.
+- [ ] null/0 표기 규칙이 지켜지고, “DB 전용/미적용” 배지가 더 이상 화면에 없다.
+
+구현 포인트 메모
+
+검색량 표시: searchVolumes[keyword]가 null이면 즉시 SearchAds 폴백→upsert→같은 요청에서 반영.
+
+blog_id 정규화(네이버): new URL(url).pathname.replace(/^\/+/,'').split('/')[0].toLowerCase() 같은 방식으로 아이디 추출(광고 파라미터 제거).
+
+총합 점수/노출 수: rank≤10만 집계(네가 요청한 기준).
+
+상태 변경 버튼: 토글 누르면 낙관적 UI 업데이트 + 실패 시 롤백.
+
+이대로 붙여넣으면, 지금 화면을 정확히 네가 말한 형태로 강제 정렬할 수 있어.

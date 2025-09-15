@@ -90,6 +90,20 @@ export const keywordCrawlHistory = pgTable("keyword_crawl_history", {
   source: text("source").notNull().default("bfs"), // bfs, manual, upload 등
 });
 
+// Blog registry for status management (Phase1 filtering)
+export const blogRegistry = pgTable("blog_registry", {
+  blogId: text("blog_id").primaryKey(), // Naver: blog.naver.com/{아이디}에서 아이디 추출
+  url: text("url").notNull(),
+  name: text("name"),
+  status: text("status").notNull().default("collected"), // 'collected' | 'blacklist' | 'outreach'
+  tags: text("tags"),
+  note: text("note"),
+  firstSeenAt: timestamp("first_seen_at"),
+  lastSeenAt: timestamp("last_seen_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // App metadata table for persistent storage (API key state, etc)
 export const appMeta = pgTable("app_meta", {
   key: text("key").primaryKey(),
@@ -131,6 +145,11 @@ export const insertKeywordCrawlHistorySchema = createInsertSchema(keywordCrawlHi
   lastCrawledAt: true,
 });
 
+export const insertBlogRegistrySchema = createInsertSchema(blogRegistry).omit({
+  createdAt: true,
+  updatedAt: true,
+});
+
 // Types for new entities
 export type SerpJob = typeof serpJobs.$inferSelect;
 export type InsertSerpJob = z.infer<typeof insertSerpJobSchema>;
@@ -144,6 +163,8 @@ export type ManagedKeyword = typeof managedKeywords.$inferSelect;
 export type InsertManagedKeyword = z.infer<typeof insertManagedKeywordSchema>;
 export type KeywordCrawlHistory = typeof keywordCrawlHistory.$inferSelect;
 export type InsertKeywordCrawlHistory = z.infer<typeof insertKeywordCrawlHistorySchema>;
+export type BlogRegistry = typeof blogRegistry.$inferSelect;
+export type InsertBlogRegistry = z.infer<typeof insertBlogRegistrySchema>;
 
 // New API contract interface - matches specification document
 export interface SerpResultsData {

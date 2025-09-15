@@ -276,8 +276,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Calculate counters  
       const uniqueKeywords = new Set();
-      allKeywords.forEach(blogKw => {
-        blogKw.top4.forEach(kw => uniqueKeywords.add(kw.text));
+      allKeywords.forEach((blogKw: any) => {
+        blogKw.top4.forEach((kw: any) => uniqueKeywords.add(kw.text));
       });
 
       // Calculate searched_keywords from ALL blogs (not just hit blogs)
