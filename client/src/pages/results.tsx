@@ -5,7 +5,52 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Clock, Download, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { useState } from "react";
-import type { SerpJob, SerpResultsData } from "../../../shared/schema";
+import type { SerpJob } from "../../../shared/schema";
+
+// v8 Results Response Type
+type V8ResultsResponse = {
+  keywords: string[];
+  status: string;
+  analyzedAt: string;
+  params: {
+    postsPerBlog: number;
+    tiersPerPost: number;
+  };
+  searchVolumes: Record<string, number | null>;
+  attemptsByKeyword: Record<string, number>;
+  exposureStatsByKeyword: Record<string, {page1: number, zero: number, unknown: number}>;
+  summaryByKeyword: Array<{
+    keyword: string;
+    searchVolume: number | null;
+    totalBlogs: number;
+    newBlogs: number;
+    phase2ExposedNew: number;
+    blogs: Array<{
+      blogId: string;
+      blogName: string;
+      blogUrl: string;
+      status: string;
+      totalExposed: number;
+      totalScore: number;
+      topKeywords: Array<{
+        text: string;
+        volume: number | null;
+        score: number;
+        rank: number | null;
+        related: boolean;
+      }>;
+      posts: Array<{
+        title: string;
+        tiers: Array<{
+          tier: number;
+          text: string;
+          volume: number | null;
+          rank: number | null;
+        }>;
+      }>;
+    }>;
+  }>;
+};
 
 // Format functions as specified in the requirements
 const fmtVol = (v: number | null) => v === null ? "–" : v.toLocaleString();
@@ -44,8 +89,8 @@ export default function ResultsPage() {
     enabled: !!jobId,
   });
 
-  // Get analysis results
-  const { data: results, isLoading, error } = useQuery<SerpResultsData>({
+  // Get analysis results (v8 format)
+  const { data: results, isLoading, error } = useQuery<V8ResultsResponse>({
     queryKey: ["/api/serp/jobs", jobId, "results"],
     enabled: !!jobId,
   });
@@ -144,7 +189,7 @@ export default function ResultsPage() {
             </Button>
           </div>
           
-          {/* Keyword chips header as specified */}
+          {/* Keyword chips header with checks count */}
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -152,36 +197,65 @@ export default function ResultsPage() {
                   <CardTitle className="text-xl font-bold">검색값 보고서</CardTitle>
                 </div>
                 <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                  <span data-testid="job-status">상태: {job.status === "completed" ? "완료" : "진행 중"}</span>
+                  <span data-testid="job-status">상태: {results?.status || "알 수 없음"}</span>
                   <span data-testid="job-date">
-                    {job.createdAt ? new Date(job.createdAt).toLocaleString("ko-KR") : "Unknown"}
+                    {results?.analyzedAt ? new Date(results.analyzedAt).toLocaleString("ko-KR") : "알 수 없음"}
+                  </span>
+                  <span data-testid="job-params">
+                    P={results?.params?.postsPerBlog || 10}, T={results?.params?.tiersPerPost || 4}
                   </span>
                 </div>
               </div>
               <div className="flex flex-wrap gap-2 mt-3">
-                {job.keywords?.map((keyword) => (
-                  <Badge key={keyword} variant="secondary" className="text-sm px-3 py-1">
-                    {keyword}
-                  </Badge>
-                ))}
+                {results?.keywords?.map((keyword) => {
+                  const attempts = results.attemptsByKeyword[keyword] || 0;
+                  const exposure = results.exposureStatsByKeyword[keyword] || {page1: 0, zero: 0, unknown: 0};
+                  
+                  return (
+                    <div key={keyword} className="flex items-center gap-2">
+                      <Badge 
+                        variant="secondary" 
+                        className="text-sm px-3 py-1 cursor-pointer hover:bg-blue-100"
+                        onClick={() => {
+                          // Safe ID generation for scroll target
+                          const safeId = `keyword-${btoa(keyword).replace(/[+/=]/g, '')}`;
+                          const element = document.getElementById(safeId);
+                          element?.scrollIntoView({ behavior: 'smooth' });
+                        }}
+                      >
+                        {keyword}
+                      </Badge>
+                      <Badge variant="outline" className="text-xs">
+                        검사 {attempts}개
+                      </Badge>
+                      <Badge variant="outline" className="text-xs bg-emerald-50">
+                        1페이지 {exposure.page1}개
+                      </Badge>
+                    </div>
+                  );
+                })}
               </div>
             </CardHeader>
           </Card>
         </div>
 
-        {/* Keyword Summary Cards - New Design as Specified */}
+        {/* Keyword Summary Cards - v8 Design */}
         <div className="space-y-4" data-testid="keyword-summary-list">
           {results.summaryByKeyword && results.summaryByKeyword.length > 0 ? (
             results.summaryByKeyword
-              .sort((a: any, b: any) => 
-                (b.phase2ExposedNew / b.newBlogs || 0) - (a.phase2ExposedNew / a.newBlogs || 0)
-                || (b.newBlogs - a.newBlogs)
-              )
-              .map((keywordData: any) => {
+              .sort((a, b) => {
+                // Safe ratio calculation to avoid division by zero
+                const ratioA = a.newBlogs > 0 ? a.phase2ExposedNew / a.newBlogs : 0;
+                const ratioB = b.newBlogs > 0 ? b.phase2ExposedNew / b.newBlogs : 0;
+                return ratioB - ratioA || (b.newBlogs - a.newBlogs);
+              })
+              .map((keywordData) => {
                 const isExpanded = expandedKeywords.has(keywordData.keyword);
+                const attempts = results.attemptsByKeyword[keywordData.keyword] || 0;
+                const exposure = results.exposureStatsByKeyword[keywordData.keyword] || {page1: 0, zero: 0, unknown: 0};
                 
                 return (
-                  <Card key={keywordData.keyword} className="border-2">
+                  <Card key={keywordData.keyword} id={`keyword-${btoa(keywordData.keyword).replace(/[+/=]/g, '')}`} className="border-2">
                     <CardHeader>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-4">
@@ -205,21 +279,33 @@ export default function ResultsPage() {
                           {isExpanded ? "접기" : "자세히"}
                         </Button>
                       </div>
-                      <div className="flex items-center gap-4 text-sm">
+                      <div className="flex items-center gap-4 text-sm flex-wrap">
                         <Badge variant="outline" className="bg-blue-50">
                           NEW {keywordData.newBlogs}/{keywordData.totalBlogs}
                         </Badge>
                         <Badge variant="outline" className="bg-emerald-50">
                           Phase2(신규) {keywordData.phase2ExposedNew}/{keywordData.newBlogs}
                         </Badge>
+                        <Badge variant="outline" className="bg-purple-50">
+                          검사 {attempts}개 (NEW × {results.params?.postsPerBlog || 10} × {results.params?.tiersPerPost || 4})
+                        </Badge>
+                        <Badge variant="outline" className="bg-green-50">
+                          1페이지 {exposure.page1}개
+                        </Badge>
+                        <Badge variant="outline" className="bg-gray-50">
+                          미노출 {exposure.zero}개
+                        </Badge>
+                        <Badge variant="outline" className="bg-yellow-50">
+                          미확인 {exposure.unknown}개
+                        </Badge>
                       </div>
                     </CardHeader>
                     
                     {isExpanded && (
                       <CardContent>
-                        {/* Blog List Table */}
+                        {/* Blog List Table - v8 Format */}
                         <div className="mb-6">
-                          <h4 className="text-md font-medium mb-3">블로그 리스트 (신규만)</h4>
+                          <h4 className="text-md font-medium mb-3">블로그 리스트 (NEW만)</h4>
                           <div className="border rounded-lg overflow-hidden">
                             <table className="w-full">
                               <thead className="bg-gray-50">
@@ -232,19 +318,13 @@ export default function ResultsPage() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {keywordData.items.filter((blog: any) => blog.isNew).map((blog: any, idx: number) => {
-                                  const blogKey = `${keywordData.keyword}-${idx}`;
+                                {keywordData.blogs.map((blog, idx) => {
+                                  const blogKey = `${keywordData.keyword}-${blog.blogId}`;
                                   const isBlogExpanded = expandedBlogs.has(blogKey);
-                                  
-                                  // Calculate totals as specified
-                                  const totalExposed = blog.topKeywords.filter((k: any) => k.rank !== null && k.rank <= 10).length;
-                                  const totalScore = blog.topKeywords
-                                    .filter((k: any) => k.rank !== null && k.rank <= 10)
-                                    .reduce((sum: number, k: any) => sum + k.score, 0);
                                   
                                   return (
                                     <>
-                                      <tr key={idx} className="border-t hover:bg-gray-50">
+                                      <tr key={blog.blogId} className="border-t hover:bg-gray-50">
                                         <td className="px-4 py-2">
                                           <div className="flex items-center gap-2">
                                             <a 
@@ -275,17 +355,17 @@ export default function ResultsPage() {
                                           </div>
                                         </td>
                                         <td className="px-4 py-2">
-                                          <Badge className={totalExposed > 0 ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-600"}>
-                                            {totalExposed}개
+                                          <Badge className={blog.totalExposed > 0 ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-600"}>
+                                            {blog.totalExposed}개
                                           </Badge>
                                         </td>
                                         <td className="px-4 py-2">
-                                          <Badge className={getScoreColor(totalScore)}>
-                                            {Math.round(totalScore)}pts
+                                          <Badge className={getScoreColor(blog.totalScore)}>
+                                            {Math.round(blog.totalScore)}pts
                                           </Badge>
                                         </td>
                                         <td className="px-4 py-2">
-                                          <Badge variant="outline">수집됨</Badge>
+                                          <Badge variant="outline">{blog.status}</Badge>
                                         </td>
                                         <td className="px-4 py-2">
                                           <div className="flex gap-1">
@@ -304,7 +384,7 @@ export default function ResultsPage() {
                                               <div>
                                                 <h5 className="font-medium mb-2">블로그 총 Top 키워드(통합)</h5>
                                                 <div className="flex flex-wrap gap-2">
-                                                  {blog.topKeywords.slice(0, 10).map((keyword: any, kidx: number) => (
+                                                  {blog.topKeywords.slice(0, 10).map((keyword, kidx) => (
                                                     <div key={kidx} className="inline-flex items-center gap-1">
                                                       <Badge variant="outline" className={`${getVolumeColor(keyword.volume)} border`}>
                                                         {keyword.text}
@@ -323,57 +403,35 @@ export default function ResultsPage() {
                                                 </div>
                                               </div>
                                               
-                                              {/* B. 포스트별 1-4티어 */}
+                                              {/* B. 포스트별 실제 티어 데이터 */}
                                               <div>
-                                                <h5 className="font-medium mb-2">포스트별 1-4티어</h5>
+                                                <h5 className="font-medium mb-2">포스트별 1~{results.params?.tiersPerPost || 4}티어 (전수검사)</h5>
                                                 <div className="space-y-2">
-                                                  {blog.titlesSample.map((title: string, pidx: number) => {
-                                                    // Group keywords by tier based on search volume
-                                                    const getKeywordTier = (volume: number | null) => {
-                                                      if (volume === null) return 4;
-                                                      if (volume >= 10000) return 1;
-                                                      if (volume >= 1000) return 2;
-                                                      if (volume >= 100) return 3;
-                                                      return 4;
-                                                    };
-                                                    
-                                                    // Use different keyword slices per post to create unique per-post data
-                                                    const startIdx = (pidx * 3) % blog.topKeywords.length;
-                                                    const postKeywords = blog.topKeywords.slice(startIdx, startIdx + 6);
-                                                    
-                                                    const tierKeywords = {1: [], 2: [], 3: [], 4: []};
-                                                    postKeywords.forEach((kw: any) => {
-                                                      const tier = getKeywordTier(kw.volume);
-                                                      tierKeywords[tier].push(kw);
-                                                    });
-                                                    
-                                                    return (
-                                                      <Card key={pidx} className="p-3">
-                                                        <h6 className="font-medium text-sm mb-2" data-testid={`post-title-${pidx}`}>{title}</h6>
-                                                        <div className="text-xs space-y-1">
-                                                          {[1, 2, 3, 4].map(tier => {
-                                                            const keywords = tierKeywords[tier];
-                                                            if (keywords.length === 0) return null;
-                                                            
-                                                            return (
-                                                              <div key={tier} className="flex items-center gap-2">
-                                                                <span className="font-medium min-w-12">{tier}티어:</span>
-                                                                <div className="flex flex-wrap gap-1">
-                                                                  {keywords.slice(0, 3).map((kw: any, kidx: number) => (
-                                                                    <span key={kidx} className="text-gray-600">
-                                                                      {kw.text} · {fmtVol(kw.volume)} · {fmtRank(kw.rank)}
-                                                                      {kidx < Math.min(keywords.length, 3) - 1 && " | "}
-                                                                    </span>
-                                                                  ))}
-                                                                  {keywords.length > 3 && <span className="text-gray-400">...</span>}
-                                                                </div>
-                                                              </div>
-                                                            );
-                                                          })}
-                                                        </div>
-                                                      </Card>
-                                                    );
-                                                  })}
+                                                  {blog.posts.map((post, pidx) => (
+                                                    <Card key={pidx} className="p-3">
+                                                      <h6 className="font-medium text-sm mb-2" data-testid={`post-title-${pidx}`}>{post.title}</h6>
+                                                      <div className="text-xs space-y-1">
+                                                        {post.tiers.map((tierData) => (
+                                                          <div key={tierData.tier} className="flex items-center gap-2">
+                                                            <span className="font-medium min-w-12">{tierData.tier}티어:</span>
+                                                            <div className="flex items-center gap-2">
+                                                              <span className="text-gray-700 font-medium">{tierData.text || "비어있음"}</span>
+                                                              {tierData.text && (
+                                                                <>
+                                                                  <Badge className={getVolumeColor(tierData.volume)}>
+                                                                    {fmtVol(tierData.volume)}
+                                                                  </Badge>
+                                                                  <Badge className={getRankColor(tierData.rank)}>
+                                                                    {fmtRank(tierData.rank)}
+                                                                  </Badge>
+                                                                </>
+                                                              )}
+                                                            </div>
+                                                          </div>
+                                                        ))}
+                                                      </div>
+                                                    </Card>
+                                                  ))}
                                                 </div>
                                               </div>
                                             </div>
