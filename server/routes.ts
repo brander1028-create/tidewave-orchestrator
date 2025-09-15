@@ -31,6 +31,76 @@ export async function registerRoutes(app: Express): Promise<Server> {
   let healthCache: { data: any|null; ts: number; inFlight: Promise<any>|null; disabled: boolean } =
     { data: null, ts: 0, inFlight: null, disabled: false };
 
+  // === Blog Registry Management APIs ===
+  
+  // Update blog status in registry
+  app.patch("/api/blog-registry/:blogId/status", async (req, res) => {
+    try {
+      const { blogId } = req.params;
+      
+      // Validate blogId format (should be alphanumeric with underscores)
+      if (!blogId || !/^[a-zA-Z0-9_]+$/.test(blogId) || blogId.length > 50) {
+        return res.status(400).json({ error: "Invalid blogId format" });
+      }
+      
+      // Validate request body with Zod
+      const statusSchema = z.object({
+        status: z.enum(['collected', 'blacklist', 'outreach'])
+      });
+      
+      const { status } = statusSchema.parse(req.body);
+      
+      // Upsert blog status
+      await db.insert(blogRegistry)
+        .values({
+          blogId,
+          url: `https://blog.naver.com/${blogId}`, // Default URL construction
+          status,
+          updatedAt: new Date()
+        })
+        .onConflictDoUpdate({
+          target: blogRegistry.blogId,
+          set: {
+            status,
+            updatedAt: new Date()
+          }
+        });
+      
+      res.json({ success: true, blogId, status });
+    } catch (error) {
+      console.error('Error updating blog status:', error);
+      res.status(500).json({ error: "Failed to update blog status" });
+    }
+  });
+  
+  // Get all blogs from registry
+  app.get("/api/blog-registry", async (req, res) => {
+    try {
+      const blogs = await db.select().from(blogRegistry).orderBy(desc(blogRegistry.updatedAt));
+      res.json(blogs);
+    } catch (error) {
+      console.error('Error fetching blog registry:', error);
+      res.status(500).json({ error: "Failed to fetch blog registry" });
+    }
+  });
+  
+  // Get specific blog from registry
+  app.get("/api/blog-registry/:blogId", async (req, res) => {
+    try {
+      const { blogId } = req.params;
+      const blog = await db.select().from(blogRegistry).where(eq(blogRegistry.blogId, blogId)).limit(1);
+      
+      if (blog.length === 0) {
+        return res.status(404).json({ error: "Blog not found in registry" });
+      }
+      
+      res.json(blog[0]);
+    } catch (error) {
+      console.error('Error fetching blog from registry:', error);
+      res.status(500).json({ error: "Failed to fetch blog" });
+    }
+  });
+
   const isDeep = (req:any)=> req.query?.deep === '1' || req.query?.deep === 'true';
   
   // Utility function to check keyword relatedness to original search terms

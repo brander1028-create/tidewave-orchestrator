@@ -82,6 +82,27 @@ export default function ResultsPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const [expandedKeywords, setExpandedKeywords] = useState<Set<string>>(new Set());
   const [expandedBlogs, setExpandedBlogs] = useState<Set<string>>(new Set());
+  
+  // Status toggle handler for blog registry
+  const handleStatusToggle = async (blogId: string, newStatus: string) => {
+    try {
+      const response = await fetch(`/api/blog-registry/${blogId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      });
+      
+      if (response.ok) {
+        // Use react-query cache invalidation instead of reload
+        const { queryClient } = await import('@/lib/queryClient');
+        queryClient.invalidateQueries(['/api/serp/jobs', jobId, 'results']);
+      } else {
+        console.error('Failed to update blog status');
+      }
+    } catch (error) {
+      console.error('Error updating blog status:', error);
+    }
+  };
 
   // Get job status to show basic info
   const { data: job } = useQuery<SerpJob>({
@@ -368,10 +389,57 @@ export default function ResultsPage() {
                                           <Badge variant="outline">{blog.status}</Badge>
                                         </td>
                                         <td className="px-4 py-2">
-                                          <div className="flex gap-1">
-                                            <Button size="sm" variant="outline">수집됨</Button>
-                                            <Button size="sm" variant="outline">블랙</Button>
-                                            <Button size="sm" variant="outline">섭외</Button>
+                                          <div className="flex gap-1 flex-wrap">
+                                            <Button 
+                                              size="sm" 
+                                              variant="outline"
+                                              onClick={() => {
+                                                // 10개 포스트 보기 - 블로그 확장
+                                                if (!isBlogExpanded) {
+                                                  setExpandedBlogs(prev => new Set(prev).add(blogKey));
+                                                }
+                                              }}
+                                              data-testid={`button-posts-${blog.blogId}`}
+                                            >
+                                              10개 포스트 보기
+                                            </Button>
+                                            <Button 
+                                              size="sm" 
+                                              variant="outline"
+                                              onClick={() => window.open(blog.blogUrl, '_blank', 'noopener')}
+                                              data-testid={`button-blog-visit-${blog.blogId}`}
+                                            >
+                                              블로그 바로가기
+                                            </Button>
+                                          </div>
+                                          <div className="flex gap-1 mt-2">
+                                            <Button 
+                                              size="sm" 
+                                              variant={blog.status === 'collected' ? 'default' : 'outline'}
+                                              onClick={() => handleStatusToggle(blog.blogId, 'collected')}
+                                              className="text-xs"
+                                              data-testid={`status-collected-${blog.blogId}`}
+                                            >
+                                              수집됨
+                                            </Button>
+                                            <Button 
+                                              size="sm" 
+                                              variant={blog.status === 'blacklist' ? 'default' : 'outline'}
+                                              onClick={() => handleStatusToggle(blog.blogId, 'blacklist')}
+                                              className="text-xs"
+                                              data-testid={`status-blacklist-${blog.blogId}`}
+                                            >
+                                              블랙
+                                            </Button>
+                                            <Button 
+                                              size="sm" 
+                                              variant={blog.status === 'outreach' ? 'default' : 'outline'}
+                                              onClick={() => handleStatusToggle(blog.blogId, 'outreach')}
+                                              className="text-xs"
+                                              data-testid={`status-outreach-${blog.blogId}`}
+                                            >
+                                              섭외
+                                            </Button>
                                           </div>
                                         </td>
                                       </tr>
