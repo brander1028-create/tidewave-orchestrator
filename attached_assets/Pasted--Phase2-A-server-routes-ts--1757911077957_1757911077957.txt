@@ -1,0 +1,208 @@
+핫픽스 요청] Phase2 결과표시 + 파이프라인 정리(업데이트만)
+A. 서버 결과 조립 보강(스키마 변경 없음, 응답필드만 추가)
+
+server/routes.ts 결과 조립부에 요약 배열을 추가하세요.
+
+// 가정: purposeKeywords, discoveredBlogs, analyzedPosts, extractedKeywords 이미 있음
+// rankLimit, device는 기존 파라미터/기본값 사용
+
+function isExposed(k:{rank?:number|null}){ return (k?.rank ?? 0) > 0 && (k!.rank as number) <= 10; }
+
+results.summaryByKeyword = purposeKeywords.map(K => {
+  // 이번 실행에서 K로 포착된 블로그들
+  const blogs = discoveredBlogs.filter(b => b.purposeKeyword === K);
+  const total = new Set(blogs.map(b => b.blogId)).size;
+
+  // 신규 여부: upsert 시 "삽입 성공"에 찍은 플래그/로그 사용 (없으면 firstSeenAt==runId 기준)
+  const newBlogs = blogs.filter(b => b.isNew === true);
+  const newCount = new Set(newBlogs.map(b => b.blogId)).size;
+
+  // 신규 블로그의 Phase2 노출 여부
+  const phase2NewExposed = newBlogs.filter(b => {
+    const kws = extractedKeywords.filter(k => k.blogId === b.blogId);
+    return kws.some(isExposed);
+  }).length;
+
+  // 헤더용 검색량(없으면 null)
+  const searchVolume = results.searchVolumes?.[K] ?? null;
+
+  // “자세히” 표용 신규 블로그 상세
+  const items = newBlogs.map(b => {
+    const latest = analyzedPosts
+      .filter(p => p.blogId === b.blogId)
+      .sort((a,b)=> (b.fetchedAt||0)-(a.fetchedAt||0))
+      .slice(0,10)
+      .map(p => p.title);
+
+    const top10 = extractedKeywords
+      .filter(k => k.blogId === b.blogId)
+      .sort((a,b)=> (b.totalScore||0) - (a.totalScore||0))
+      .slice(0,10)
+      .map(k => ({
+        text: k.text,
+        volume: k.volume ?? null,                 // null은 “미확인”으로 표기
+        score: Math.round(k.totalScore||0),
+        rank: k.rank ?? null,                     // null은 “미노출/미확인”
+        related: !!k.meta?.related
+      }));
+
+    return {
+      blogName: b.name, blogUrl: b.url,
+      scannedPosts: latest.length,
+      titlesSample: latest.slice(0,3),            // 볼륨 0일 때 보여줄 제목 샘플
+      topKeywords: top10
+    };
+  });
+
+  return {
+    keyword: K,
+    searchVolume,
+    totalBlogs: total,
+    newBlogs: newCount,
+    phase2ExposedNew: phase2NewExposed,
+    items
+  };
+});
+
+// 혼동 유발 배지 값은 응답에서 제거/미전파: "DB 전용", "미적용" 등
+
+
+표시 규칙: 볼륨이 null이면 ‘–’, 0은 진짜 0일 때만. rank=null은 ‘미확인’, rank>10은 ‘미노출’.
+
+B. 프론트 — “키워드 요약 카드 → 자세히” 구현(기존 페이지에 컴포넌트만 추가)
+1) 요약 카드 컴포넌트
+
+client/src/components/keyword-summary-card.tsx
+
+import React, { useState } from "react";
+
+export type KeywordItem = {
+  blogName: string; blogUrl: string;
+  scannedPosts: number;
+  titlesSample: string[];
+  topKeywords: { text:string; volume:number|null; score:number; rank:number|null; related:boolean }[];
+};
+
+export default function KeywordSummaryCard({
+  data, // { keyword, searchVolume, totalBlogs, newBlogs, phase2ExposedNew, items }
+}: { data: {
+  keyword:string; searchVolume:number|null;
+  totalBlogs:number; newBlogs:number; phase2ExposedNew:number;
+  items: KeywordItem[];
+}}) {
+  const [open, setOpen] = useState(false);
+  const fmtVol = (v:number|null)=> v==null ? "–" : v.toLocaleString();
+  const fmtRank = (r:number|null)=> r==null ? "미확인" : (r<=10?`모바일 1p #${r}`:"미노출");
+
+  return (
+    <div className="rounded-2xl border p-4 mb-4 shadow-sm bg-white">
+      <div className="flex items-center justify-between">
+        <div className="text-lg font-semibold">{data.keyword}
+          <span className="ml-2 text-sm text-gray-500">검색량 {fmtVol(data.searchVolume)}</span>
+        </div>
+        <button className="px-3 py-1 rounded-xl border hover:bg-gray-50" onClick={()=>setOpen(!open)}>
+          {open ? "접기" : "자세히"}
+        </button>
+      </div>
+
+      <div className="mt-2 text-sm text-gray-700">
+        <span className="mr-4">신규 {data.newBlogs}/{data.totalBlogs}</span>
+        <span>Phase2(신규) {data.phase2ExposedNew}/{data.newBlogs}</span>
+      </div>
+
+      {open && (
+        <div className="mt-4 space-y-6">
+          {/* ① 신규 블로그 */}
+          <div>
+            <div className="font-medium mb-2">① 신규 블로그</div>
+            <div className="space-y-2">
+              {data.items.map((it, i)=>(
+                <div key={i} className="rounded-xl border p-3">
+                  <div className="flex items-center justify-between">
+                    <a className="font-medium hover:underline" href={it.blogUrl} target="_blank" rel="noreferrer">{it.blogName}</a>
+                    <div className="text-xs text-gray-500">스캔 {it.scannedPosts}개</div>
+                  </div>
+                  {/* 볼륨이 ‘–’로 보이는 상황 대비: 제목 샘플 */}
+                  <div className="mt-2 text-xs text-gray-600">제목 샘플: {it.titlesSample.join(" · ")}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ② Phase2(신규) */}
+          <div>
+            <div className="font-medium mb-2">② Phase2(신규)</div>
+            <div className="space-y-3">
+              {data.items.map((it, i)=>(
+                <div key={i} className="rounded-xl border p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <a className="font-medium hover:underline" href={it.blogUrl} target="_blank" rel="noreferrer">{it.blogName}</a>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {it.topKeywords.map((k, idx)=>(
+                      <span key={idx} className="text-sm rounded-full border px-2 py-1">
+                        {k.text}{k.related? "" : " [관련X]"} · {fmtVol(k.volume)} · {k.score}pts · {fmtRank(k.rank)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+2) 페이지에서 카드 렌더
+
+client/src/pages/advanced_analysis.tsx (또는 현재 결과 페이지)
+
+import KeywordSummaryCard from "@/components/keyword-summary-card";
+// ...
+// 서버 응답: { summaryByKeyword: Array<...> } 가정
+{data.summaryByKeyword
+  .sort((a,b)=> (b.phase2ExposedNew/b.newBlogs||0) - (a.phase2ExposedNew/a.newBlogs||0)
+               || (b.newBlogs - a.newBlogs))
+  .map((row:any)=> <KeywordSummaryCard key={row.keyword} data={row} />)}
+
+
+중요: 기존에 보이던 “DB 전용/미적용” 배지는 표시하지 마세요. 내부 로그에만 남기고, 화면엔 –(미확인) 규칙으로 통일합니다.
+
+C. 0/미노출 표시 규칙(혼동 제거)
+
+볼륨: null → "–", 0 → "0"(확인됨), 숫자 → 천단위 표기.
+
+순위: null → "미확인", >10 → "미노출", <=10 → "모바일 1p #N"(또는 PC).
+
+라벨: 관련X는 텍스트 뒤에 [관련X]만.
+
+D. 실패내성/폴백(이미 반영했으면 유지)
+
+DB 미스 → 같은 요청 안에서 API 폴백→upsert→재스코어.
+
+429는 Retry-After 준수 최대 3회, 일부 실패여도 partial results 반환·카운터 반영.
+
+E. 스모크 체크(지금 화면 기준)
+
+카드 헤더에: 키워드 · 검색량 + 신규/총 · Phase2(신규)가 숫자로 채워짐.
+
+“자세히”에서 ① 신규 블로그와 **② Phase2(신규)**가 나뉘어 표기.
+
+볼륨이 없던 칩은 –로 나오고, 그 블로그 박스에 제목 샘플이 함께 보여 이해 가능.
+
+“DB 전용/미적용” 같은 배지는 사라짐(로그에만 남음).
+
+정렬: Phase2(신규) 비율 내림차순 → 동률 시 신규 수 내림차순.
+
+왜 지금 화면이 엉켰나(요약 진단)
+
+UI: “요약→자세히” 흐름 미구현 + 불필요한 배지 노출.
+
+데이터: 볼륨 null을 0처럼 표기, 순위 null도 전부 “미노출”로 뭉뚱그림.
+
+파이프라인: DB미스 시 폴백 실패/단락으로 ‘0/미적용’이 대량 발생.
+
+위 핫픽스대로 반영하면, 한 화면에서 키워드별 KPI를 먼저 확인하고, “자세히”에서 신규/Phase2 결과를 명확하게 볼 수 있습니다.

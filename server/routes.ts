@@ -201,8 +201,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Get all discovered blogs
       const allBlogs = await storage.getDiscoveredBlogs(job.id);
-      const allPosts = [];
-      const allKeywords = [];
+      const allPosts: any[] = [];
+      const allKeywords: any[] = [];
       
       // Filter blogs with TOP3 keywords that have SERP rank 1-10
       const hitBlogs = [];
@@ -211,7 +211,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const allKeywordTexts = new Set<string>();
       for (const blog of allBlogs) {
         const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
-        top3Keywords.forEach(kw => allKeywordTexts.add(kw.keyword));
+        top3Keywords.forEach((kw: any) => allKeywordTexts.add(kw.keyword));
       }
       
       // Get raw_volume mapping from keywords DB
@@ -316,10 +316,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
         volumes_mode: volumesMode
       });
 
+      // Helper function to check if keyword is exposed (rank 1-10)
+      const isExposed = (k: {rank?: number | null}) => { 
+        return (k?.rank ?? 0) > 0 && (k!.rank as number) <= 10; 
+      };
+
+      // Build summaryByKeyword array
+      const purposeKeywords = job.keywords || [];
+      const summaryByKeyword = purposeKeywords.map(K => {
+        // Blogs captured with this keyword
+        const blogsForKeyword = allBlogs.filter(b => b.seedKeyword === K);
+        const total = new Set(blogsForKeyword.map(b => b.blogId)).size;
+
+        // New blogs (assuming all discovered blogs are "new" for now - can be enhanced with isNew flag)
+        const newBlogs = blogsForKeyword.filter(b => (b as any).isNew !== false); // Default to new unless explicitly marked
+        const newCount = new Set(newBlogs.map(b => b.blogId)).size;
+
+        // Phase2 exposure for new blogs
+        let phase2NewExposed = 0;
+        for (const blog of newBlogs) {
+          const blogKeywords = allKeywords.find((ak: any) => ak.blog_id === blog.blogId);
+          if (blogKeywords && blogKeywords.top4.some(isExposed)) {
+            phase2NewExposed++;
+          }
+        }
+
+        // Search volume for header (get from keywordVolumeMap if available)
+        const searchVolume = keywordVolumeMap[K] ?? null;
+
+        // Detailed items for "자세히" section
+        const items = newBlogs.map(b => {
+          const posts = allPosts.filter((p: any) => p.blog_id === b.blogId);
+          const latestPosts = posts
+            .sort((a: any, b: any) => (new Date(b.published_at || 0).getTime()) - (new Date(a.published_at || 0).getTime()))
+            .slice(0, 10);
+
+          const blogKeywords = allKeywords.find((ak: any) => ak.blog_id === b.blogId);
+          const top10 = blogKeywords ? blogKeywords.top4
+            .sort((a: any, b: any) => (b.combined_score || 0) - (a.combined_score || 0))
+            .slice(0, 10)
+            .map((k: any) => ({
+              text: k.text,
+              volume: k.raw_volume ?? null,
+              score: Math.round(k.combined_score || 0),
+              rank: k.rank ?? null,
+              related: !!k.meta?.related
+            })) : [];
+
+          return {
+            blogName: b.blogName,
+            blogUrl: b.blogUrl,
+            scannedPosts: latestPosts.length,
+            titlesSample: latestPosts.slice(0, 3).map((p: any) => p.post_title),
+            topKeywords: top10
+          };
+        });
+
+        return {
+          keyword: K,
+          searchVolume,
+          totalBlogs: total,
+          newBlogs: newCount,
+          phase2ExposedNew: phase2NewExposed,
+          items
+        };
+      });
+
       const response: any = {
         blogs: hitBlogs,
         keywords: allKeywords, 
         posts: allPosts,
+        summaryByKeyword, // Add the new summary array
         counters: {
           discovered_blogs: allBlogs.length, // Total blogs found during discovery
           blogs: allBlogs.length, // Existing field (total blogs analyzed)
@@ -467,7 +534,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const allKeywordTexts = new Set<string>();
       for (const blog of allBlogs) {
         const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
-        top3Keywords.forEach(kw => allKeywordTexts.add(kw.keyword));
+        top3Keywords.forEach((kw: any) => allKeywordTexts.add(kw.keyword));
       }
       
       // Get raw_volume mapping from keywords DB
