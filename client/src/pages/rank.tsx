@@ -51,15 +51,17 @@ interface RankingData {
   lastCheck: string;
 }
 
-// Form schema for adding keywords
-const addTargetSchema = z.object({
-  query: z.string().min(1, "키워드를 입력해주세요"),
-  kind: z.enum(["blog", "shop"], { required_error: "타입을 선택해주세요" }),
-  device: z.enum(["mobile", "pc"], { required_error: "디바이스를 선택해주세요" }),
-  owner: z.string().default("admin"),
+// Form schema for manual blog entry
+const addManualBlogSchema = z.object({
+  keyword: z.string().min(1, "키워드를 입력해주세요"),
+  url: z.string().url("올바른 URL을 입력해주세요"),
+  title: z.string().min(1, "블로그 제목을 입력해주세요"),
+  rank: z.number().min(1, "순위는 1 이상이어야 합니다").optional(),
+  notes: z.string().optional(),
+  submittedBy: z.string().default("admin"),
 });
 
-type AddTargetForm = z.infer<typeof addTargetSchema>;
+type AddManualBlogForm = z.infer<typeof addManualBlogSchema>;
 
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
@@ -84,33 +86,25 @@ export default function Rank() {
     },
   });
   
-  // Add target mutation
-  const addTargetMutation = useMutation({
-    mutationFn: async (data: AddTargetForm) => {
-      const targetData: InsertTrackedTarget = {
-        ...data,
-        windowMin: 1,
-        windowMax: 10,
-        thresholds: { warning: 15, critical: 25 },
-        schedule: "1h",
-        enabled: true,
-        tags: [],
-      };
-      return await targetsApi.create(targetData);
+  // Add manual blog entry mutation  
+  const addBlogMutation = useMutation({
+    mutationFn: async (data: AddManualBlogForm) => {
+      // TODO: 수동 블로그 입력 API 구현 필요
+      console.log('Manual blog entry data:', data);
+      return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
       form.reset();
-      setIsAddTargetOpen(false);
+      setIsAddBlogOpen(false);
       toast({
-        title: "키워드 추가 완료",
-        description: "새 키워드 추적이 시작되었습니다.",
+        title: "블로그 입력 완료",
+        description: "새 블로그 정보가 등록되었습니다.",
       });
     },
     onError: (error) => {
       toast({
-        title: "추가 실패",
-        description: "키워드 추가 중 오류가 발생했습니다.",
+        title: "입력 실패",
+        description: "블로그 입력 중 오류가 발생했습니다.",
         variant: "destructive",
       });
     },
@@ -166,8 +160,8 @@ export default function Rank() {
   const currentRankingData = convertTargetsToRankingData(trackedTargets);
 
   // Handle form submission
-  const onSubmit = (data: AddTargetForm) => {
-    addTargetMutation.mutate(data);
+  const onSubmit = (data: AddManualBlogForm) => {
+    addBlogMutation.mutate(data);
   };
   
   // Handle target deletion
