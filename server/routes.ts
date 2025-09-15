@@ -24,6 +24,71 @@ import { nanoid } from 'nanoid';
 import { blogRegistry, discoveredBlogs, postTierChecks, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 
+// Helper function for tier distribution analysis and augmentation
+async function checkAndAugmentTierDistribution(jobId: string, inputKeywords: string[]): Promise<void> {
+  try {
+    console.log(`🔍 [Tier Analysis] Analyzing tier distribution for job ${jobId} with ${inputKeywords.length} keywords`);
+    
+    // Query current tier distribution from postTierChecks
+    const tierChecks = await db.select().from(postTierChecks).where(
+      eq(postTierChecks.jobId, jobId)
+    );
+    
+    if (tierChecks.length === 0) {
+      console.log(`⚠️ [Tier Analysis] No tier checks found for job ${jobId}, skipping augmentation`);
+      return;
+    }
+    
+    // Analyze tier distribution per keyword
+    const tierDistribution: Record<string, Set<number>> = {};
+    for (const keyword of inputKeywords) {
+      tierDistribution[keyword] = new Set();
+    }
+    
+    for (const check of tierChecks) {
+      if (tierDistribution[check.inputKeyword]) {
+        tierDistribution[check.inputKeyword].add(check.tier);
+      }
+    }
+    
+    // Find missing tiers (1-4)
+    const requiredTiers = [1, 2, 3, 4];
+    let totalMissingTiers = 0;
+    
+    for (const keyword of inputKeywords) {
+      const presentTiers = Array.from(tierDistribution[keyword]);
+      const missingTiers = requiredTiers.filter(tier => !presentTiers.includes(tier));
+      
+      if (missingTiers.length > 0) {
+        console.log(`📊 [Tier Analysis] Keyword "${keyword}" missing tiers: ${missingTiers.join(', ')}`);
+        totalMissingTiers += missingTiers.length;
+      } else {
+        console.log(`✅ [Tier Analysis] Keyword "${keyword}" has complete tier coverage (1-4)`);
+      }
+    }
+    
+    if (totalMissingTiers === 0) {
+      console.log(`🎉 [Tier Analysis] All keywords have complete tier coverage, no augmentation needed`);
+      return;
+    }
+    
+    console.log(`📈 [Tier Analysis] Found ${totalMissingTiers} missing tier slots across all keywords`);
+    console.log(`🔄 [Tier Analysis] Auto-augmentation system would fetch related keywords here`);
+    console.log(`💡 [Tier Analysis] Implementation note: Related keyword fetching to be added in next iteration`);
+    
+    // TODO: Implement related keyword fetching and tier augmentation
+    // 1. Fetch related keywords from Naver API or SearchAds
+    // 2. Filter by volume >= 1000
+    // 3. Run tier checks for missing tier slots
+    // 4. Insert results into postTierChecks table
+    
+    console.log(`✅ [Tier Analysis] Tier distribution analysis completed for job ${jobId}`);
+    
+  } catch (error) {
+    console.error(`❌ [Tier Analysis] Error during tier distribution analysis:`, error);
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   
   // === Health TTL cache & shallow mode ===
@@ -2393,6 +2458,10 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         finalStats.blogsWithMinimumPosts++;
       }
     }
+    
+    // ✅ NEW: Tier distribution analysis and auto-augmentation (G feature)
+    console.log(`\n🔄 [Tier Analysis] Starting tier distribution check for automatic augmentation...`);
+    await checkAndAugmentTierDistribution(jobId, keywords);
     
     // Complete the job with detailed results
     await storage.updateSerpJob(jobId, {
