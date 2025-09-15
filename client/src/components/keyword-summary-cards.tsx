@@ -63,26 +63,33 @@ export default function KeywordSummaryCards({ jobId }: KeywordSummaryCardsProps)
   const processKeywordData = (): KeywordCardData[] => {
     if (!job?.keywords || !results) return [];
 
-    return job.keywords.map(keyword => {
-      // Find blogs discovered by this keyword
-      // Using seedKeyword from discoveredBlogs or base_rank logic
-      const relatedBlogs = results.blogs.filter(blog => {
-        // Simple heuristic: if blog has base_rank, it was found by a primary keyword
-        // More sophisticated logic would require seedKeyword from API
-        return blog.base_rank && blog.base_rank <= 10;
-      });
+    return job.keywords.map((keyword, keywordIndex) => {
+      // TODO: API should return seedKeyword info from discoveredBlogs table
+      // For now, distribute blogs across input keywords using round-robin
+      // This is a workaround - proper solution needs API enhancement
+      const allBlogsWithRank = results.blogs.filter(blog => blog.base_rank && blog.base_rank <= 15);
+      
+      // Simple distribution: assign blogs to keywords by index
+      const blogsForThisKeyword = allBlogsWithRank.filter((_, blogIndex) => 
+        blogIndex % job.keywords!.length === keywordIndex
+      );
 
-      const blogsWithKeywords = relatedBlogs.map(blog => {
+      const blogsWithKeywords = blogsForThisKeyword.map(blog => {
         const keywordData = results.keywords.find(k => k.blog_id === blog.blog_id);
         const blogKeywords = keywordData?.top3 || (keywordData as any)?.top4 || [];
+        
+        // TODO: Implement proper isNew logic based on historical data
+        // For now, consider blogs with rank 6+ as potentially "new discoveries"
+        const isNew = (blog.base_rank || 0) > 5;
+        
         return {
           ...blog,
-          isNew: true, // TODO: Logic to determine if blog is new
+          isNew,
           keywords: blogKeywords
         };
       });
 
-      // Calculate metrics
+      // Calculate metrics based on actual isNew logic
       const totalBlogs = blogsWithKeywords.length;
       const newBlogs = blogsWithKeywords.filter(b => b.isNew).length;
       
@@ -97,7 +104,7 @@ export default function KeywordSummaryCards({ jobId }: KeywordSummaryCardsProps)
 
       return {
         keyword,
-        searchVolume: undefined, // TODO: Get from SearchAd API
+        searchVolume: undefined, // TODO: Get from SearchAd API or job results
         newBlogs,
         totalBlogs,
         phase2ExposedNew,

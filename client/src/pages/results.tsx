@@ -160,6 +160,15 @@ export default function ResultsPage() {
           <h2 className="text-xl font-semibold mb-4" data-testid="keyword-cards-title">
             키워드별 요약 분석
           </h2>
+          
+          {/* Temporary limitation notice */}
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg" data-testid="limitation-notice">
+            <p className="text-sm text-amber-800">
+              <strong>알림:</strong> 현재 키워드별 데이터 분배는 임시 방식입니다. 
+              정확한 분석을 위해 API 개선 작업이 진행 중입니다.
+            </p>
+          </div>
+          
           <KeywordSummaryCards jobId={jobId} />
         </div>
 
