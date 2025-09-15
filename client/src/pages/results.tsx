@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, Clock, Download } from "lucide-react";
-import KeywordSummaryCards from "@/components/keyword-summary-cards";
+import KeywordSummaryCard, { type KeywordSummaryData } from "@/components/keyword-summary-card";
 import type { SerpJob, SerpResultsData } from "../../../shared/schema";
 
 export default function ResultsPage() {
@@ -161,15 +161,37 @@ export default function ResultsPage() {
             키워드별 요약 분석
           </h2>
           
-          {/* Temporary limitation notice */}
-          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg" data-testid="limitation-notice">
-            <p className="text-sm text-amber-800">
-              <strong>알림:</strong> 현재 키워드별 데이터 분배는 임시 방식입니다. 
-              정확한 분석을 위해 API 개선 작업이 진행 중입니다.
-            </p>
+          {/* Render keyword summary cards */}
+          <div className="space-y-4" data-testid="keyword-summary-list">
+            {results.summaryByKeyword && results.summaryByKeyword.length > 0 ? (
+              results.summaryByKeyword
+                .sort((a, b) => {
+                  // Sort by Phase2 exposure ratio descending, then by new blogs count descending
+                  const ratioA = a.newBlogs > 0 ? a.phase2ExposedNew / a.newBlogs : 0;
+                  const ratioB = b.newBlogs > 0 ? b.phase2ExposedNew / b.newBlogs : 0;
+                  
+                  if (ratioA !== ratioB) {
+                    return ratioB - ratioA;  // Higher ratio first
+                  }
+                  
+                  return b.newBlogs - a.newBlogs;  // More new blogs first if same ratio
+                })
+                .map((keywordData: KeywordSummaryData) => (
+                  <KeywordSummaryCard
+                    key={keywordData.keyword}
+                    data={keywordData}
+                  />
+                ))
+            ) : (
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="text-center text-gray-600 dark:text-gray-400" data-testid="no-keywords-message">
+                    키워드 분석 데이터가 없습니다.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
-          
-          <KeywordSummaryCards jobId={jobId} />
         </div>
 
         {/* Footer */}

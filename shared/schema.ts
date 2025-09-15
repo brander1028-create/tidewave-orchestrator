@@ -169,6 +169,26 @@ export interface SerpResultsData {
     content: string;
     url: string;
   }[];
+  summaryByKeyword?: {
+    keyword: string;
+    searchVolume: number | null;
+    totalBlogs: number;
+    newBlogs: number;
+    phase2ExposedNew: number;
+    items: {
+      blogName: string;
+      blogUrl: string;
+      scannedPosts: number;
+      titlesSample: string[];
+      topKeywords: {
+        text: string;
+        volume: number | null;
+        score: number;
+        rank: number | null;
+        related: boolean;
+      }[];
+    }[];
+  }[];
   counters: {
     discovered_blogs: number; // Total blogs found during discovery
     blogs: number; // Existing field (total blogs analyzed)
