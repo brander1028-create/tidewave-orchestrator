@@ -521,9 +521,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Build v8 response format
+      // Collect additional data for enhanced response (avoiding key collision)
+      const allBlogsData = [];
+      const allPostsData = [];
+      const errors: string[] = [];
+      const warnings: string[] = [];
+      
+      // Build comprehensive data arrays from discovered blogs
+      for (const blog of newBlogs) {
+        // Add blog data
+        allBlogsData.push({
+          blog_id: blog.blogId,
+          blog_name: blog.blogName,
+          blog_url: blog.blogUrl,
+          base_rank: blog.baseRank || null,
+          gathered_posts: blog.postsAnalyzed || 0
+        });
+        
+        // Add posts data from analyzed_posts table
+        const blogPosts = await storage.getAnalyzedPosts(blog.id);
+        for (const post of blogPosts.slice(0, P)) {
+          allPostsData.push({
+            blog_id: blog.blogId,
+            title: post.title,
+            content: "", // Content not stored in analyzed_posts
+            url: post.url || ""
+          });
+        }
+      }
+      
+      // Check for potential warnings
+      for (const keyword of inputKeywords) {
+        if (searchVolumes[keyword] === null) {
+          warnings.push(`검색량을 확인할 수 없습니다: ${keyword}`);
+        }
+      }
+      
+      // Calculate counters from actual data
+      const counters = {
+        discovered_blogs: allBlogs.length,
+        blogs: newBlogs.length,
+        posts: allPostsData.length,
+        selected_keywords: inputKeywords.length,
+        searched_keywords: inputKeywords.length,
+        hit_blogs: newBlogs.filter(blog => {
+          const blogChecks = tierChecks.filter(check => 
+            check.blogId === blog.blogId &&
+            check.rank !== null && 
+            check.rank >= 1 && 
+            check.rank <= 10
+          );
+          return blogChecks.length > 0;
+        }).length,
+        volumes_mode: "searchads" // TODO: Detect actual mode based on API usage
+      };
+
+      // Build v8 response format with additional fields (no key collision)
       const response = {
-        keywords: inputKeywords,
+        keywords: inputKeywords, // Keep as string[] for frontend compatibility
         status: "완료",
         analyzedAt: job.updatedAt?.toISOString() || job.createdAt?.toISOString(),
         params: {
@@ -533,7 +588,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         searchVolumes,
         attemptsByKeyword,
         exposureStatsByKeyword,
-        summaryByKeyword
+        summaryByKeyword,
+        // Additional fields without breaking existing contract
+        blogs: allBlogsData,
+        posts: allPostsData,
+        counters,
+        warnings,
+        errors
       };
 
       console.log(`📊 v8 SERP Results (Job ${job.id}):`, JSON.stringify(response, null, 2));
