@@ -50,13 +50,13 @@ export class TitleKeywordExtractor {
   ]);
 
   /**
-   * 텍스트 정규화 및 정제
+   * ✅ 정규화 동치 규칙 (NFKC + 공백/하이픈/언더스코어/점 제거)
    */
   private normalizeText(text: string): string {
     return text
-      .replace(/[^가-힣a-zA-Z0-9\s]/g, ' ') // 한글, 영문, 숫자, 공백만 유지
+      .normalize('NFKC')
       .toLowerCase()
-      .replace(/\s+/g, ' ')
+      .replace(/[\s\-_.]/g, '') // 공백/하이픈/언더스코어/점 제거
       .trim();
   }
 
@@ -78,78 +78,67 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * 제목에서 토큰 추출 및 n-gram 생성 (원래 키워드 관련성 체크)
+   * ✅ 모든 제목에서 n-gram 후보 생성 (필터링 금지)
    */
-  private extractCandidates(titles: string[], originalKeywords: string[] = []): Map<string, number> {
-    const candidateFreq = new Map<string, number>();
+  private extractCandidates(titles: string[]): Map<string, { originalText: string; frequency: number }> {
+    // ✅ 동치키(normalized) → { 원문, 빈도 } 매핑
+    const candidateMap = new Map<string, { originalText: string; frequency: number }>();
     
-    // ✅ 원래 키워드가 포함된 제목만 사용 (관련성 체크)
-    const relevantTitles = this.filterRelevantTitles(titles, originalKeywords);
-    console.log(`🎯 Filtering titles: ${titles.length} → ${relevantTitles.length} relevant titles`);
-    
-    for (const title of relevantTitles) {
-      const normalized = this.normalizeText(title);
-      const words = normalized.split(' ').filter(word => 
-        word.length >= 2 && 
-        !this.stopWords.has(word) &&
-        !/^\d+$/.test(word)
-      );
+    // ✅ 모든 제목 사용 (필터링 금지)
+    for (const title of titles) {
+      // ✅ 원문 단어 분리 (정규화 전) 
+      const originalWords = title.replace(/[^\uac00-\ud7a3a-zA-Z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(word => word.length >= 2 && !this.stopWords.has(word) && !/^\d+$/.test(word));
       
       // 1-gram, 2-gram, 3-gram 추출
       for (let n = 1; n <= 3; n++) {
-        for (let i = 0; i <= words.length - n; i++) {
-          const ngram = words.slice(i, i + n).join(' ');
-          if (ngram.length >= 2) {
-            const canonical = this.canonicalize(ngram);
-            if (canonical.length >= 2) {
-              const weight = n; // n-gram 길이에 따른 가중치
-              candidateFreq.set(canonical, (candidateFreq.get(canonical) || 0) + weight);
+        for (let i = 0; i <= originalWords.length - n; i++) {
+          const originalNgram = originalWords.slice(i, i + n).join(' ');
+          if (originalNgram.length >= 2) {
+            // ✅ 동치키로 중복 제거, 원문은 가장 많이 등장한 것 우선
+            const normalizedKey = this.normalizeText(originalNgram);
+            if (normalizedKey.length >= 2) {
+              const existing = candidateMap.get(normalizedKey);
+              if (!existing || existing.frequency < n) {
+                candidateMap.set(normalizedKey, {
+                  originalText: originalNgram,
+                  frequency: (existing?.frequency || 0) + n
+                });
+              } else {
+                candidateMap.set(normalizedKey, {
+                  ...existing,
+                  frequency: existing.frequency + n
+                });
+              }
             }
           }
         }
       }
     }
     
-    // 빈도 상위 50개로 제한 (API 비용 보호)
-    const sortedCandidates = Array.from(candidateFreq.entries())
-      .sort(([,a], [,b]) => b - a)
+    // ✅ 빈도 상위 50개로 제한 (API 비용 보호)
+    const sortedCandidates = Array.from(candidateMap.entries())
+      .sort(([,a], [,b]) => b.frequency - a.frequency)
       .slice(0, this.MAX_CANDIDATES);
     
     return new Map(sortedCandidates);
   }
 
   /**
-   * ✅ 원래 키워드와 관련된 제목만 필터링
+   * ✅ 관련성 체크 (저장하지 않고 라벨링만)
    */
-  private filterRelevantTitles(titles: string[], originalKeywords: string[] = []): string[] {
-    if (originalKeywords.length === 0) return titles; // 원래 키워드가 없으면 모든 제목 사용
+  private isRelatedToOriginal(keyword: string, sourceTitle: string, originalKeywords: string[]): boolean {
+    if (originalKeywords.length === 0) return false;
     
-    const relevantTitles: string[] = [];
+    const normalizedKeyword = this.normalizeText(keyword);
+    const normalizedTitle = this.normalizeText(sourceTitle);
     
-    for (const title of titles) {
-      const normalizedTitle = this.normalizeText(title).toLowerCase();
-      
-      // 🔍 디버깅: 각 제목별 키워드 매칭 로그
-      console.log(`🔍 Title: "${title.substring(0, 30)}..."`);
-      
-      // 원래 키워드 중 하나라도 포함되면 관련 제목으로 판단
-      const isRelevant = originalKeywords.some(keyword => {
-        const normalizedKeyword = this.normalizeText(keyword).toLowerCase();
-        const contains = normalizedTitle.includes(normalizedKeyword);
-        console.log(`   • "${keyword}" in title? ${contains ? '✅' : '❌'}`);
-        return contains;
-      });
-      
-      if (isRelevant) {
-        relevantTitles.push(title);
-        console.log(`   → RELEVANT ✅`);
-      } else {
-        console.log(`   → SKIPPED ❌`);
-      }
-    }
-    
-    // 관련 제목이 없으면 모든 제목 사용 (폴백)
-    return relevantTitles.length > 0 ? relevantTitles : titles;
+    return originalKeywords.some(original => {
+      const normalizedOriginal = this.normalizeText(original);
+      return normalizedKeyword.includes(normalizedOriginal) || 
+             normalizedTitle.includes(normalizedOriginal);
+    });
   }
 
   /**
@@ -166,17 +155,17 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * DB에서 키워드 메트릭 로드
+   * ✅ DB에서 동치키 기준 메트릭 로드
    */
-  private async loadFromDB(candidates: string[]): Promise<Map<string, any>> {
+  private async loadFromDB(normalizedKeys: string[]): Promise<Map<string, any>> {
     const dbKeywords = await listKeywords({ excluded: false, orderBy: 'raw_volume', dir: 'desc' });
     const keywordMap = new Map();
     
     for (const keyword of dbKeywords) {
-      const canonical = this.canonicalize(keyword.text);
-      if (candidates.includes(canonical)) {
-        keywordMap.set(canonical, {
-          text: canonical,
+      const normalizedDbKey = this.normalizeText(keyword.text);
+      if (normalizedKeys.includes(normalizedDbKey)) {
+        keywordMap.set(normalizedDbKey, {
+          original_text: keyword.text,
           raw_volume: keyword.raw_volume || 0,
           score: keyword.commerciality || 0,
           excluded: keyword.excluded || false,
@@ -189,25 +178,27 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * DB 기준 필터링 및 선별
+   * ✅ DB 기준 후보 선별 (최소 볼륨 조건 제거, Top4만 선별)
    */
-  private filterEligibleFromDB(fromDB: Map<string, any>, candidateFreq: Map<string, number>): TitleKeywordItem[] {
+  private selectFromDB(fromDB: Map<string, any>, candidateData: Map<string, { originalText: string; frequency: number }>): TitleKeywordItem[] {
     const eligible: TitleKeywordItem[] = [];
     
-    for (const [text, data] of Array.from(fromDB.entries())) {
-      if (!data.excluded && data.raw_volume >= this.MIN_VOLUME) {
-        const frequency = candidateFreq.get(text) || 0;
-        const { volume_score, combined_score } = this.calculateScores(data.raw_volume, data.score);
-        
-        eligible.push({
-          text,
-          raw_volume: data.raw_volume,
-          score: data.score,
-          volume_score,
-          combined_score,
-          frequency,
-          source: 'db'
-        });
+    for (const [normalizedKey, dbData] of Array.from(fromDB.entries())) {
+      if (!dbData.excluded && dbData.raw_volume > 0) {
+        const candidateInfo = candidateData.get(normalizedKey);
+        if (candidateInfo) {
+          const { volume_score, combined_score } = this.calculateScores(dbData.raw_volume, dbData.score);
+          
+          eligible.push({
+            text: candidateInfo.originalText, // ✅ 원문 표시
+            raw_volume: dbData.raw_volume,
+            score: dbData.score,
+            volume_score,
+            combined_score,
+            frequency: candidateInfo.frequency,
+            source: 'db'
+          });
+        }
       }
     }
     
@@ -255,19 +246,23 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * 빈도 기반 폴백 생성
+   * ✅ 빈도 기반 폴백 생성 (원문 표시)
    */
-  private createFrequencyFallback(candidateFreq: Map<string, number>, N: number): TitleKeywordItem[] {
+  private createFrequencyFallback(candidateData: Map<string, { originalText: string; frequency: number }>, N: number): TitleKeywordItem[] {
     const fallbackItems: TitleKeywordItem[] = [];
     
-    for (const [text, frequency] of Array.from(candidateFreq.entries()).slice(0, N)) {
+    const sortedEntries = Array.from(candidateData.entries())
+      .sort(([,a], [,b]) => b.frequency - a.frequency)
+      .slice(0, N);
+    
+    for (const [normalizedKey, data] of sortedEntries) {
       fallbackItems.push({
-        text,
+        text: data.originalText, // ✅ 원문 표시
         raw_volume: 0,
         score: 0,
         volume_score: 0,
         combined_score: 0,
-        frequency,
+        frequency: data.frequency,
         source: 'freq-fallback'
       });
     }
@@ -276,33 +271,32 @@ export class TitleKeywordExtractor {
   }
 
   /**
-   * 메인 추출 함수 - DB 우선 → API 갱신 → 재선별 파이프라인
+   * ✅ 메인 추출 함수 - 조회량 기준 Top4 (필터링 금지)
    */
-  async extractTopNByCombined(titles: string[], N: number = 4, originalKeywords: string[] = []): Promise<TitleExtractionResult> {
+  async extractTopNByCombined(titles: string[], N: number = 4): Promise<TitleExtractionResult> {
     console.log(`🎯 Starting title keyword extraction from ${titles.length} titles (Top ${N})`);
-    console.log(`📌 Original keywords for relevance: [${originalKeywords.join(', ')}]`);
     
-    // A. 토크나이징 & 정규화 (원래 키워드 기반 필터링)
-    const candidateFreq = this.extractCandidates(titles, originalKeywords);
-    const candidates = Array.from(candidateFreq.keys());
+    // ✅ A. 모든 제목에서 n-gram 후보 생성
+    const candidateData = this.extractCandidates(titles);
+    const normalizedKeys = Array.from(candidateData.keys());
     
     const stats = {
-      candidates: candidates.length,
+      candidates: normalizedKeys.length,
       db_hits: 0,
       api_refreshed: 0,
       ttl_skipped: 0
     };
     
-    console.log(`📊 Extracted ${candidates.length} candidates: ${candidates.slice(0, 5).join(', ')}...`);
+    console.log(`📊 Extracted ${normalizedKeys.length} candidates: ${Array.from(candidateData.values()).slice(0, 5).map(c => c.originalText).join(', ')}...`);
     
-    // B. DB 우선 선별
-    const fromDB = await this.loadFromDB(candidates);
-    const eligible = this.filterEligibleFromDB(fromDB, candidateFreq);
+    // ✅ B. DB 우선 선별 (조회량 기준)
+    const fromDB = await this.loadFromDB(normalizedKeys);
+    const eligible = this.selectFromDB(fromDB, candidateData);
     stats.db_hits = eligible.length;
     
-    console.log(`🗄️  DB hits (≥${this.MIN_VOLUME}): ${stats.db_hits}/${candidates.length}`);
+    console.log(`🗄️  DB hits: ${stats.db_hits}/${normalizedKeys.length}`);
     
-    if (eligible.length > 0) {
+    if (eligible.length >= N) {
       const topN = this.pickTopN(eligible, N);
       console.log(`✅ DB-only mode: Selected ${topN.length} keywords`);
       
@@ -315,46 +309,43 @@ export class TitleKeywordExtractor {
       };
     }
     
-    // C. DB 실패 시 한 번만 API 갱신
-    const shouldRefresh = await this.shouldRefreshAPI(candidates, fromDB);
+    // ✅ C. API 갱신 (TTL 체크)
+    const shouldRefresh = await this.shouldRefreshAPI(normalizedKeys, fromDB);
     
     if (shouldRefresh) {
-      console.log(`🔄 API refresh mode: Updating ${candidates.length} candidates`);
+      console.log(`🔄 API refresh mode: Updating ${normalizedKeys.length} candidates`);
       
       try {
-        // API 호출로 볼륨 갱신
-        const volumeResults = await getVolumes(candidates);
+        // 원문 리스트로 API 호출
+        const originalTexts = normalizedKeys.map(key => candidateData.get(key)?.originalText).filter((text): text is string => Boolean(text));
+        const volumeResults = await getVolumes(originalTexts);
         
-        // 저장 조건: raw_volume ≥ 1000 & has_ads=true만 저장
+        // ✅ 조건 제거: 모든 키워드 저장
         const toSave = [];
         for (const [text, data] of Object.entries<any>(volumeResults.volumes)) {
           const rawVolume = data.total || data.volumeMonthly || 0;
-          const hasAds = (data.plAvgDepth || data.adWordsCnt || 0) > 0;
-          
-          if (rawVolume >= this.MIN_VOLUME && hasAds) {
-            toSave.push({
-              text: this.canonicalize(text),
-              raw_volume: rawVolume,
-              volume: rawVolume,
-              commerciality: data.compIdx === '높음' ? 80 : data.compIdx === '중간' ? 50 : 20,
-              comp_idx: data.compIdx || '중간',
-              ad_depth: data.plAvgDepth || 0,
-              has_ads: hasAds,
-              source: 'title-analysis'
-            });
-          }
+          toSave.push({
+            text: this.normalizeText(text),
+            raw_volume: rawVolume,
+            volume: rawVolume,
+            commerciality: data.compIdx === '높음' ? 80 : data.compIdx === '중간' ? 50 : 20,
+            comp_idx: data.compIdx || '중간',
+            ad_depth: data.plAvgDepth || 0,
+            has_ads: (data.plAvgDepth || data.adWordsCnt || 0) > 0,
+            source: 'title-analysis'
+          });
         }
         
         if (toSave.length > 0) {
           await upsertMany(toSave);
-          console.log(`💾 Saved ${toSave.length} keywords to DB (raw≥${this.MIN_VOLUME} & has_ads)`);
+          console.log(`💾 Saved ${toSave.length} keywords to DB`);
         }
         
         stats.api_refreshed = Object.keys(volumeResults.volumes).length;
         
-        // D. 갱신 후 재선별
-        const reloadedFromDB = await this.loadFromDB(candidates);
-        const eligible2 = this.filterEligibleFromDB(reloadedFromDB, candidateFreq);
+        // ✅ D. 갱신 후 재선별
+        const reloadedFromDB = await this.loadFromDB(normalizedKeys);
+        const eligible2 = this.selectFromDB(reloadedFromDB, candidateData);
         
         if (eligible2.length > 0) {
           const topN = this.pickTopN(eligible2, N);
@@ -376,9 +367,9 @@ export class TitleKeywordExtractor {
       }
     }
     
-    // 폴백: 빈도 기반 Top N
+    // ✅ 폴백: 빈도 기반 Top N
     console.log(`📊 Fallback mode: Using frequency-based selection`);
-    const fallbackTopN = this.createFrequencyFallback(candidateFreq, N);
+    const fallbackTopN = this.createFrequencyFallback(candidateData, N);
     
     const budget = await getCallBudgetStatus();
     return {

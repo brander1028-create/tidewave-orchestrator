@@ -1,0 +1,80 @@
+[요청] 네이버 블로그 크롤링 — Phase2 키워드 로직 수정(업데이트만, 재구축 금지)
+
+■ 두 줄 요약
+- Phase1: 입력한 목적 키워드(예: “홍삼”)는 상위 노출 블로그 선별 용도로만 사용하고 역할 종료.
+- Phase2: 각 블로그의 최신글 10개 제목에서 ‘조회량 기준 Top4’ 키워드 추출(원 키워드와 무관해도 정상). 필터링 금지, 라벨만.
+
+■ 반드시 지킬 것 (MUST)
+1) 흐름/파일/스키마 유지
+   - 기존 엔드포인트·페이지·DB 스키마 그대로. 새 파일/마이그/리팩터 금지.
+   - 기존 결과 API는 {blogs, posts, keywords, counters} 풀 스키마를 항상 반환(과거 쇼트서킷 제거 유지).
+
+2) Phase 정의 재확인
+   - Phase1(완료 시 역할 끝): 목적 키워드로 상위/후보 블로그 수집.
+   - Phase2: 각 블로그 최신글 10개 → 제목 기반 키워드 후보 생성 → ‘검색량 상위 Top4’ 산출 → m.naver.com 1p 노출 여부 점검.
+     ※ 원 키워드와 무관한 키워드도 데이터로 인정(제거·축소 금지). UI에만 라벨링.
+
+3) Top4 선정 알고리즘(정확 스펙)
+   3-1) 후보 생성
+       - 제목에서 n-gram(1~3) 추출.
+       - 정규화 동치 규칙(표시는 원문 유지, 내부 집계만 동치화):
+         • NFKC 정규화 + 소문자화
+         • 공백/하이픈/언더스코어/점 제거 → "홍삼 스틱" ≡ "홍삼-스틱" ≡ "홍삼스틱"
+         • 연속 공백 압축
+       - 동치키(nrm)로 중복 제거(표시는 가장 많이 등장한 원문 변형을 우선).
+
+       // 개념 함수
+       const norm = s =>
+         s.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g,'').trim();
+
+   3-2) 볼륨 조회 순서(DB 우선 → API 보강 → 재계산)
+       - Pass A(DB): KEYWORD 캐시 TTL=30일 이내면 그 값 사용.
+       - Pass B(API): DB에 없거나 TTL 만료된 nrm만 청크 호출(SearchAds).
+         • 400 분할, 429 Retry-After 백오프 준수
+         • upsert로 DB 갱신 후 메모리에 병합
+       - 스코어링: DB 0.7, API 0.3 가중(한쪽만 있으면 그 값 사용).
+       - 최종 Top4(nrm 기준 유일) 선정.
+
+   3-3) 관련성 라벨(저장 변경 없음)
+       - 필터링 금지. 대신 응답/UI에 meta.related(boolean)만 부여:
+         • related = 원 목적 키워드들 중 하나라도 (키워드표기 또는 sourceTitle)에 포함되면 true
+         • UI 표시에만 “[관련X]” 등으로 구분, DB 스키마 변경·저장 변경 없음.
+
+4) 저장/카운터/결과 조립
+   - 인메모리 Map 의존 금지, 기존 테이블에 INSERT/UPSERT(ON CONFLICT)로 영속화.
+   - counters.attempted/success 정확 집계(부분 실패여도 partial results 반환).
+   - 결과 API는 항상 {blogs, posts, keywords, counters} 풀 스키마 반환(쇼트서킷 없음).
+
+5) SearchAds 안정화(현 구조 유지, 견고성만)
+   - 청크 분할, 429 백오프, TTL 캐시 재사용, 부분 실패 시에도 진행.
+   - “재시도 중단으로 finalStats=0” 같은 단락 현상 금지.
+
+6) UI(advanced_analysis) 유지
+   - 상단 배지: “검색 결과: {success}/{attempted}”
+   - 표 컬럼 고정: [목적키워드 | 블로그(링크) | 노출 키워드 수 | 노출 키워드(조회량,순위) | 사유(상위)]
+   - 비관련 키워드는 표시만 “[관련X]”로.
+
+■ 하지 말 것 (DO NOT)
+- 새 엔드포인트/새 페이지/새 파일 생성 금지.
+- DB 스키마/마이그레이션/응답 형태 변경 금지.
+- “원 키워드 미포함 제목 제외” 같은 필터링 재도입 금지.
+- 대규모 리네이밍·리팩터 금지.
+
+■ 변경 범위(예상 파일만)
+- server/services/title-keyword-extractor.ts (정규화/동치·n-gram·라벨링)
+- server/routes.ts (결과 조립: Top4, meta.related, 쇼트서킷 없음)
+- server/storage.ts (DB upsert/카운터 일관성)
+
+■ 스모크 테스트 & 수용 기준
+1) 실행
+   POST /api/serp/analyze
+   {"keywords":["홍삼"],"minRank":8,"maxRank":10,"postsPerBlog":10,"titleExtract":true}
+
+   GET /api/serp/jobs/{JOB_ID}/results
+
+2) 합격 조건
+   - results가 {blogs, posts, keywords, counters} 풀 스키마로 반환.
+   - keywords 길이 ≥4이며 Top4는 조회량 상위, “홍삼 스틱”과 “홍삼스틱”은 동치로 1개로 집계.
+   - DB 캐시에 없던 항목은 API 호출 후 DB upsert되고, 같은 요청 흐름에서 재계산 반영.
+   - 비관련 키워드도 포함되어 meta.related=false(또는 UI “[관련X]”)로 표기.
+   - 상단 배지 success/attempted 노출, 부분 실패여도 partial results 제공.

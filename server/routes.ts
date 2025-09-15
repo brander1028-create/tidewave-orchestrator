@@ -31,6 +31,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const isDeep = (req:any)=> req.query?.deep === '1' || req.query?.deep === 'true';
   
+  // Utility function to check keyword relatedness to original search terms
+  function checkRelatedness(keyword: string, originalKeywords: string[]): boolean {
+    if (originalKeywords.length === 0) return false;
+    
+    // Normalize text using NFKC and remove special characters
+    const normalizeText = (text: string): string => {
+      return text.normalize('NFKC').toLowerCase()
+        .replace(/[\s\-_\.]+/g, '')
+        .trim();
+    };
+    
+    const normalizedKeyword = normalizeText(keyword);
+    
+    return originalKeywords.some(original => {
+      const normalizedOriginal = normalizeText(original);
+      return normalizedKeyword.includes(normalizedOriginal) || 
+             normalizedOriginal.includes(normalizedKeyword);
+    });
+  }
+  
   // Configure multer for CSV/XLSX file uploads
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -222,13 +242,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const score = 70; // Default score if not available
             const combinedScore = Math.round(0.7 * volumeScore + 0.3 * score);
             
+            // Check relatedness to original search keywords for meta.related field
+            const isRelated = checkRelatedness(kw.keyword, job.keywords || []);
+            
             return {
               text: kw.keyword,
               raw_volume: rawVolume,
               score: score,
               volume_score: volumeScore,
               combined_score: combinedScore,
-              rank: kw.rank || 0
+              rank: kw.rank || 0,
+              meta: {
+                related: isRelated
+              }
             };
           });
           
@@ -1556,8 +1582,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`🎯 Title analysis request: ${titles.length} titles → Top ${N}`);
       console.log(`📋 Sample titles: ${titles.slice(0, 3).map(t => `"${t}"`).join(', ')}...`);
       
-      // DB 우선 → API 갱신 → 재선별 파이프라인 실행 (originalKeywords 없음)
-      const result = await titleKeywordExtractor.extractTopNByCombined(titles, N, []);
+      // ✅ 필터링 금지 - 모든 제목에서 조회량 기준 TopN 추출
+      const result = await titleKeywordExtractor.extractTopNByCombined(titles, N);
       
       console.log(`✅ Title analysis complete: ${result.mode} mode, ${result.topN.length} keywords extracted`);
       
@@ -1773,8 +1799,21 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         if (titleExtract) {
           console.log(`   🔤 [Title Extract] Extracting Top4 keywords (70% volume + 30% combined) from ${titles.length} titles for ${blog.blogName}`);
           try {
-            // ✅ 원래 검색 키워드들 전달 (관련성 체크용)
-            const titleResult = await titleKeywordExtractor.extractTopNByCombined(titles, 4, keywords);
+            // ✅ 필터링 금지 - 모든 제목에서 조회량 기준 Top4 추출
+            const titleResult = await titleKeywordExtractor.extractTopNByCombined(titles, 4);
+            // ✅ 관련성 라벨링 (저장하지 않고 응답시에만 추가)
+            const checkRelatedness = (keyword: string, sourceTitle: string): boolean => {
+              const normalizeForCheck = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
+              const normalizedKeyword = normalizeForCheck(keyword);
+              const normalizedTitle = normalizeForCheck(sourceTitle);
+              
+              return keywords.some(original => {
+                const normalizedOriginal = normalizeForCheck(original);
+                return normalizedKeyword.includes(normalizedOriginal) || 
+                       normalizedTitle.includes(normalizedOriginal);
+              });
+            };
+
             keywordResults = {
               detail: titleResult.topN.map((kw, index) => ({
                 keyword: kw.text,
@@ -1784,7 +1823,11 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
                 volume_mobile: 0, // Not available from title extractor  
                 frequency: kw.frequency || 0,
                 hasVolume: kw.raw_volume > 0,
-                combined_score: kw.combined_score
+                combined_score: kw.combined_score,
+                // ✅ 관련성 메타데이터 (UI 라벨링용)
+                meta: {
+                  related: checkRelatedness(kw.text, titles.join(' '))
+                }
               })),
               volumesMode: titleResult.mode === 'db-only' ? 'searchads' : 
                           titleResult.mode === 'api-refresh' ? 'searchads' : 'fallback'
