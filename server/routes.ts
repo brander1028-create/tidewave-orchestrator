@@ -7,7 +7,9 @@ import {
   insertManualBlogEntrySchema,
   // v6 새로운 스키마들
   insertBlogTargetSchema,
-  insertProductTargetSchema
+  insertProductTargetSchema,
+  insertRankSnapshotSchema,
+  insertMetricSnapshotSchema
 } from "@shared/schema";
 import { z } from "zod";
 import { scrapingService } from "./scraping-service";
@@ -56,6 +58,15 @@ const updateProductTargetSchema = z.object({
   windowMax: z.number().min(1).optional(),
   scheduleCron: z.string().optional(),
   active: z.boolean().optional(),
+}).strict();
+
+// v6 Update schemas for snapshots and review state
+const updateReviewStateSchema = z.object({
+  totalReviews: z.number().min(0).optional(),
+  avgRating: z.number().min(0).max(5).optional(),
+  recentReviews: z.number().min(0).optional(),
+  flaggedReviews: z.number().min(0).optional(),
+  positiveRatio: z.number().min(0).max(1).optional(),
 }).strict();
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -399,6 +410,183 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(204).send();
     } catch (error) {
       res.status(500).json({ message: "상품 타겟 삭제에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v6 Rank Snapshots API
+  app.get("/api/rank-snapshots", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { targetId, kind, range = "30d" } = req.query;
+      const snapshots = await storage.getRankSnapshots(
+        owner, // Owner-aware security fix
+        targetId as string, 
+        kind as string, 
+        range as string
+      );
+      res.json(snapshots);
+    } catch (error) {
+      res.status(500).json({ message: "랭킹 스냅샷 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/rank-snapshots", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = insertRankSnapshotSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 랭킹 스냅샷 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+
+      const snapshot = await storage.insertRankSnapshot(owner, validation.data);
+      res.status(201).json(snapshot);
+    } catch (error) {
+      res.status(500).json({ message: "랭킹 스냅샷 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.get("/api/rank/history/:targetId", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { targetId } = req.params;
+      const { kind, query, sort, device, range = "30d" } = req.query;
+      
+      const history = await storage.getRankSnapshotHistory(
+        owner, // Owner-aware security fix
+        targetId,
+        kind as string,
+        query as string,
+        sort as string,
+        device as string,
+        range as string
+      );
+      res.json(history);
+    } catch (error) {
+      res.status(500).json({ message: "랭킹 히스토리 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v6 Metric Snapshots API  
+  app.get("/api/metric-snapshots", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { productKey, range = "30d" } = req.query;
+      const snapshots = await storage.getMetricSnapshots(
+        owner, // Owner-aware security fix
+        productKey as string,
+        range as string
+      );
+      res.json(snapshots);
+    } catch (error) {
+      res.status(500).json({ message: "메트릭 스냅샷 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/metric-snapshots", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = insertMetricSnapshotSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 메트릭 스냅샷 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+
+      const snapshot = await storage.insertMetricSnapshot(owner, validation.data);
+      res.status(201).json(snapshot);
+    } catch (error) {
+      res.status(500).json({ message: "메트릭 스냅샷 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.get("/api/metric/history/:productKey", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { productKey } = req.params;
+      const { range = "30d" } = req.query;
+      
+      const history = await storage.getMetricHistory(
+        owner, // Owner-aware security fix
+        productKey,
+        range as string
+      );
+      res.json(history);
+    } catch (error) {
+      res.status(500).json({ message: "메트릭 히스토리 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v6 Review State API
+  app.get("/api/review-state/:productKey", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { productKey } = req.params;
+      const reviewState = await storage.getReviewState(owner, productKey); // Owner-aware security fix
+      
+      if (!reviewState) {
+        return res.status(404).json({ message: "리뷰 상태를 찾을 수 없습니다" });
+      }
+      
+      res.json(reviewState);
+    } catch (error) {
+      res.status(500).json({ message: "리뷰 상태 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/review-state/:productKey", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = updateReviewStateSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 리뷰 상태 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+
+      const { productKey } = req.params;
+      // Add productKey to the data for updateReviewState
+      const updateData = { ...validation.data, productKey };
+      const reviewState = await storage.updateReviewState(owner, updateData); // Owner-aware security fix
+      res.json(reviewState);
+    } catch (error) {
+      res.status(500).json({ message: "리뷰 상태 수정에 실패했습니다", error: String(error) });
     }
   });
 

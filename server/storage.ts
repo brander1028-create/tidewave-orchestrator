@@ -87,19 +87,19 @@ export interface IStorage {
   updateProductTargetByOwner(owner: string, id: string, updates: Partial<ProductTarget>): Promise<ProductTarget | null>;
   deleteProductTargetByOwner(owner: string, id: string): Promise<boolean>;
 
-  // v6 Rank Snapshots (실시간 랭킹 스냅샷)
-  getRankSnapshots(targetId?: string, kind?: string, range?: string): Promise<RankSnapshot[]>;
-  insertRankSnapshot(data: InsertRankSnapshot): Promise<RankSnapshot>;
-  getRankHistory(targetId: string, kind: string, query?: string, sort?: string, device?: string, range?: string): Promise<RankSnapshot[]>;
+  // v6 Rank Snapshots (실시간 랭킹 스냅샷) - Owner-aware methods for security
+  getRankSnapshots(owner: string, targetId?: string, kind?: string, range?: string): Promise<RankSnapshot[]>;
+  insertRankSnapshot(owner: string, data: InsertRankSnapshot): Promise<RankSnapshot>;
+  getRankSnapshotHistory(owner: string, targetId: string, kind: string, query?: string, sort?: string, device?: string, range?: string): Promise<RankSnapshot[]>;
 
-  // v6 Metric Snapshots (리뷰/상품 헬스)
-  getMetricSnapshots(productKey?: string, range?: string): Promise<MetricSnapshot[]>;
-  insertMetricSnapshot(data: InsertMetricSnapshot): Promise<MetricSnapshot>;
-  getMetricHistory(productKey: string, range?: string): Promise<MetricSnapshot[]>;
+  // v6 Metric Snapshots (리뷰/상품 헬스) - Owner-aware methods for security
+  getMetricSnapshots(owner: string, productKey?: string, range?: string): Promise<MetricSnapshot[]>;
+  insertMetricSnapshot(owner: string, data: InsertMetricSnapshot): Promise<MetricSnapshot>;
+  getMetricHistory(owner: string, productKey: string, range?: string): Promise<MetricSnapshot[]>;
 
-  // v6 Review State (신규 리뷰 감지)
-  getReviewState(productKey: string): Promise<ReviewState | null>;
-  updateReviewState(data: InsertReviewState): Promise<ReviewState>;
+  // v6 Review State (신규 리뷰 감지) - Owner-aware methods for security
+  getReviewState(owner: string, productKey: string): Promise<ReviewState | null>;
+  updateReviewState(owner: string, data: InsertReviewState): Promise<ReviewState>;
   
   // Analytics
   getKPIData(period?: string): Promise<any>;
@@ -627,14 +627,20 @@ export class DatabaseStorage implements IStorage {
     return target || null;
   }
 
-  // v6 Rank Snapshots Implementation
-  async getRankSnapshots(targetId?: string, kind?: string, range = "30d"): Promise<RankSnapshot[]> {
+  // v6 Rank Snapshots Implementation - Owner-aware for security
+  async getRankSnapshots(owner: string, targetId?: string, kind?: string, range = "30d"): Promise<RankSnapshot[]> {
     const days = parseInt(range.replace('d', ''));
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
-    const conditions = [gte(rankSnapshots.timestamp, cutoffDate)];
-    
+    // Collect all WHERE conditions in array to avoid overwriting
+    const conditions = [
+      eq(blogTargets.owner, owner),
+      eq(blogTargets.active, true),
+      gte(rankSnapshots.timestamp, cutoffDate)
+    ];
+
+    // Add optional filters to conditions array
     if (targetId) {
       conditions.push(eq(rankSnapshots.targetId, targetId));
     }
@@ -642,85 +648,226 @@ export class DatabaseStorage implements IStorage {
       conditions.push(eq(rankSnapshots.kind, kind));
     }
 
-    return await db.select().from(rankSnapshots)
-      .where(and(...conditions))
-      .orderBy(desc(rankSnapshots.timestamp));
+    // Single WHERE call with all conditions
+    const query = db.select({
+      id: rankSnapshots.id,
+      targetId: rankSnapshots.targetId,
+      kind: rankSnapshots.kind,
+      query: rankSnapshots.query,
+      sort: rankSnapshots.sort,
+      device: rankSnapshots.device,
+      timestamp: rankSnapshots.timestamp,
+      rank: rankSnapshots.rank,
+      page: rankSnapshots.page,
+      position: rankSnapshots.position,
+      url: rankSnapshots.url,
+      title: rankSnapshots.title,
+      metadata: rankSnapshots.metadata
+    })
+    .from(rankSnapshots)
+    .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
+    .where(and(...conditions))
+    .orderBy(desc(rankSnapshots.timestamp));
+
+    return await query;
   }
 
-  async insertRankSnapshot(data: InsertRankSnapshot): Promise<RankSnapshot> {
+  async insertRankSnapshot(owner: string, data: InsertRankSnapshot): Promise<RankSnapshot> {
+    // First verify that targetId belongs to the owner by checking blogTargets
+    const targetOwnership = await db.select({ id: blogTargets.id })
+      .from(blogTargets)
+      .where(and(
+        eq(blogTargets.id, data.targetId),
+        eq(blogTargets.owner, owner),
+        eq(blogTargets.active, true)
+      ))
+      .limit(1);
+
+    if (targetOwnership.length === 0) {
+      throw new Error('Unauthorized: Target does not belong to the specified owner or is inactive');
+    }
+
+    // Only insert if ownership is verified
     const [snapshot] = await db.insert(rankSnapshots).values(data).returning();
     return snapshot;
   }
 
-  async getRankHistory(targetId: string, kind: string, query?: string, sort?: string, device?: string, range = "30d"): Promise<RankSnapshot[]> {
+  async getRankSnapshotHistory(owner: string, targetId: string, kind: string, query?: string, sort?: string, device?: string, range = "30d"): Promise<RankSnapshot[]> {
     const days = parseInt(range.replace('d', ''));
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
-    const conditions = [
+    // Owner-aware query with JOIN to validate targetId ownership
+    let query_builder = db.select({
+      id: rankSnapshots.id,
+      targetId: rankSnapshots.targetId,
+      kind: rankSnapshots.kind,
+      query: rankSnapshots.query,
+      sort: rankSnapshots.sort,
+      device: rankSnapshots.device,
+      timestamp: rankSnapshots.timestamp,
+      rank: rankSnapshots.rank,
+      page: rankSnapshots.page,
+      position: rankSnapshots.position,
+      url: rankSnapshots.url,
+      title: rankSnapshots.title,
+      metadata: rankSnapshots.metadata
+    })
+    .from(rankSnapshots)
+    .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
+    .where(and(
+      eq(blogTargets.owner, owner),
+      eq(blogTargets.active, true),
       eq(rankSnapshots.targetId, targetId),
       eq(rankSnapshots.kind, kind),
       gte(rankSnapshots.timestamp, cutoffDate)
-    ];
+    ));
 
+    // Add optional filters
+    const additionalConditions = [];
     if (query) {
-      conditions.push(eq(rankSnapshots.query, query));
+      additionalConditions.push(eq(rankSnapshots.query, query));
     }
     if (sort) {
-      conditions.push(eq(rankSnapshots.sort, sort));
+      additionalConditions.push(eq(rankSnapshots.sort, sort));
     }
     if (device) {
-      conditions.push(eq(rankSnapshots.device, device));
+      additionalConditions.push(eq(rankSnapshots.device, device));
     }
 
-    return await db.select().from(rankSnapshots)
-      .where(and(...conditions))
-      .orderBy(asc(rankSnapshots.timestamp));
+    // Apply additional conditions if any exist
+    if (additionalConditions.length > 0) {
+      // Collect all conditions including additional ones
+      const allConditions = [
+        eq(blogTargets.owner, owner),
+        eq(blogTargets.active, true),
+        eq(rankSnapshots.targetId, targetId),
+        eq(rankSnapshots.kind, kind),
+        gte(rankSnapshots.timestamp, cutoffDate),
+        ...additionalConditions
+      ];
+      
+      // Rebuild query with all conditions combined
+      query_builder = db.select({
+        id: rankSnapshots.id,
+        targetId: rankSnapshots.targetId,
+        kind: rankSnapshots.kind,
+        query: rankSnapshots.query,
+        sort: rankSnapshots.sort,
+        device: rankSnapshots.device,
+        timestamp: rankSnapshots.timestamp,
+        rank: rankSnapshots.rank,
+        page: rankSnapshots.page,
+        position: rankSnapshots.position,
+        url: rankSnapshots.url,
+        title: rankSnapshots.title,
+        metadata: rankSnapshots.metadata
+      })
+      .from(rankSnapshots)
+      .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
+      .where(and(...allConditions));
+    }
+
+    return await query_builder.orderBy(asc(rankSnapshots.timestamp));
   }
 
-  // v6 Metric Snapshots Implementation
-  async getMetricSnapshots(productKey?: string, range = "30d"): Promise<MetricSnapshot[]> {
+  // v6 Metric Snapshots Implementation - Owner-aware for security
+  async getMetricSnapshots(owner: string, productKey?: string, range = "30d"): Promise<MetricSnapshot[]> {
     const days = parseInt(range.replace('d', ''));
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
-    const conditions = [gte(metricSnapshots.timestamp, cutoffDate)];
-    
+    // Collect all WHERE conditions in array to avoid overwriting
+    const conditions = [
+      eq(productTargets.owner, owner),
+      eq(productTargets.active, true),
+      gte(metricSnapshots.timestamp, cutoffDate)
+    ];
+
+    // Add productKey filter if specified
     if (productKey) {
       conditions.push(eq(metricSnapshots.productKey, productKey));
     }
 
-    return await db.select().from(metricSnapshots)
-      .where(and(...conditions))
-      .orderBy(desc(metricSnapshots.timestamp));
+    // Single WHERE call with all conditions
+    const query = db.select({
+      id: metricSnapshots.id,
+      productKey: metricSnapshots.productKey,
+      timestamp: metricSnapshots.timestamp,
+      starAvg: metricSnapshots.starAvg,
+      reviewCount: metricSnapshots.reviewCount,
+      photoRatio: metricSnapshots.photoRatio,
+      newReviews7d: metricSnapshots.newReviews7d,
+      newReviews30d: metricSnapshots.newReviews30d,
+      qaCount: metricSnapshots.qaCount,
+      price: metricSnapshots.price,
+      stockFlag: metricSnapshots.stockFlag
+    })
+    .from(metricSnapshots)
+    .innerJoin(productTargets, eq(metricSnapshots.productKey, productTargets.id))
+    .where(and(...conditions))
+    .orderBy(desc(metricSnapshots.timestamp));
+
+    return await query;
   }
 
-  async insertMetricSnapshot(data: InsertMetricSnapshot): Promise<MetricSnapshot> {
+  async insertMetricSnapshot(owner: string, data: InsertMetricSnapshot): Promise<MetricSnapshot> {
+    // First verify that productKey belongs to the owner by checking productTargets
+    const productOwnership = await db.select({ id: productTargets.id })
+      .from(productTargets)
+      .where(and(
+        eq(productTargets.id, data.productKey),
+        eq(productTargets.owner, owner),
+        eq(productTargets.active, true)
+      ))
+      .limit(1);
+
+    if (productOwnership.length === 0) {
+      throw new Error('Unauthorized: Product does not belong to the specified owner or is inactive');
+    }
+
+    // Only insert if ownership is verified
     const [snapshot] = await db.insert(metricSnapshots).values(data).returning();
     return snapshot;
   }
 
-  async getMetricHistory(productKey: string, range = "30d"): Promise<MetricSnapshot[]> {
-    const days = parseInt(range.replace('d', ''));
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - days);
-
-    return await db.select().from(metricSnapshots)
-      .where(and(
-        eq(metricSnapshots.productKey, productKey),
-        gte(metricSnapshots.timestamp, cutoffDate)
-      ))
-      .orderBy(asc(metricSnapshots.timestamp));
+  async getMetricHistory(owner: string, productKey: string, range = "30d"): Promise<MetricSnapshot[]> {
+    return this.getMetricSnapshots(owner, productKey, range);
   }
 
-  // v6 Review State Implementation
-  async getReviewState(productKey: string): Promise<ReviewState | null> {
-    const [state] = await db.select().from(reviewState)
-      .where(eq(reviewState.productKey, productKey));
+  // v6 Review State Implementation - Owner-aware for security
+  async getReviewState(owner: string, productKey: string): Promise<ReviewState | null> {
+    const [state] = await db.select({
+      id: reviewState.id,
+      productKey: reviewState.productKey,
+      lastReviewId: reviewState.lastReviewId,
+      lastCheckedAt: reviewState.lastCheckedAt
+    })
+    .from(reviewState)
+    .innerJoin(productTargets, eq(reviewState.productKey, productTargets.id))
+    .where(and(
+      eq(productTargets.owner, owner),
+      eq(productTargets.active, true),
+      eq(reviewState.productKey, productKey)
+    ));
     return state || null;
   }
 
-  async updateReviewState(data: InsertReviewState): Promise<ReviewState> {
+  async updateReviewState(owner: string, data: InsertReviewState): Promise<ReviewState> {
+    // First validate that the productKey belongs to this owner
+    const productTarget = await db.select()
+      .from(productTargets)
+      .where(and(
+        eq(productTargets.id, data.productKey),
+        eq(productTargets.owner, owner),
+        eq(productTargets.active, true)
+      ))
+      .limit(1);
+
+    if (productTarget.length === 0) {
+      throw new Error('Product not found or access denied');
+    }
+
     const [updated] = await db.insert(reviewState)
       .values(data)
       .onConflictDoUpdate({
@@ -1784,12 +1931,18 @@ export class MemStorage implements IStorage {
   }
 
   // v6 Rank Snapshots Implementation
-  async getRankSnapshots(targetId?: string, kind?: string, range = "30d"): Promise<RankSnapshot[]> {
+  async getRankSnapshots(owner: string, targetId?: string, kind?: string, range = "30d"): Promise<RankSnapshot[]> {
     const days = parseInt(range.replace('d', ''));
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
+    // Get owner's active blog targets for validation
+    const ownerTargets = Array.from(this.blogTargets.values())
+      .filter(target => target.owner === owner && target.active)
+      .map(target => target.id);
+
     const snapshots = Array.from(this.rankSnapshots.values())
+      .filter(snapshot => ownerTargets.includes(snapshot.targetId)) // Owner validation
       .filter(snapshot => snapshot.timestamp >= cutoffDate)
       .filter(snapshot => !targetId || snapshot.targetId === targetId)
       .filter(snapshot => !kind || snapshot.kind === kind)
@@ -1798,7 +1951,15 @@ export class MemStorage implements IStorage {
     return snapshots;
   }
 
-  async insertRankSnapshot(data: InsertRankSnapshot): Promise<RankSnapshot> {
+  async insertRankSnapshot(owner: string, data: InsertRankSnapshot): Promise<RankSnapshot> {
+    // Verify that targetId belongs to the owner by checking blogTargets
+    const targetOwnership = Array.from(this.blogTargets.values())
+      .find(target => target.id === data.targetId && target.owner === owner && target.active);
+
+    if (!targetOwnership) {
+      throw new Error('Unauthorized: Target does not belong to the specified owner or is inactive');
+    }
+
     const id = randomUUID();
     const snapshot: RankSnapshot = {
       id,
@@ -1809,10 +1970,16 @@ export class MemStorage implements IStorage {
     return snapshot;
   }
 
-  async getRankHistory(targetId: string, kind: string, query?: string, sort?: string, device?: string, range = "30d"): Promise<RankSnapshot[]> {
+  async getRankSnapshotHistory(owner: string, targetId: string, kind: string, query?: string, sort?: string, device?: string, range = "30d"): Promise<RankSnapshot[]> {
     const days = parseInt(range.replace('d', ''));
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    // Validate target ownership
+    const target = this.blogTargets.get(targetId);
+    if (!target || target.owner !== owner || !target.active) {
+      throw new Error('Target not found or access denied');
+    }
 
     const snapshots = Array.from(this.rankSnapshots.values())
       .filter(snapshot => 
@@ -1829,12 +1996,18 @@ export class MemStorage implements IStorage {
   }
 
   // v6 Metric Snapshots Implementation
-  async getMetricSnapshots(productKey?: string, range = "30d"): Promise<MetricSnapshot[]> {
+  async getMetricSnapshots(owner: string, productKey?: string, range = "30d"): Promise<MetricSnapshot[]> {
     const days = parseInt(range.replace('d', ''));
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
+    // Get owner's active product targets for validation
+    const ownerProducts = Array.from(this.productTargets.values())
+      .filter(target => target.owner === owner && target.active)
+      .map(target => target.id);
+
     const snapshots = Array.from(this.metricSnapshots.values())
+      .filter(snapshot => ownerProducts.includes(snapshot.productKey)) // Owner validation
       .filter(snapshot => snapshot.timestamp >= cutoffDate)
       .filter(snapshot => !productKey || snapshot.productKey === productKey)
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
@@ -1842,7 +2015,15 @@ export class MemStorage implements IStorage {
     return snapshots;
   }
 
-  async insertMetricSnapshot(data: InsertMetricSnapshot): Promise<MetricSnapshot> {
+  async insertMetricSnapshot(owner: string, data: InsertMetricSnapshot): Promise<MetricSnapshot> {
+    // Verify that productKey belongs to the owner by checking productTargets
+    const productOwnership = Array.from(this.productTargets.values())
+      .find(product => product.id === data.productKey && product.owner === owner && product.active);
+
+    if (!productOwnership) {
+      throw new Error('Unauthorized: Product does not belong to the specified owner or is inactive');
+    }
+
     const id = randomUUID();
     const snapshot: MetricSnapshot = {
       id,
@@ -1869,11 +2050,23 @@ export class MemStorage implements IStorage {
   }
 
   // v6 Review State Implementation
-  async getReviewState(productKey: string): Promise<ReviewState | null> {
+  async getReviewState(owner: string, productKey: string): Promise<ReviewState | null> {
+    // Validate product ownership
+    const product = this.productTargets.get(productKey);
+    if (!product || product.owner !== owner || !product.active) {
+      return null;
+    }
+    
     return this.reviewStates.get(productKey) || null;
   }
 
-  async updateReviewState(data: InsertReviewState): Promise<ReviewState> {
+  async updateReviewState(owner: string, data: InsertReviewState): Promise<ReviewState> {
+    // Validate product ownership
+    const product = this.productTargets.get(data.productKey);
+    if (!product || product.owner !== owner || !product.active) {
+      throw new Error('Product not found or access denied');
+    }
+    
     const state: ReviewState = {
       ...data,
       lastCheckedAt: new Date()
