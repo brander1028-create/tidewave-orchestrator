@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, Clock, Download } from "lucide-react";
-import KeywordSummaryCard, { type KeywordSummaryData } from "@/components/keyword-summary-card";
+import KeywordSummaryCard from "@/components/keyword-summary-card";
 import type { SerpJob, SerpResultsData } from "../../../shared/schema";
 
 export default function ResultsPage() {
@@ -161,27 +161,15 @@ export default function ResultsPage() {
             키워드별 요약 분석
           </h2>
           
-          {/* Render keyword summary cards */}
+          {/* Render keyword summary cards according to specification */}
           <div className="space-y-4" data-testid="keyword-summary-list">
             {results.summaryByKeyword && results.summaryByKeyword.length > 0 ? (
               results.summaryByKeyword
-                .sort((a, b) => {
-                  // Sort by Phase2 exposure ratio descending, then by new blogs count descending
-                  const ratioA = a.newBlogs > 0 ? a.phase2ExposedNew / a.newBlogs : 0;
-                  const ratioB = b.newBlogs > 0 ? b.phase2ExposedNew / b.newBlogs : 0;
-                  
-                  if (ratioA !== ratioB) {
-                    return ratioB - ratioA;  // Higher ratio first
-                  }
-                  
-                  return b.newBlogs - a.newBlogs;  // More new blogs first if same ratio
-                })
-                .map((keywordData: KeywordSummaryData) => (
-                  <KeywordSummaryCard
-                    key={keywordData.keyword}
-                    data={keywordData}
-                  />
-                ))
+                .sort((a: any, b: any) => 
+                  (b.phase2ExposedNew / b.newBlogs || 0) - (a.phase2ExposedNew / a.newBlogs || 0)
+                  || (b.newBlogs - a.newBlogs)
+                )
+                .map((row: any) => <KeywordSummaryCard key={row.keyword} data={row} />)
             ) : (
               <Card>
                 <CardContent className="pt-6">

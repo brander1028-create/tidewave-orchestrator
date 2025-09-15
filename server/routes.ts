@@ -321,35 +321,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return (k?.rank ?? 0) > 0 && (k!.rank as number) <= 10; 
       };
 
-      // Build summaryByKeyword array
+      // Build summaryByKeyword array according to specification
       const purposeKeywords = job.keywords || [];
       const summaryByKeyword = purposeKeywords.map(K => {
-        // Blogs captured with this keyword
-        const blogsForKeyword = allBlogs.filter(b => b.seedKeyword === K);
-        const total = new Set(blogsForKeyword.map(b => b.blogId)).size;
+        // 이번 실행에서 K로 포착된 블로그들
+        const blogs = allBlogs.filter(b => b.seedKeyword === K);  // Use seedKeyword as per spec
+        const total = new Set(blogs.map(b => b.blogId)).size;
 
-        // New blogs (assuming all discovered blogs are "new" for now - can be enhanced with isNew flag)
-        const newBlogs = blogsForKeyword.filter(b => (b as any).isNew !== false); // Default to new unless explicitly marked
+        // 신규 여부: upsert 시 "삽입 성공"에 찍은 플래그/로그 사용 (없으면 firstSeenAt==runId 기준)
+        const newBlogs = blogs.filter(b => (b as any).isNew === true);  // Only truly new blogs
         const newCount = new Set(newBlogs.map(b => b.blogId)).size;
 
-        // Phase2 exposure for new blogs
-        let phase2NewExposed = 0;
-        for (const blog of newBlogs) {
-          const blogKeywords = allKeywords.find((ak: any) => ak.blog_id === blog.blogId);
-          if (blogKeywords && blogKeywords.top4.some(isExposed)) {
-            phase2NewExposed++;
-          }
-        }
+        // 신규 블로그의 Phase2 노출 여부
+        const phase2NewExposed = newBlogs.filter(b => {
+          const kws = allKeywords.filter((ak: any) => ak.blog_id === b.blogId);
+          return kws.length > 0 && kws[0].top4.some(isExposed);
+        }).length;
 
-        // Search volume for header (get from keywordVolumeMap if available)
+        // 헤더용 검색량(없으면 null)
         const searchVolume = keywordVolumeMap[K] ?? null;
 
-        // Detailed items for "자세히" section
+        // "자세히" 표용 신규 블로그 상세
         const items = newBlogs.map(b => {
-          const posts = allPosts.filter((p: any) => p.blog_id === b.blogId);
-          const latestPosts = posts
+          const latest = allPosts
+            .filter((p: any) => p.blog_id === b.blogId)
             .sort((a: any, b: any) => (new Date(b.published_at || 0).getTime()) - (new Date(a.published_at || 0).getTime()))
-            .slice(0, 10);
+            .slice(0, 10)
+            .map((p: any) => p.post_title);
 
           const blogKeywords = allKeywords.find((ak: any) => ak.blog_id === b.blogId);
           const top10 = blogKeywords ? blogKeywords.top4
@@ -357,17 +355,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .slice(0, 10)
             .map((k: any) => ({
               text: k.text,
-              volume: k.raw_volume ?? null,
+              volume: k.raw_volume ?? null,                 // null은 "미확인"으로 표기
               score: Math.round(k.combined_score || 0),
-              rank: k.rank ?? null,
+              rank: k.rank ?? null,                     // null은 "미노출/미확인"
               related: !!k.meta?.related
             })) : [];
 
           return {
-            blogName: b.blogName,
+            blogName: b.blogName, 
             blogUrl: b.blogUrl,
-            scannedPosts: latestPosts.length,
-            titlesSample: latestPosts.slice(0, 3).map((p: any) => p.post_title),
+            scannedPosts: latest.length,
+            titlesSample: latest.slice(0, 3),            // 볼륨 0일 때 보여줄 제목 샘플
             topKeywords: top10
           };
         });
