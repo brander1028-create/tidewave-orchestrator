@@ -2104,6 +2104,52 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
           if (!allDiscoveredBlogs.has(result.url)) {
             // Extract blog ID from URL (e.g., riche1862 from blog.naver.com/riche1862)
             const blogId = extractBlogIdFromUrl(result.url);
+            if (!blogId || blogId.length === 0) {
+              console.warn(`❌ Failed to extract blog ID from URL: ${result.url}`);
+              continue;
+            }
+            
+            // 🔍 Phase1 큐잉 직전: blog_registry 상태 확인 (v10 H번 요청사항)
+            console.log(`🔍 [BlogDB Integration] Checking registry status for blog: ${blogId}`);
+            
+            // Check current registry status
+            const existingRegistry = await db.select()
+              .from(blogRegistry)
+              .where(eq(blogRegistry.blogId, blogId))
+              .limit(1);
+            
+            if (existingRegistry.length > 0) {
+              const status = existingRegistry[0].status;
+              
+              // Update last seen timestamp
+              await db.update(blogRegistry)
+                .set({ 
+                  lastSeenAt: new Date(),
+                  updatedAt: new Date()
+                })
+                .where(eq(blogRegistry.blogId, blogId));
+              
+              // Skip collection if blacklisted or in outreach
+              if (status === 'blacklist' || status === 'outreach') {
+                console.log(`⚫ [BlogDB Integration] Skipping ${blogId} - status: ${status}`);
+                continue;
+              }
+              
+              console.log(`✅ [BlogDB Integration] Proceeding with ${blogId} - status: ${status}`);
+            } else {
+              // Insert new registry entry with 'collected' status
+              await db.insert(blogRegistry)
+                .values({
+                  blogId,
+                  url: result.url,
+                  name: result.title,
+                  status: 'collected',
+                  firstSeenAt: new Date(),
+                  lastSeenAt: new Date()
+                });
+              
+              console.log(`🆕 [BlogDB Integration] New blog registered: ${blogId} with status: collected`);
+            }
             
             const blog = await storage.createDiscoveredBlog({
               jobId: job.id,

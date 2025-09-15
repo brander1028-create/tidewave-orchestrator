@@ -121,7 +121,7 @@ export default function ResultsPage() {
       if (response.ok) {
         // Use react-query cache invalidation instead of reload
         const { queryClient } = await import('@/lib/queryClient');
-        queryClient.invalidateQueries(['/api/serp/jobs', jobId, 'results']);
+        queryClient.invalidateQueries({ queryKey: ['/api/serp/jobs', jobId, 'results'] });
       } else {
         console.error('Failed to update blog status');
       }
