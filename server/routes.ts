@@ -21,8 +21,8 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
 import { nanoid } from 'nanoid';
-import { blogRegistry, discoveredBlogs, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { blogRegistry, discoveredBlogs, postTierChecks, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
+import { eq, and, desc, sql } from 'drizzle-orm';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -185,7 +185,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get SERP job results in new API contract format
+  // Get SERP job results in v8 contract format (comprehensive tier recording)
   app.get("/api/serp/jobs/:jobId/results", async (req, res) => {
     try {
       const job = await storage.getSerpJob(req.params.jobId);
@@ -197,226 +197,194 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Job not completed yet" });
       }
 
-      // ❌ SHORT-CIRCUIT REMOVED: Always assemble full results from persistent tables
-      // Previously: if (job.results) return res.json(job.results);
-      // Now: Always read from storage and build standard schema
+      // Get job parameters (P = postsPerBlog, T = tiersPerPost)
+      const P = job.postsPerBlog || 10;
+      const T = 4; // Default tier count as per requirements
 
-      // Get all discovered blogs
+      // Get all discovered blogs and determine NEW status via blog_registry
       const allBlogs = await storage.getDiscoveredBlogs(job.id);
-      const allPosts: any[] = [];
-      const allKeywords: any[] = [];
       
-      // Filter blogs with TOP3 keywords that have SERP rank 1-10
-      const hitBlogs = [];
+      // Check blog_registry for status filtering and NEW determination
+      const blogRegistryEntries = await db.select().from(blogRegistry).where(
+        sql`blog_id IN (${sql.join(allBlogs.map(b => b.blogId), sql`, `)})`
+      );
+      const blogStatusMap = new Map(blogRegistryEntries.map(entry => [entry.blogId, entry.status]));
       
-      // Collect all unique keywords for raw_volume lookup
-      const allKeywordTexts = new Set<string>();
-      for (const blog of allBlogs) {
-        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
-        top3Keywords.forEach((kw: any) => allKeywordTexts.add(kw.keyword));
-      }
-      
-      // Get raw_volume mapping from keywords DB
-      const keywordVolumeMap = await getKeywordVolumeMap(Array.from(allKeywordTexts));
-      
-      for (const blog of allBlogs) {
-        const posts = await storage.getAnalyzedPosts(blog.id);
-        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id); // Get TOP3
-        
-        // 🎯 A. Base Rank 컷오프 환경변수화
-        const cutoff = Number(process.env.HIT_FILTER_CUTOFF ?? 10);
-        const hasHit = blog.baseRank && blog.baseRank >= 1 && blog.baseRank <= cutoff;
-        
-        if (hasHit) {
-          hitBlogs.push({
-            blog_id: blog.blogId,
-            blog_name: blog.blogName, // Added for UI display
-            blog_url: blog.blogUrl,
-            base_rank: blog.baseRank, // Added for rank badge
-            gathered_posts: posts.length,
-            hit_count_30: Math.min(posts.length, 30) // Hit count for recent 30 posts
-          });
-          
-          // Add keywords for this blog with enhanced data format
-          const keywordDetails = top3Keywords.map((kw, index) => {
-            const rawVolume = keywordVolumeMap[kw.keyword] ?? null;
-            const volumeScore = rawVolume > 0 ? Math.min(100, Math.round(Math.log10(Math.max(1, rawVolume)) / 5 * 100)) : 0;
-            const score = 70; // Default score if not available
-            const combinedScore = Math.round(0.7 * volumeScore + 0.3 * score);
-            
-            // Check relatedness to original search keywords for meta.related field
-            const isRelated = checkRelatedness(kw.keyword, job.keywords || []);
-            
-            return {
-              text: kw.keyword,
-              raw_volume: rawVolume,
-              score: score,
-              volume_score: volumeScore,
-              combined_score: combinedScore,
-              rank: kw.rank ?? null,
-              meta: {
-                related: isRelated
-              }
-            };
-          });
-          
-          allKeywords.push({
-            blog_id: blog.blogId,
-            top4: keywordDetails, // Changed from top3 to top4 for consistency
-            mode: keywordDetails.some(kw => kw.raw_volume > 0) ? "DB-only" : "None" // Determine mode based on volume data
-          });
-        }
-        
-        // Add all posts
-        allPosts.push(...posts.map(post => ({
-          blog_id: blog.blogId,
-          post_url: post.url,
-          post_title: post.title,
-          published_at: post.publishedAt?.toISOString() || null
-        })));
-      }
-
-      // Calculate counters  
-      const uniqueKeywords = new Set();
-      allKeywords.forEach((blogKw: any) => {
-        blogKw.top4.forEach((kw: any) => uniqueKeywords.add(kw.text));
+      // Filter out blacklist/outreach blogs and determine NEW blogs
+      const newBlogs = allBlogs.filter(blog => {
+        const status = blogStatusMap.get(blog.blogId);
+        return !status || status === 'collected'; // NEW = not in registry or status 'collected'
       });
 
-      // Calculate searched_keywords from ALL blogs (not just hit blogs)
-      const allUniqueKeywords = new Set();
-      for (const blog of allBlogs) {
-        const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
-        top3Keywords.forEach(kw => allUniqueKeywords.add(kw.keyword));
-      }
-
-      // Get volumes_mode from first blog's analysis (or default to 'fallback')
-      let volumesMode = 'fallback';
-      if (allBlogs.length > 0) {
-        try {
-          console.log(`🔍 Determining volumes mode from first blog analysis...`);
-          const firstBlogPosts = await storage.getAnalyzedPosts(allBlogs[0].id);
-          const titles = firstBlogPosts.map(p => p.title);
-          const { volumesMode: firstBlogVolumesMode } = await extractTop3ByVolume(titles);
-          console.log(`📊 Volumes mode determined: ${firstBlogVolumesMode}`);
-          volumesMode = firstBlogVolumesMode;
-        } catch (e) {
-          console.log('⚠️ Could not determine volumes mode, defaulting to fallback');
+      // Build search volumes map with API fallback
+      const inputKeywords = job.keywords || [];
+      const searchVolumes: Record<string, number | null> = {};
+      const keywordVolumeMap = await getKeywordVolumeMap(inputKeywords);
+      
+      for (const keyword of inputKeywords) {
+        searchVolumes[keyword] = keywordVolumeMap[keyword] ?? null;
+        
+        // If volume is missing, try API fallback and upsert immediately
+        if (searchVolumes[keyword] === null) {
+          try {
+            // TODO: Implement API fallback to SearchAds API
+            // const apiVolume = await fetchVolumeFromAPI(keyword);
+            // if (apiVolume !== null) {
+            //   await upsertKeyword(keyword, apiVolume);
+            //   searchVolumes[keyword] = apiVolume;
+            // }
+            console.log(`⚠️ Missing volume for keyword: ${keyword}, API fallback not implemented yet`);
+          } catch (e) {
+            console.log(`❌ API fallback failed for keyword: ${keyword}`);
+          }
         }
       }
+
+      // Query post_tier_checks for comprehensive tier data
+      const tierChecks = await db.select().from(postTierChecks).where(
+        eq(postTierChecks.jobId, job.id)
+      );
+
+      // Calculate attemptsByKeyword (NEW × P × T per keyword)
+      const attemptsByKeyword: Record<string, number> = {};
+      for (const keyword of inputKeywords) {
+        const keywordNewBlogs = newBlogs.filter(blog => blog.seedKeyword === keyword);
+        attemptsByKeyword[keyword] = keywordNewBlogs.length * P * T;
+      }
+
+      // Calculate exposureStatsByKeyword from tier check data
+      const exposureStatsByKeyword: Record<string, {page1: number, zero: number, unknown: number}> = {};
+      for (const keyword of inputKeywords) {
+        const keywordChecks = tierChecks.filter(check => check.inputKeyword === keyword);
+        const page1 = keywordChecks.filter(check => check.rank !== null && check.rank >= 1 && check.rank <= 10).length;
+        const zero = keywordChecks.filter(check => check.rank === 0).length;
+        const unknown = keywordChecks.filter(check => check.rank === null).length;
+        
+        exposureStatsByKeyword[keyword] = { page1, zero, unknown };
+      }
+
+      // Build summaryByKeyword with comprehensive tier data
+      const summaryByKeyword = [];
       
-      console.log(`📈 Final volumes_mode for response: ${volumesMode}`);
-      
-      // 🎯 4. 필터 로그 (결과 조립 구간)
-      const cutoff = Number(process.env.HIT_FILTER_CUTOFF ?? 10);
-      console.log(`🔍 Filter Stats: allBlogs=${allBlogs.length}, hasHit=${hitBlogs.length}, uniqueKeywords=${allUniqueKeywords.size}, volumesMode=${volumesMode}, cutoff=${cutoff}`);
-      
-      // ✅ RESULTS_BUILD 로그 (short-circuit 제거 후 디버깅)
-      console.log('RESULTS_BUILD', {
-        discovered: allBlogs.length,
-        afterCutoff: hitBlogs.length,
-        uniqueKeywordsAll: allUniqueKeywords.size,
-        volumes_mode: volumesMode
-      });
-
-      // Helper function to check if keyword is exposed (rank 1-10)
-      const isExposed = (k: {rank?: number | null}) => { 
-        return (k?.rank ?? 0) > 0 && (k!.rank as number) <= 10; 
-      };
-
-      // Build summaryByKeyword array according to specification  
-      const purposeKeywords = job.keywords || [];
-      const summaryByKeyword = purposeKeywords.map(K => {
-        // 이번 실행에서 K로 포착된 블로그들
-        const blogs = allBlogs.filter(b => b.seedKeyword === K);  // Use seedKeyword as per spec
-        const total = new Set(blogs.map(b => b.blogId)).size;
-
-        // 신규 여부: 현재 발견된 모든 블로그를 신규로 간주 (실제 프로덕션에서는 isNew 플래그 사용)
-        const newBlogs = blogs;  // For demo purposes, treat all discovered blogs as new
-        const newCount = new Set(newBlogs.map(b => b.blogId)).size;
-
-        // 신규 블로그의 Phase2 노출 여부
-        const phase2NewExposed = newBlogs.filter(b => {
-          const kws = allKeywords.filter((ak: any) => ak.blog_id === b.blogId);
-          return kws.length > 0 && kws[0].top4.some(isExposed);
+      for (const keyword of inputKeywords) {
+        const keywordNewBlogs = newBlogs.filter(blog => blog.seedKeyword === keyword);
+        const totalBlogs = allBlogs.filter(blog => blog.seedKeyword === keyword).length;
+        
+        // Calculate phase2ExposedNew (NEW blogs with rank 1-10 exposure)
+        const phase2ExposedNew = keywordNewBlogs.filter(blog => {
+          const blogChecks = tierChecks.filter(check => 
+            check.inputKeyword === keyword && 
+            check.blogId === blog.blogId &&
+            check.rank !== null && 
+            check.rank >= 1 && 
+            check.rank <= 10
+          );
+          return blogChecks.length > 0;
         }).length;
 
-        // 헤더용 검색량(없으면 null)
-        const searchVolume = keywordVolumeMap[K] ?? null;
+        // Build blog details with posts and tiers
+        const blogs = [];
+        for (const blog of keywordNewBlogs) {
+          // Get blog status from registry
+          const status = blogStatusMap.get(blog.blogId) || 'collected';
+          
+          // Get top keywords for this blog (existing logic)
+          const topKeywords = await storage.getTopKeywordsByBlog(blog.id);
+          const topKeywordsWithVolume = topKeywords.map((kw: any) => ({
+            text: kw.keyword,
+            volume: keywordVolumeMap[kw.keyword] ?? null,
+            score: kw.score || 0,
+            rank: kw.rank,
+            related: checkRelatedness(kw.keyword, inputKeywords)
+          }));
 
-        // "자세히" 표용 신규 블로그 상세
-        const items = newBlogs.map(b => {
-          const latest = allPosts
-            .filter((p: any) => p.blog_id === b.blogId)
-            .sort((a: any, b: any) => (new Date(b.published_at || 0).getTime()) - (new Date(a.published_at || 0).getTime()))
-            .slice(0, 10)
-            .map((p: any) => p.post_title);
+          // Calculate totalExposed and totalScore
+          const totalExposed = topKeywordsWithVolume.filter(kw => kw.rank !== null && kw.rank <= 10).length;
+          const totalScore = topKeywordsWithVolume
+            .filter(kw => kw.rank !== null && kw.rank <= 10)
+            .reduce((sum, kw) => sum + kw.score, 0);
 
-          const blogKeywords = allKeywords.find((ak: any) => ak.blog_id === b.blogId);
-          const top10 = blogKeywords ? blogKeywords.top4
-            .sort((a: any, b: any) => (b.combined_score || 0) - (a.combined_score || 0))
-            .slice(0, 10)
-            .map((k: any) => ({
-              text: k.text,
-              volume: k.raw_volume ?? null,                 // null은 "미확인"으로 표기
-              score: Math.round(k.combined_score || 0),
-              rank: k.rank ?? null,                     // null은 "미노출/미확인"
-              related: !!k.meta?.related
-            })) : [];
+          // Get posts with tier data
+          const posts = [];
+          const blogPosts = await storage.getAnalyzedPosts(blog.id);
+          
+          for (const post of blogPosts.slice(0, P)) { // Limit to P posts
+            const postTierData = tierChecks.filter(check => 
+              check.inputKeyword === keyword &&
+              check.blogId === blog.blogId &&
+              check.postId === post.id
+            );
 
-          return {
-            blogName: b.blogName, 
-            blogUrl: b.blogUrl,
-            scannedPosts: latest.length,
-            titlesSample: latest.slice(0, 3),            // 볼륨 0일 때 보여줄 제목 샘플
-            topKeywords: top10
-          };
+            // Group tier data by tier number
+            const tiers = [];
+            for (let tierNum = 1; tierNum <= T; tierNum++) {
+              const tierCheck = postTierData.find(check => check.tier === tierNum);
+              if (tierCheck) {
+                tiers.push({
+                  tier: tierNum,
+                  text: tierCheck.textSurface,
+                  volume: tierCheck.volume,
+                  rank: tierCheck.rank
+                });
+              } else {
+                // Add empty tier if no data found
+                tiers.push({
+                  tier: tierNum,
+                  text: "",
+                  volume: null,
+                  rank: null
+                });
+              }
+            }
+
+            posts.push({
+              title: post.title,
+              tiers
+            });
+          }
+
+          blogs.push({
+            blogId: blog.blogId,
+            blogName: blog.blogName,
+            blogUrl: blog.blogUrl,
+            status,
+            totalExposed,
+            totalScore,
+            topKeywords: topKeywordsWithVolume.slice(0, 10), // Top 10
+            posts
+          });
+        }
+
+        summaryByKeyword.push({
+          keyword,
+          searchVolume: searchVolumes[keyword],
+          totalBlogs,
+          newBlogs: keywordNewBlogs.length,
+          phase2ExposedNew,
+          blogs
         });
-
-        return {
-          keyword: K,
-          searchVolume,
-          totalBlogs: total,
-          newBlogs: newCount,
-          phase2ExposedNew: phase2NewExposed,
-          items
-        };
-      });
-
-      const response: any = {
-        blogs: hitBlogs,
-        keywords: allKeywords, 
-        posts: allPosts,
-        summaryByKeyword, // Add the new summary array
-        counters: {
-          discovered_blogs: allBlogs.length, // Total blogs found during discovery
-          blogs: allBlogs.length, // Existing field (total blogs analyzed)
-          posts: allPosts.length,
-          selected_keywords: allBlogs.length * 3, // 블로그×3 (요청)
-          searched_keywords: allUniqueKeywords.size, // 모든 블로그의 TOP3 키워드 중복 제거 후 실제 질의
-          hit_blogs: hitBlogs.length, // base_rank 1-10 기준으로 변경됨
-          volumes_mode: volumesMode
-        },
-        warnings: [],
-        errors: []
-      };
-      
-      // 🎯 B. 디버그 필드 추가 (카운터 0일 때)
-      if (hitBlogs.length === 0 || allKeywords.length === 0) {
-        response.debug = {
-          discoveredBlogs: allBlogs.length,
-          blogsAfterCutoff: hitBlogs.length, 
-          uniqueKeywordsAllBlogs: allUniqueKeywords.size,
-          cutoffUsed: cutoff
-        };
-        console.log(`🚨 Debug Info (zero results):`, response.debug);
       }
-      
-      // 🎯 2. 원본 결과 JSON 로깅
-      console.log(`📊 SERP Results JSON (Job ${req.params.jobId}):`, JSON.stringify(response, null, 2));
 
+      // Build v8 response format
+      const response = {
+        keywords: inputKeywords,
+        status: "완료",
+        analyzedAt: job.updatedAt?.toISOString() || job.createdAt?.toISOString(),
+        params: {
+          postsPerBlog: P,
+          tiersPerPost: T
+        },
+        searchVolumes,
+        attemptsByKeyword,
+        exposureStatsByKeyword,
+        summaryByKeyword
+      };
+
+      console.log(`📊 v8 SERP Results (Job ${job.id}):`, JSON.stringify(response, null, 2));
       res.json(response);
+
     } catch (error) {
-      console.error('Error fetching SERP results:', error);
+      console.error('Error fetching v8 SERP results:', error);
       res.status(500).json({ error: "Failed to fetch results" });
     }
   });
