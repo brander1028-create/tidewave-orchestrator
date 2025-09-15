@@ -69,7 +69,7 @@ export default function BlogDatabasePage() {
       if (!response.ok) {
         throw new Error('Failed to fetch blog registry');
       }
-      return response.json() as BlogRegistryItem[];
+      return await response.json() as BlogRegistryItem[];
     }
   });
 

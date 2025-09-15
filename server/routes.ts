@@ -138,16 +138,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // Get all blogs from registry
-  app.get("/api/blog-registry", async (req, res) => {
-    try {
-      const blogs = await db.select().from(blogRegistry).orderBy(desc(blogRegistry.updatedAt));
-      res.json(blogs);
-    } catch (error) {
-      console.error('Error fetching blog registry:', error);
-      res.status(500).json({ error: "Failed to fetch blog registry" });
-    }
-  });
   
   // Get specific blog from registry
   app.get("/api/blog-registry/:blogId", async (req, res) => {
