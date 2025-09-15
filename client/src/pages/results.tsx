@@ -217,8 +217,8 @@ export default function ResultsPage() {
                         variant="secondary" 
                         className="text-sm px-3 py-1 cursor-pointer hover:bg-blue-100"
                         onClick={() => {
-                          // Safe ID generation for scroll target
-                          const safeId = `keyword-${btoa(keyword).replace(/[+/=]/g, '')}`;
+                          // Safe ID generation for scroll target (handle Unicode)
+                          const safeId = `keyword-${encodeURIComponent(keyword).replace(/[^a-zA-Z0-9]/g, '_')}`;
                           const element = document.getElementById(safeId);
                           element?.scrollIntoView({ behavior: 'smooth' });
                         }}
@@ -255,7 +255,7 @@ export default function ResultsPage() {
                 const exposure = results.exposureStatsByKeyword[keywordData.keyword] || {page1: 0, zero: 0, unknown: 0};
                 
                 return (
-                  <Card key={keywordData.keyword} id={`keyword-${btoa(keywordData.keyword).replace(/[+/=]/g, '')}`} className="border-2">
+                  <Card key={keywordData.keyword} id={`keyword-${encodeURIComponent(keywordData.keyword).replace(/[^a-zA-Z0-9]/g, '_')}`} className="border-2">
                     <CardHeader>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-4">

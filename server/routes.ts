@@ -2067,26 +2067,51 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         // Step 2.4: Store base_rank in blog record
         await storage.updateDiscoveredBlog(blog.id, { baseRank: baseRank });
         
-        // Step 2.5: Comprehensive tier checks for all input keywords (NEW v8 feature)
-        console.log(`   🔍 [Tier Checks] Starting comprehensive tier analysis for ${blog.blogName}`);
+        // Step 2.5: Comprehensive tier checks (NEW v8 feature) - SCOPED to seedKeyword only
+        console.log(`   🔍 [Tier Checks] Starting comprehensive tier analysis for ${blog.blogName} (seedKeyword: ${blog.seedKeyword})`);
         const T = 4; // Tier count as specified in requirements
         
-        for (const inputKeyword of keywords) {
+        // ✅ CRITICAL FIX: Only process blogs for their associated seedKeyword
+        const inputKeyword = blog.seedKeyword; // Use only the keyword that discovered this blog
+        if (!inputKeyword || !keywords.includes(inputKeyword)) {
+          console.log(`   ⚠️ [Tier Checks] Skipping ${blog.blogName} - no valid seedKeyword`);
+        } else {
           console.log(`   🎯 [Tier Checks] Processing input keyword: ${inputKeyword} for ${blog.blogName}`);
+          
+          // ✅ PERFORMANCE FIX: Prefetch analyzed posts once per blog
+          const savedPosts = await storage.getAnalyzedPosts(blog.id);
+          const postIndexMap = new Map(savedPosts.map(p => [p.title, p]));
           
           for (const [postIndex, post] of Array.from(scrapedPosts.entries())) {
             if (postIndex >= postsPerBlog) break; // Limit to P posts
             
+            // ✅ CANCELLATION FIX: Check cancellation within nested loops
+            if (await checkIfCancelled()) {
+              console.log(`Job ${jobId} cancelled during tier checks for ${blog.blogName}`);
+              return;
+            }
+            
             try {
-              // Extract tier keywords from post title
               const postTitle = post.title;
               console.log(`     📄 [Tier Checks] Post ${postIndex + 1}/${Math.min(scrapedPosts.length, postsPerBlog)}: "${postTitle.substring(0, 50)}..."`);
               
               // Extract T tiers of keywords from this post
               const tierResult = await titleKeywordExtractor.extractTopNByCombined([postTitle], T);
+              const savedPost = postIndexMap.get(postTitle); // Use precomputed index
+              
+              if (!savedPost) {
+                console.log(`     ⚠️ [Tier Checks] Post not found in DB: ${postTitle.substring(0, 30)}...`);
+                continue;
+              }
               
               // Save tier checks for each tier
               for (let tierNum = 1; tierNum <= T; tierNum++) {
+                // ✅ CANCELLATION FIX: Check cancellation within tier loop
+                if (await checkIfCancelled()) {
+                  console.log(`Job ${jobId} cancelled during tier ${tierNum} for ${blog.blogName}`);
+                  return;
+                }
+                
                 const tierKeyword = tierResult.topN[tierNum - 1];
                 
                 if (tierKeyword) {
@@ -2094,51 +2119,53 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
                   console.log(`       🏅 [Tier ${tierNum}] Checking rank for: ${tierKeyword.text}`);
                   const rank = await serpScraper.checkKeywordRankingInMobileNaver(tierKeyword.text, blog.blogUrl);
                   
-                  // Get post ID from database
-                  const savedPosts = await storage.getAnalyzedPosts(blog.id);
-                  const savedPost = savedPosts.find(p => p.title === postTitle);
+                  // ✅ FIELD FIX: Use correct volume field and required schema fields
+                  const volume = tierKeyword.raw_volume ?? null;
+                  const normalizedText = tierKeyword.text.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
+                  const isRelated = keywords.some(original => {
+                    const normalizedOriginal = original.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
+                    return normalizedText.includes(normalizedOriginal) || postTitle.toLowerCase().includes(original.toLowerCase());
+                  });
                   
-                  if (savedPost) {
-                    // Save to post_tier_checks table
-                    await db.insert(postTierChecks).values({
-                      id: nanoid(),
-                      jobId: job.id,
-                      inputKeyword: inputKeyword,
-                      blogId: blog.blogId,
-                      postId: savedPost.id,
-                      tier: tierNum,
-                      textSurface: tierKeyword.text,
-                      volume: tierKeyword.raw_volume,
-                      rank: rank
-                    });
-                    
-                    console.log(`       ✅ [Tier ${tierNum}] Saved: ${tierKeyword.text} → rank ${rank || 'NA'} (vol: ${tierKeyword.raw_volume || 'NA'})`);
-                  }
+                  // Save to post_tier_checks table (id auto-generated)
+                  await db.insert(postTierChecks).values({
+                    jobId: job.id,
+                    inputKeyword: inputKeyword,
+                    blogId: blog.blogId,
+                    postId: savedPost.id,
+                    postTitle: postTitle,
+                    tier: tierNum,
+                    textSurface: tierKeyword.text,
+                    textNrm: normalizedText,
+                    volume: volume,
+                    rank: rank,
+                    related: isRelated
+                  });
+                  
+                  console.log(`       ✅ [Tier ${tierNum}] Saved: ${tierKeyword.text} → rank ${rank || 'NA'} (vol: ${volume || 'NA'})`);
                 } else {
                   // No keyword found for this tier - save empty entry
-                  const savedPosts = await storage.getAnalyzedPosts(blog.id);
-                  const savedPost = savedPosts.find(p => p.title === postTitle);
+                  await db.insert(postTierChecks).values({
+                    jobId: job.id,
+                    inputKeyword: inputKeyword,
+                    blogId: blog.blogId,
+                    postId: savedPost.id,
+                    postTitle: postTitle,
+                    tier: tierNum,
+                    textSurface: "",
+                    textNrm: "",
+                    volume: null,
+                    rank: null,
+                    related: false
+                  });
                   
-                  if (savedPost) {
-                    await db.insert(postTierChecks).values({
-                      id: nanoid(),
-                      jobId: job.id,
-                      inputKeyword: inputKeyword,
-                      blogId: blog.blogId,
-                      postId: savedPost.id,
-                      tier: tierNum,
-                      textSurface: "",
-                      volume: null,
-                      rank: null
-                    });
-                    
-                    console.log(`       ⚫ [Tier ${tierNum}] Empty tier saved`);
-                  }
+                  console.log(`       ⚫ [Tier ${tierNum}] Empty tier saved`);
                 }
-                
-                // Rate limiting between tier checks
-                await new Promise(resolve => setTimeout(resolve, 500));
               }
+              
+              // ✅ PERFORMANCE FIX: Reduced delay per post instead of per tier
+              await new Promise(resolve => setTimeout(resolve, 100));
+              
             } catch (error) {
               console.error(`     ❌ [Tier Checks] Error processing post ${postIndex + 1}:`, error);
             }
