@@ -121,6 +121,79 @@ export const manualBlogEntries = pgTable("manual_blog_entries", {
   isActive: boolean("is_active").default(true),
 });
 
+// v6 자사 수동 타겟 전용 테이블들
+
+// 블로그 타겟 관리
+export const blogTargets = pgTable("blog_targets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  title: text("title").notNull(),
+  url: text("url").notNull(),
+  queries: json("queries").$type<string[]>().notNull(), // ["홍삼", "홍삼스틱"]
+  windowMin: integer("window_min").default(1),
+  windowMax: integer("window_max").default(10),
+  scheduleCron: varchar("schedule_cron").default("0 * * * *"), // 기본 1시간
+  owner: varchar("owner").notNull(),
+  active: boolean("active").default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// 상품 타겟 관리
+export const productTargets = pgTable("product_targets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productKey: varchar("product_key").notNull().unique(),
+  title: text("title").notNull(),
+  url: text("url").notNull(),
+  queries: json("queries").$type<string[]>().notNull(), // ["홍삼스틱"]
+  sortDefault: varchar("sort_default").default("review"), // 'popularity'|'review'|'rating'|'price_asc'|'price_desc'|'recent'
+  deviceDefault: varchar("device_default").default("pc"), // 'pc'|'mobile'
+  windowMin: integer("window_min").default(1),
+  windowMax: integer("window_max").default(40),
+  scheduleCron: varchar("schedule_cron").default("0 * * * *"),
+  owner: varchar("owner").notNull(),
+  active: boolean("active").default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// 랭킹 스냅샷 (v6 실구동)
+export const rankSnapshots = pgTable("rank_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  targetId: varchar("target_id").notNull(),
+  kind: varchar("kind").notNull(), // 'blog' | 'shop'
+  query: text("query").notNull(),
+  rank: integer("rank"),
+  page: integer("page"),
+  position: integer("position"),
+  sort: varchar("sort"), // 쇼핑몰용
+  device: varchar("device").notNull(), // 'pc' | 'mobile'
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  source: varchar("source").notNull(),
+  metadata: json("metadata"),
+});
+
+// 메트릭 스냅샷 (리뷰/상품 헬스)
+export const metricSnapshots = pgTable("metric_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productKey: varchar("product_key").notNull(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  starAvg: decimal("star_avg", { precision: 3, scale: 2 }),
+  reviewCount: integer("review_count"),
+  photoRatio: decimal("photo_ratio", { precision: 3, scale: 2 }),
+  newReviews7d: integer("new_reviews_7d"),
+  newReviews30d: integer("new_reviews_30d"),
+  qaCount: integer("qa_count"),
+  price: integer("price"),
+  stockFlag: boolean("stock_flag"),
+  source: varchar("source").notNull(),
+  metadata: json("metadata"), // 상위10 리뷰 정보 등
+});
+
+// 리뷰 상태 추적 (신규 리뷰 감지용)
+export const reviewState = pgTable("review_state", {
+  productKey: varchar("product_key").primaryKey(),
+  lastReviewId: varchar("last_review_id"),
+  lastCheckedAt: timestamp("last_checked_at").notNull().defaultNow(),
+});
+
 // 수익성 계산 및 최적화 점수
 export const profitabilityAnalysis = pgTable("profitability_analysis", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -252,3 +325,44 @@ export const insertManualBlogEntrySchema = createInsertSchema(manualBlogEntries)
 });
 
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
+
+// v6 새로운 테이블 타입들
+export type BlogTarget = typeof blogTargets.$inferSelect;
+export type InsertBlogTarget = z.infer<typeof insertBlogTargetSchema>;
+
+export type ProductTarget = typeof productTargets.$inferSelect;
+export type InsertProductTarget = z.infer<typeof insertProductTargetSchema>;
+
+export type RankSnapshot = typeof rankSnapshots.$inferSelect;
+export type InsertRankSnapshot = z.infer<typeof insertRankSnapshotSchema>;
+
+export type MetricSnapshot = typeof metricSnapshots.$inferSelect;
+export type InsertMetricSnapshot = z.infer<typeof insertMetricSnapshotSchema>;
+
+export type ReviewState = typeof reviewState.$inferSelect;
+export type InsertReviewState = z.infer<typeof insertReviewStateSchema>;
+
+// v6 Insert 스키마들
+export const insertBlogTargetSchema = createInsertSchema(blogTargets).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertProductTargetSchema = createInsertSchema(productTargets).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertRankSnapshotSchema = createInsertSchema(rankSnapshots).omit({
+  id: true,
+  timestamp: true,
+});
+
+export const insertMetricSnapshotSchema = createInsertSchema(metricSnapshots).omit({
+  id: true,
+  timestamp: true,
+});
+
+export const insertReviewStateSchema = createInsertSchema(reviewState).omit({
+  lastCheckedAt: true,
+});

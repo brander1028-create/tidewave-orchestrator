@@ -1,0 +1,167 @@
+Replit 제작요청 v6 — 자사 수동타겟 전용(실구동)
+0) 목표
+
+우리 팀(담당자)이 직접 입력한 블로그 글/상품만 대상으로,
+랭크 체크(블로그·네이버쇼핑) + 신규 리뷰 자동 감지(우리 상품) + 알림 + 일/주/월 시각화를 실데이터로 구동.
+
+경쟁사 탐색, 무작위 블로그/상품 수집, 어뷰징 감지 없음.
+
+1) ENV
+DRIZZLE_DB_URL=sqlite:data/app.db
+RANK_PER_MIN=20
+RANK_PER_DAY=500
+CACHE_TTL_SEC=600
+DEFAULT_SCHEDULE_CRON=0 * * * *    # 1시간
+ALERT_COOLDOWN_HOURS=6
+USE_MOCK=false
+SMTP_URL=                           # 선택
+
+2) DB 스키마(Drizzle)
+
+blog_targets(id, title, url, queries_json, window_min, window_max, schedule_cron, owner, active, ts_created)
+
+product_targets(id, product_key, title, url, queries_json, sort_default, device_default, window_min, window_max, schedule_cron, owner, active, ts_created)
+
+rank_snapshots(id, target_id, kind 'blog'|'shop', query, rank, page, pos, sort, device, ts, source, meta)
+
+metric_snapshots(id, product_key, ts, star_avg, review_count, photo_ratio, new_reviews_7d, new_reviews_30d, qa_count, price, stock_flag, source, meta)
+
+review_state(product_key, last_review_id, last_checked_ts) // 신규 리뷰 감지용
+
+events(id, target_id, type 'NewReview'|'StaffSubmit', actor, ts, payload, severity)
+
+alerts(id, target_id, rule, ts, prev_rank, curr_rank, delta, reason, cooldown_until, channel, seen)
+
+submissions(id, owner, type 'blog'|'product', payload, status 'pending'|'approved'|'rejected', ts, comment)
+
+인덱스: (kind,query,ts), (target_id,ts), (product_key,ts)
+
+3) 서버(Express/TS) — 실구동 API
+3.1 타겟 관리(담당자 수동 입력 전용)
+
+POST/GET/PATCH/DELETE /api/targets/blog
+
+body 예: { title, url, queries:["홍삼","홍삼스틱"], window:{min:1,max:10}, schedule_cron }
+
+POST/GET/PATCH/DELETE /api/targets/product
+
+body 예: { product_key:"ginseng_001", title, url, queries:["홍삼스틱"], sort_default:"review", device_default:"pc", window:{min:1,max:40}, schedule_cron }
+
+/api/submissions: 제출→승인 시 해당 타겟 생성 + events(StaffSubmit)
+
+3.2 랭크 체크(내 타겟만)
+
+POST /api/rank/blog/check
+
+body: { target_ids?:string[], query_override?:string[] }
+
+동작: 각 blog_targets의 queries × url을 모바일 블로그 SERP에서 랭크(1~10) 파싱 → rank_snapshots 저장
+
+POST /api/rank/shop/check
+
+body: { target_ids?:string[], query_override?:string[], sort?:'popularity'|'review'|'rating'|'price_asc'|'price_desc'|'recent', device?:'pc'|'mobile' }
+
+동작: product_targets의 queries × (정렬/디바이스) 조합으로 네이버쇼핑 랭크(1~40) 파싱 → 스냅샷 저장
+
+GET /api/rank/history: {kind, target_id, query?, sort?, device?, range?, limit?} → 그래프용 시계열
+
+3.3 리뷰 감지(우리 상품만)
+
+POST /api/reviews/check
+
+body: { product_keys?:string[] }
+
+동작: 각 product_targets.url의 리뷰 목록을 파싱하여 review_state.last_review_id와 비교, 신규면 events(NewReview) 생성 + 선택적으로 metric_snapshots에 리뷰 카운트/★평균 등 저장
+
+GET /api/reviews/history?product_key=...&range=...: 카드/보드용
+
+3.4 설정/알림/권한(라이트)
+
+GET/POST /api/settings: 주기/토큰/TTL/알림 프리셋/쿨다운 저장
+
+POST /api/alerts/eval: TopN 진입/이탈, Δ≥N, 연속하락X, (NewReview 발생일 ±24h 내 |Δ|≥5 특이사항) → alerts insert(쿨다운 적용)
+
+GET /api/alerts: 필터/읽음처리
+
+권한(간이): x-role: Admin|Manager|Analyst|Contributor|Viewer 헤더로 라우트 가드
+
+4) 커넥터 가드(비용/안전)
+
+토큰버킷: perMin/perDay, 백오프: 429/5xx 지수, 캐시: kind/query/sort/device TTL=10분(?nocache=1 옵션)
+
+UA/지연: 중립 UA + 800–1500ms 랜덤지연, robots 준수
+
+LKG: 실패 시 마지막 정상값 1회 반환(옵션)
+
+5) 스케줄러
+
+각 타겟의 schedule_cron(기본 1h)으로 rank/blog, rank/shop, reviews/check 잡 등록
+
+알림 엔진: DEFAULT_SCHEDULE_CRON마다 /api/alerts/eval 실행(쿨다운 적용)
+
+일일 요약(옵션): SMTP 있으면 1통
+
+6) 프론트 연결(이미 있는 목업에 배선)
+
+/rank: 기존 폼을 /api/targets/* + /api/rank/*/check로 연결, GET /api/rank/history로 라인·Δ바·캘린더·SOV·이벤트 핀 렌더
+
+/reviews: /api/reviews/history + events(NewReview) 보드
+
+/inbox: submissions 승인→타겟 생성 흐름
+
+/alerts: alerts 피드(진입/이탈/급락/연속하락/신규리뷰)
+
+/settings: 주기/토큰/TTL/프리셋/쿨다운 저장 반영
+
+/dashboard: 사용자별 위젯 레이아웃 유지
+
+7) 지표/시각화 규칙
+
+rank_score = 101 - rank (1위=100점)
+
+비교: dd (D/D-1), wow (전주), mom (전월), vol7(7일 변동성)
+
+이벤트 핀: StaffSubmit, NewReview (담당자 입력/신규리뷰)
+
+특이사항 배지: NewReview ±24h 내 |Δ|≥5 하이라이트
+
+8) 수락 기준(DoD)
+
+담당자가 blog_targets / product_targets를 생성/수정/삭제 가능(권한 가드 적용)
+
+/api/rank/blog|shop/check 실행 시 rank_snapshots insert & /rank 그래프/Δ 표기
+
+/api/reviews/check 실행 시 신규 리뷰가 **events(NewReview)**로 생성 & /alerts 피드 노출
+
+알림 프리셋 저장 후 배치에서 TopN 진입/이탈/급락/연속하락 규칙이 정상 트리거(쿨다운 적용)
+
+settings(주기/토큰/TTL)가 전역 반영되고 /api/ops/stats(호출·캐시·429)에서 확인
+
+9) 스모크 테스트(cURL)
+# 1) 타겟 추가
+curl -X POST http://localhost:3000/api/targets/blog -H "Content-Type: application/json" \
+  -d '{"title":"자사 블로그 A","url":"https://blog.naver.com/riche1862/12345","queries":["홍삼","홍삼스틱"],"window":{"min":1,"max":10}}'
+
+curl -X POST http://localhost:3000/api/targets/product -H "Content-Type: application/json" \
+  -d '{"product_key":"ginseng_001","title":"진생가 홍삼스틱","url":"https://smartstore.naver.com/...","queries":["홍삼스틱"],"sort_default":"review","device_default":"pc","window":{"min":1,"max":40}}'
+
+# 2) 랭크 체크(내 타겟만)
+curl -X POST http://localhost:3000/api/rank/blog/check   -H "Content-Type: application/json" -d '{"target_ids":[]}'
+curl -X POST http://localhost:3000/api/rank/shop/check   -H "Content-Type: application/json" -d '{"target_ids":[],"sort":"review","device":"pc"}'
+
+# 3) 히스토리
+curl "http://localhost:3000/api/rank/history?kind=shop&target_id=ginseng_001&range=30d"
+
+# 4) 리뷰 감지(신규 리뷰)
+curl -X POST http://localhost:3000/api/reviews/check -H "Content-Type: application/json" -d '{"product_keys":["ginseng_001"]}'
+
+# 5) 알림 평가
+curl -X POST http://localhost:3000/api/alerts/eval -H "x-role: Admin"
+
+10) 제외/금지(중요)
+
+경쟁사·무작위 블로그/상품 자동 탐색 구현 금지
+
+어뷰징(스팸/리뷰폭탄) 탐지 전혀 구현하지 말 것
+
+우리 자산 외 링크 크롤링 시도하지 말 것
