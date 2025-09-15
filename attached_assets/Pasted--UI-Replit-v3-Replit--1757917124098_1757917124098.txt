@@ -1,0 +1,196 @@
+오케이. 지금까지 합의한 모든 기능을 UI-우선(모의데이터) → 커넥터 연결 단계로 묶은 Replit 제작요청문(복붙용 v3) 준비했어. 그대로 붙여넣으면 된다.
+
+Replit 에이전트 제작요청 (v3, UI만 우선 + Mock API, 커넥터는 나중 단계)
+0) 목표
+
+블로그/쇼핑 순위·리뷰·신규글/악성리뷰 알림을 한 화면에서 관리하고,
+일/주/월 비교 시각화 + 이벤트 오버레이 + 알림 규칙을 제공.
+
+이번 단계는 UI 쉘 + Mock API만 구현(비용 최소화). 이후 점진적으로 실제 커넥터 연결.
+
+1) 기술 스택
+
+React + Vite + Tailwind + shadcn/ui, 상태관리 Zustand, 차트 Recharts.
+
+라우트: /rank, /reviews, /insights, /inbox, /alerts, /dashboard, /settings, /exports.
+
+Mock API: /api/mock/* (in-memory/JSON). 나중에 /api/* 실서버 커넥터로 교체.
+
+2) 핵심 기능(이번 단계 UI)
+A. 순위 수집·보기(블로그/쇼핑)
+
+블로그 순위(모바일 기준 가정): 키워드/블로그URL/창(1~10) 입력 → 표에 rank/Δ/page/pos/ts.
+
+쇼핑 순위(네이버 쇼핑 가정):
+
+입력: 키워드, 우리상품키(이름/브랜드/URL), 정렬(popularity|review|rating|price_asc|price_desc|recent), 디바이스(pc|mobile), 창(1~40).
+
+표/히스토리: 정렬·디바이스별 분리 저장·표시, Δ 컬러 표시.
+
+리뷰 랭킹보드(상품상세): 상위 10개 리뷰의 리뷰ID/도움수/순서/Δ 테이블(모의데이터).
+
+B. 이벤트·알림
+
+신규글/신규리뷰 감지 이벤트를 차트에 **핀(말풍선)**으로 오버레이(모의).
+
+악성(어뷰징) 리뷰 감지 이벤트 타입: AbuseReview (문구중복/급증 가정, 모의).
+
+알림 규칙 프리셋: TopN 진입/이탈(N=10/5/3), Δ≥5, 연속 하락 3, 리뷰 급증/★평균 -0.1.
+
+쿨다운 기본 6h, 일일 요약(모의) 한 건.
+
+C. 시각화(한눈에 보기)
+
+멀티 라인차트: rank_score = 101 - rank(1위=100점)로 우리/경쟁 5개까지 비교 + 이벤트 핀.
+
+Δ 바차트: 일일/주간 증감.
+
+캘린더 히트맵: 월간 패턴.
+
+SOV 도넛: Top10 점유(우리 vs 경쟁군) 모의 계산.
+
+KPI 카드: 평균랭크, D/D-1, WoW, MoM, vol7(7일 변동성).
+
+D. 담당자 워크플로·권한(로그인 없이 로컬 토글)
+
+담당자 제출함(/inbox): 직원이 URL/블로그/상품/키워드 등록 → 승인/반려 → 운영으로 편입.
+
+신규 항목 전용 탭: 최근 24h 새로 올라온 블로그/리뷰/담당자 등록을 모아보기.
+
+삭제/복원: 소프트 딜리트 + 휴지통(7일, 모의).
+
+나의 대시보드: 위젯(랭크표, 스파크라인, 리뷰헬스, 알림피드, 수익성, 리스팅점수) 그리드 편집/저장(사용자별 localStorage).
+
+역할/권한 토글: Admin / Manager / Analyst / Contributor / Viewer (UI 제어만. 실제 인증은 이후).
+
+E. 설정(/settings)
+
+체크 주기(10m~24h), 토큰 버킷(perMin/perDay), 캐시 TTL(기본 10분) 값 저장(모의).
+
+알림 프리셋 관리, 쿨다운 시간, 정렬/디바이스 기본값.
+
+비용 위젯: 호출수·캐시히트율·429 비율(모의).
+
+F. 분석·인사이트(해외 툴 벤치마킹 UI 틀)
+
+수익성 계산기(원가/배송/수수료/광고비 → 마진/BEAB/목표 ROAS).
+
+리스팅 최적화 점수(체크리스트 기반 0~100, 개선 팁).
+
+PPC CSV 업로드 → 키워드 성과(ROAS) 매칭 보드(모의).
+
+키워드 발굴/BFS: 연관/자동완성/시즈널 카테고리 카드(모의).
+
+경쟁사/트렌드/잠재리뷰/재고라이트/Reverse Lookup(국내형): UI만 자리 잡기.
+
+3) 데이터 스키마(모의 JSON, 이후 DB로 이관)
+// 순위 시계열(원본)
+RankTS { id, target_id, kind:'blog'|'shop', query, sort, device, ts, rank, page, pos, source, meta }
+// 집계(뷰 가속용)
+RankAgg { target_id, ts_day, rank_avg, rank_min, rank_max, dd, wow, mom, vol7 }
+// 리뷰/상품 헬스
+MetricTS { id, product_key, ts, star_avg, review_count, photo_ratio, new_reviews_7d, new_reviews_30d, qa_count, price, stock_flag }
+// 이벤트/알림
+Event { id, target_id, type:'NewPost'|'NewReview'|'AbuseReview'|'StaffSubmit'|'PriceChange'|'StockOut'|'AdOnOff', actor, ts, payload, severity }
+Alert { id, target_id, rule, ts, prev_rank, curr_rank, delta, reason, cooldown_until, seen }
+// 제출함/타겟/트래킹
+Submission { id, owner, type:'blog'|'product'|'keyword', payload, status:'pending'|'approved'|'rejected', ts }
+TrackedTarget { id, owner, kind, query|product_key|url, window_min, window_max, thresholds, schedule, enabled, tags }
+
+4) Mock API(이번 단계에서 반드시 제공)
+GET  /api/mock/rank/series?target_id&sort&device&range=30d
+GET  /api/mock/rank/compare?targets[]=...&sort&device&range=30d
+GET  /api/mock/rank/events?target_id&range=30d
+GET  /api/mock/alerts
+GET  /api/mock/submissions?status=pending
+POST /api/mock/submissions        (등록)
+POST /api/mock/submissions/:id/approve | /reject
+GET  /api/mock/settings           (주기/토큰/TTL/프리셋/권한)
+POST /api/mock/settings
+
+
+실제 커넥터로 확장 예정(지금은 만들지 말 것)
+
+POST /api/rank/blog/check / .../shop/check
+
+POST /api/metrics/review/check
+
+GET /api/rank/*/history
+
+레이트리밋·백오프·TTL 캐시·쿨다운 적용(차후 단계)
+
+5) UI 구성(필수 컴포넌트)
+
+/rank
+
+Tabs: Blog | Shopping
+
+<RankForm>: keyword[], targets(URL or product), sort, device, window(1–40), schedule(10m–24h)
+
+<RankTable>: columns=[query,entity,rank,Δ,page,pos,sort,device,ts] + 스파크라인
+
+Detail 모달: 멀티 라인차트(rank_score), Δ바, 이벤트 핀/타임라인, SOV 미니 게이지
+
+/reviews: 상위10 리뷰 랭킹보드 + 리뷰 헬스 카드 + Abuse 배지
+
+/insights: KPI 카드(D/D-1, WoW, MoM, vol7) + 캘린더 히트맵 + Δ 랭더보드(상승/하락)
+
+/inbox: 제출함(승인/반려/코멘트) + 신규(24h) 탭
+
+/alerts: 알림 피드(필터: 진입/이탈/Δ/연속하락/신규글/신규리뷰/Abuse) + 미리보기 차트
+
+/dashboard: 위젯 그리드(사용자별 레이아웃 저장)
+
+/settings: 주기/토큰/TTL/알림 프리셋/쿨다운/권한 토글, 삭제 정책(소프트딜리트+휴지통)
+
+6) 계산/표현 규칙
+
+rank_score = 101 - rank (1위=100점)
+
+비교값: dd = r(t)-r(t-1), wow = r(t)-r(t-7), mom = r(t)-r(t-28)
+
+변동성: vol7 = stdev(rank[t-6..t]) 또는 7일 평균 절대 Δ
+
+이벤트 ±24h 내 |Δ|≥5 → 특이사항 배지 표기
+
+7) 수락 기준(UI)
+
+모든 페이지 렌더링 + Mock 데이터로 표/차트/알림/인박스 동작.
+
+/rank Detail에서 이벤트 핀·Δ 바·SOV·스파크라인이 동시에 보임.
+
+/insights에서 일/주/월 비교(KPI·히트맵·Δ 랭더보드) 확인.
+
+제출함에서 승인→목록 반영, 신규(24h) 탭에 표시.
+
+Settings 저장값이 전역에 반영(알림 프리셋/쿨다운/주기/권한 토글).
+
+삭제는 소프트딜리트로 휴지통 이동(복원 가능, Mock).
+
+8) 비용/운영(지금 단계)
+
+실크롤링·NLP·배치 없음(전부 모의).
+
+차트·리스트는 클라이언트 계산(WoW/MoM/vol7).
+
+디자인: 다크 모드 대응, 반응형, 모바일 최소 사용성 고려.
+
+9) 다음 단계(메모만)
+
+커넥터 ① 블로그 랭크(Mobile SERP, robots/지연/백오프/TTL)
+
+커넥터 ② 쇼핑 랭크(정렬/디바이스별) + 상위 리뷰 랭킹
+
+신규글/신규리뷰 실감지 + 알림 생성(쿨다운/요약메일)
+
+수익성/리스팅 점수 계산기 로직 본격화, PPC CSV→ROAS 매칭
+
+트렌드/경쟁사/Reverse Lookup(국내형) 순차 연결
+
+빠른 테스트 시드(모의)
+
+블로그: queries=["홍삼","홍삼스틱"], blogs 비워두기(가짜 자동 추출)
+
+쇼핑: queries=["홍삼스틱"], products=[{name:"진생가 홍삼스틱",brand:"진생가"}], sort="review", device="pc"
+
+리뷰: product_key="ginseng_stick_001" 상위10 리뷰 고정 + 일부 Δ
