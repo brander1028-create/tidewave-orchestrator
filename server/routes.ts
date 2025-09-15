@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertSubmissionSchema, insertTrackedTargetSchema } from "@shared/schema";
+import { insertSubmissionSchema, insertTrackedTargetSchema, insertManualBlogEntrySchema } from "@shared/schema";
 import { z } from "zod";
 import { scrapingService } from "./scraping-service";
 
@@ -18,6 +18,15 @@ const scrapingConfigSchema = z.object({
 const batchScrapingSchema = z.object({
   targets: z.array(scrapingConfigSchema).min(1).max(10) // Limit batch size
 });
+
+// Manual blog entry update schema - only allow safe fields to be updated
+const updateManualBlogEntrySchema = z.object({
+  keyword: z.string().min(1).optional(),
+  url: z.string().url().optional(),
+  title: z.string().min(1).optional(),
+  rank: z.number().min(1).nullable().optional(),
+  notes: z.string().nullable().optional(),
+}).strict(); // Reject any extra fields
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Real CRUD API routes for user data management
@@ -91,6 +100,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(setting);
     } catch (error) {
       res.status(500).json({ message: "Failed to update setting", error: String(error) });
+    }
+  });
+
+  // Manual Blog Entries API
+  app.get("/api/manual-blogs", async (req, res) => {
+    try {
+      const entries = await storage.getManualBlogEntries();
+      res.json(entries);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch manual blog entries", error: String(error) });
+    }
+  });
+
+  app.post("/api/manual-blogs", async (req, res) => {
+    try {
+      const validation = insertManualBlogEntrySchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "Invalid manual blog entry data",
+          errors: validation.error.errors
+        });
+      }
+      
+      const entry = await storage.createManualBlogEntry(validation.data);
+      res.json(entry);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create manual blog entry", error: String(error) });
+    }
+  });
+
+  app.patch("/api/manual-blogs/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      // Validate update data - only allow safe fields to be modified
+      const validation = updateManualBlogEntrySchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "Invalid update data",
+          errors: validation.error.errors
+        });
+      }
+      
+      // Ensure updatedAt is set server-side
+      const updateData = { ...validation.data, updatedAt: new Date() };
+      const entry = await storage.updateManualBlogEntry(id, updateData);
+      res.json(entry);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update manual blog entry", error: String(error) });
+    }
+  });
+
+  app.delete("/api/manual-blogs/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteManualBlogEntry(id);
+      res.json({ message: "Manual blog entry deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete manual blog entry", error: String(error) });
     }
   });
 

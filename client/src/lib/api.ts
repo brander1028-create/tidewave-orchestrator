@@ -6,8 +6,10 @@ import type {
   Submission, 
   TrackedTarget, 
   Settings,
+  ManualBlogEntry,
   InsertSubmission,
-  InsertTrackedTarget
+  InsertTrackedTarget,
+  InsertManualBlogEntry
 } from "@shared/schema";
 
 // Real-time scraping API
@@ -187,6 +189,32 @@ export const settingsApi = {
   get: async (key: string): Promise<Settings | null> => {
     const settings = await settingsApi.getAll();
     return settings.find(s => s.key === key) || null;
+  }
+};
+
+// Manual Blog Entries API (Real endpoints)
+export const manualBlogApi = {
+  // Get all manual blog entries
+  getAll: async (): Promise<ManualBlogEntry[]> => {
+    const response = await apiRequest("GET", "/api/manual-blogs");
+    return response.json();
+  },
+
+  // Create new manual blog entry
+  create: async (entry: InsertManualBlogEntry): Promise<ManualBlogEntry> => {
+    const response = await apiRequest("POST", "/api/manual-blogs", entry);
+    return response.json();
+  },
+
+  // Update manual blog entry
+  update: async (id: string, updates: Partial<ManualBlogEntry>): Promise<ManualBlogEntry> => {
+    const response = await apiRequest("PATCH", `/api/manual-blogs/${id}`, updates);
+    return response.json();
+  },
+
+  // Delete manual blog entry (soft delete)
+  remove: async (id: string): Promise<void> => {
+    await apiRequest("DELETE", `/api/manual-blogs/${id}`);
   }
 };
 

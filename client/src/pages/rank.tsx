@@ -32,7 +32,7 @@ import {
   Minus
 } from "lucide-react";
 import { ColumnDef } from "@tanstack/react-table";
-import { targetsApi, scrapingApi, rankApi } from "@/lib/api";
+import { targetsApi, scrapingApi, rankApi, manualBlogApi } from "@/lib/api";
 import type { TrackedTarget, InsertTrackedTarget } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -91,22 +91,28 @@ export default function Rank() {
   // Add manual blog entry mutation  
   const addBlogMutation = useMutation({
     mutationFn: async (data: AddManualBlogForm) => {
-      // TODO: 수동 블로그 입력 API 구현 필요
-      console.log('Manual blog entry data:', data);
-      return data;
+      return await manualBlogApi.create({
+        keyword: data.keyword,
+        url: data.url,
+        title: data.title,
+        rank: data.rank ?? null,
+        notes: data.notes ?? null,
+        submittedBy: data.submittedBy,
+      });
     },
     onSuccess: () => {
-      form.reset();
-      setIsAddBlogOpen(false);
       toast({
         title: "블로그 입력 완료",
-        description: "새 블로그 정보가 등록되었습니다.",
+        description: "수동 블로그 입력이 성공적으로 저장되었습니다.",
       });
+      queryClient.invalidateQueries({ queryKey: ['/api/manual-blogs'] });
+      setIsAddBlogOpen(false);
+      form.reset();
     },
     onError: (error) => {
       toast({
         title: "입력 실패",
-        description: "블로그 입력 중 오류가 발생했습니다.",
+        description: `블로그 입력 중 오류가 발생했습니다: ${error.message}`,
         variant: "destructive",
       });
     },
