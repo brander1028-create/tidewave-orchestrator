@@ -9,15 +9,18 @@ import {
   type InsertExtractedKeyword,
   type KeywordCrawlHistory,
   type InsertKeywordCrawlHistory,
+  type BlogRegistry,
+  type InsertBlogRegistry,
   serpJobs,
   discoveredBlogs,
   analyzedPosts,
   extractedKeywords,
-  keywordCrawlHistory
+  keywordCrawlHistory,
+  blogRegistry
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { db } from "./db";
-import { desc, eq, sql, and, gte } from "drizzle-orm";
+import { desc, eq, sql, and, gte, or, like } from "drizzle-orm";
 
 export interface IStorage {
   // SERP Job operations
@@ -44,6 +47,12 @@ export interface IStorage {
   recordKeywordCrawl(keyword: string, source?: string): Promise<void>;
   getRecentlyCrawledKeywords(daysPast?: number): Promise<string[]>;
   filterUncrawledKeywords(keywords: string[], daysPast?: number): Promise<string[]>;
+  
+  // Blog registry operations (Phase1 filtering)
+  createOrUpdateBlogRegistry(blogData: InsertBlogRegistry): Promise<BlogRegistry>;
+  getBlogRegistry(filters?: { status?: string; keyword?: string }): Promise<BlogRegistry[]>;
+  updateBlogRegistryStatus(blogId: string, status: string, note?: string): Promise<BlogRegistry | undefined>;
+  getBlogRegistryByBlogId(blogId: string): Promise<BlogRegistry | undefined>;
 }
 
 export class MemStorage implements IStorage {
@@ -299,6 +308,125 @@ export class MemStorage implements IStorage {
     } catch (error) {
       console.error(`❌ Failed to filter uncrawled keywords:`, error);
       return keywords; // 에러 시 모든 키워드 반환 (안전장치)
+    }
+  }
+
+  // Blog registry operations (Phase1 filtering)
+  async createOrUpdateBlogRegistry(blogData: InsertBlogRegistry): Promise<BlogRegistry> {
+    try {
+      // Extract blog ID from URL for Naver blogs
+      let blogId = blogData.blogId;
+      if (!blogId && blogData.url) {
+        const match = blogData.url.match(/blog\.naver\.com\/([^\/]+)/);
+        if (match) {
+          blogId = match[1];
+        }
+      }
+
+      const insertData = {
+        ...blogData,
+        blogId: blogId || randomUUID(),
+        firstSeenAt: new Date(),
+        lastSeenAt: new Date(),
+      };
+
+      // Use upsert (insert or update)
+      const [result] = await db.insert(blogRegistry)
+        .values(insertData)
+        .onConflictDoUpdate({
+          target: blogRegistry.blogId,
+          set: {
+            url: insertData.url,
+            name: insertData.name,
+            status: insertData.status,
+            tags: insertData.tags,
+            note: insertData.note,
+            lastSeenAt: new Date(),
+            updatedAt: new Date(),
+          }
+        })
+        .returning();
+
+      console.log(`📝 Created/Updated blog registry for: ${result.blogId}`);
+      return result;
+    } catch (error) {
+      console.error(`❌ Failed to create/update blog registry:`, error);
+      throw error;
+    }
+  }
+
+  async getBlogRegistry(filters?: { status?: string; keyword?: string }): Promise<BlogRegistry[]> {
+    try {
+      const conditions: any[] = [];
+
+      if (filters?.status && filters.status !== 'all') {
+        conditions.push(eq(blogRegistry.status, filters.status));
+      }
+
+      if (filters?.keyword) {
+        conditions.push(
+          or(
+            like(blogRegistry.name, `%${filters.keyword}%`),
+            like(blogRegistry.url, `%${filters.keyword}%`),
+            sql`array_to_string(${blogRegistry.tags}, ',') ILIKE ${'%' + filters.keyword + '%'}`
+          )
+        );
+      }
+
+      let query = db.select().from(blogRegistry);
+      
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions));
+      }
+
+      const results = await query.orderBy(desc(blogRegistry.updatedAt)).limit(100);
+      
+      console.log(`🔍 Retrieved ${results.length} blog registry entries`);
+      return results;
+    } catch (error) {
+      console.error(`❌ Failed to get blog registry:`, error);
+      return [];
+    }
+  }
+
+  async updateBlogRegistryStatus(blogId: string, status: string, note?: string): Promise<BlogRegistry | undefined> {
+    try {
+      const updateData: Partial<BlogRegistry> = {
+        status,
+        updatedAt: new Date(),
+      };
+
+      if (note !== undefined) {
+        updateData.note = note;
+      }
+
+      const [result] = await db.update(blogRegistry)
+        .set(updateData)
+        .where(eq(blogRegistry.blogId, blogId))
+        .returning();
+
+      if (result) {
+        console.log(`📝 Updated blog registry status: ${blogId} -> ${status}`);
+      }
+
+      return result;
+    } catch (error) {
+      console.error(`❌ Failed to update blog registry status:`, error);
+      return undefined;
+    }
+  }
+
+  async getBlogRegistryByBlogId(blogId: string): Promise<BlogRegistry | undefined> {
+    try {
+      const [result] = await db.select()
+        .from(blogRegistry)
+        .where(eq(blogRegistry.blogId, blogId))
+        .limit(1);
+
+      return result;
+    } catch (error) {
+      console.error(`❌ Failed to get blog registry by blogId:`, error);
+      return undefined;
     }
   }
 }

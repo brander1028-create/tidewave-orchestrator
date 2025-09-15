@@ -568,10 +568,95 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ===========================================
-  // BLOG REGISTRY MANAGEMENT API
+  // BLOG REGISTRY MANAGEMENT API (Updated)
   // ===========================================
 
-  // Get blogs with optional status filtering and pagination
+  // Get blog registry with advanced filtering (new storage API)
+  app.get("/api/blog-registry", async (req, res) => {
+    try {
+      const { status, keyword } = req.query;
+      
+      const blogs = await storage.getBlogRegistry({
+        status: status as string,
+        keyword: keyword as string
+      });
+
+      // Transform data with real metrics from discovered blogs
+      const transformedBlogs = await Promise.all(blogs.map(async (blog) => {
+        // Get discovered blog info from the main discovery system
+        const discoveredBlogResults = await db.select()
+          .from(discoveredBlogs)
+          .where(eq(discoveredBlogs.blogUrl, blog.url))
+          .limit(1);
+        
+        let exposureCount = 0;
+        let totalScore = 0;
+        let discoveredKeywords: string[] = [];
+        
+        if (discoveredBlogResults.length > 0) {
+          const extractedKeywords = await storage.getExtractedKeywords(discoveredBlogResults[0].id);
+          exposureCount = extractedKeywords.filter(k => k.volume && k.volume > 100).length;
+          totalScore = extractedKeywords.reduce((sum, k) => sum + (k.frequency || 0), 0);
+          discoveredKeywords = extractedKeywords.slice(0, 10).map(k => k.keyword); // Limit for performance
+        }
+
+        return {
+          id: blog.blogId,
+          blogName: blog.name || "Unknown Blog", 
+          blogUrl: blog.url,
+          status: blog.status,
+          notes: blog.note,
+          exposureCount,
+          totalScore: Math.round(totalScore),
+          lastUpdated: blog.updatedAt?.toISOString() || blog.createdAt?.toISOString(),
+          discoveredKeywords
+        };
+      }));
+
+      res.json(transformedBlogs);
+    } catch (error) {
+      console.error('Error fetching blog registry:', error);
+      res.status(500).json({ error: "Failed to fetch blog registry" });
+    }
+  });
+
+  // Update blog status using new storage API
+  app.patch("/api/blog-registry/:blogId/status", async (req, res) => {
+    try {
+      const { blogId } = req.params;
+      const { status, note } = req.body;
+      
+      if (!['collected', 'blacklist', 'outreach'].includes(status)) {
+        return res.status(400).json({ error: "Invalid status. Must be 'collected', 'blacklist', or 'outreach'" });
+      }
+
+      const updatedBlog = await storage.updateBlogRegistryStatus(blogId, status, note);
+      
+      if (!updatedBlog) {
+        return res.status(404).json({ error: "Blog not found" });
+      }
+
+      res.json({ success: true, blog: updatedBlog });
+    } catch (error) {
+      console.error('Error updating blog status:', error);
+      res.status(500).json({ error: "Failed to update blog status" });
+    }
+  });
+
+  // Create or update blog in registry
+  app.post("/api/blog-registry", async (req, res) => {
+    try {
+      const blogData = req.body;
+      
+      const result = await storage.createOrUpdateBlogRegistry(blogData);
+      res.json({ success: true, blog: result });
+    } catch (error) {
+      console.error('Error creating/updating blog registry:', error);
+      res.status(500).json({ error: "Failed to create/update blog registry" });
+    }
+  });
+
+  // Legacy API - Get blogs with optional status filtering and pagination
   app.get("/api/blogs", async (req, res) => {
     try {
       const { status, limit = 50, offset = 0 } = req.query;
