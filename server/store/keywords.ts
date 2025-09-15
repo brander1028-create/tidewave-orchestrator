@@ -4,44 +4,31 @@ import { eq, sql, desc, asc, inArray } from 'drizzle-orm';
 import type { ManagedKeyword, InsertManagedKeyword } from '../../shared/schema';
 import { getVolumesWithHealth } from '../services/externals-health';
 import type { SearchAdResult } from '../services/searchad';
+// v10 B번: 설정 기반 점수 계산 함수 import
+import { 
+  compIdxToScore as configCompIdxToScore,
+  calculateOverallScore as configCalculateOverallScore
+} from '../services/scoring-config';
 
 /**
- * Convert compIdx string to numeric score (0-100)
- * 수정: 높음=100, 중간=60, 낮음=20 (상업성 지표 통일)
+ * v10 B번: 설정 기반 경쟁도 점수 변환 (async wrapper)
+ * @deprecated 기존 동기 함수 대신 configCompIdxToScore 사용 권장
  */
-export function compIdxToScore(idx?: string | null): number {
-  if (!idx) return 60; // 중간
-  const s = String(idx).toLowerCase();
-  if (s.includes('높음') || s.includes('high') || s === '2') return 100;
-  if (s.includes('중간') || s.includes('mid') || s === '1') return 60;
-  if (s.includes('낮음') || s.includes('low') || s === '0') return 20;
-  return 60;
+export async function compIdxToScore(idx?: string | null): Promise<number> {
+  return await configCompIdxToScore(idx);
 }
 
 /**
- * Calculate overall score (0-100) based on 5 metrics
- * 수정: volume 로그스케일, depth/cpc 상업성 지표 같은 방향으로 통일
+ * v10 B번: 설정 기반 종합점수 계산 (async wrapper)
+ * @deprecated 기존 동기 함수 대신 configCalculateOverallScore 사용 권장
  */
-export function calculateOverallScore(
+export async function calculateOverallScore(
   raw_volume: number,
   comp_score: number,
   ad_depth: number,
   est_cpc: number
-): number {
-  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-  
-  // 10만 조회 기준 정규화(로그 스케일)
-  const volume_norm = clamp01(Math.log10(Math.max(1, raw_volume)) / 5); // 1..100000 → 0..1
-  const depth_norm = clamp01((ad_depth || 0) / 5); // 0..5 → 0..1
-  const cpc_norm = est_cpc ? clamp01(est_cpc / 5000) : 0; // 0..5000원 cap
-  
-  const score =
-    0.35 * (volume_norm * 100) +
-    0.35 * clamp01(comp_score / 100) * 100 +
-    0.20 * (depth_norm * 100) +
-    0.10 * (cpc_norm * 100);
-  
-  return Math.round(clamp01(score / 100) * 100);
+): Promise<number> {
+  return await configCalculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc);
 }
 
 /**
@@ -304,7 +291,7 @@ export async function upsertKeywordsFromSearchAds(
     
     // 5개 지표 처리
     const comp_idx = volumeData.compIdx || null;
-    const comp_score = compIdxToScore(comp_idx);
+    const comp_score = await compIdxToScore(comp_idx);
     const ad_depth = volumeData.plAvgDepth || 0;
     const has_ads = ad_depth > 0;
     
@@ -325,7 +312,7 @@ export async function upsertKeywordsFromSearchAds(
     }
     
     // 종합점수 계산 (0-100)
-    const score = calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
+    const score = await calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
     
     keywordsToUpsert.push({
       text,

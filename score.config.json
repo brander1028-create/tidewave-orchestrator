@@ -1,0 +1,60 @@
+{
+  "version": "v10.0",
+  "description": "키워드 점수 계산 엔진 설정",
+  "scoring": {
+    "weights": {
+      "volume": 0.35,
+      "competition": 0.35,
+      "ad_depth": 0.20,
+      "cpc": 0.10
+    },
+    "normalization": {
+      "volume": {
+        "type": "logarithmic",
+        "base": 10,
+        "max_raw": 100000,
+        "scale_factor": 5
+      },
+      "competition": {
+        "type": "direct",
+        "scale": 100
+      },
+      "ad_depth": {
+        "type": "linear",
+        "max": 5
+      },
+      "cpc": {
+        "type": "linear",
+        "max": 5000
+      }
+    },
+    "competition_mapping": {
+      "높음": 100,
+      "high": 100,
+      "2": 100,
+      "중간": 60,
+      "mid": 60,
+      "1": 60,
+      "낮음": 20,
+      "low": 20,
+      "0": 20,
+      "default": 60
+    }
+  },
+  "logging": {
+    "enabled": true,
+    "detailed": false,
+    "log_calculations": true
+  },
+  "metadata": {
+    "last_modified": "2025-09-15T13:45:00Z",
+    "modified_by": "system",
+    "change_log": [
+      {
+        "date": "2025-09-15T13:45:00Z",
+        "changes": "Initial score config creation for v10 B task",
+        "author": "system"
+      }
+    ]
+  }
+}

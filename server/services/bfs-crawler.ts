@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { getVolumesWithHealth } from './externals-health.js';
 import { listKeywords, upsertMany } from '../store/keywords.js';
+import { compIdxToScore, calculateOverallScore } from './scoring-config.js';
 import { nanoid } from 'nanoid';
 import { db } from '../db.js';
 import { storage } from '../storage.js';
@@ -124,36 +125,8 @@ export function normalizeKeyword(keyword: string): string {
   return keyword.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-// 경쟁도 텍스트를 점수로 변환
-export function compIdxToScore(compIdx: string): number {
-  switch (compIdx) {
-    case '낮음': return 100;
-    case '중간': return 60;
-    case '높음': return 20;
-    default: return 50;
-  }
-}
-
-// 종합점수 계산
-export function calculateOverallScore(
-  volume: number, 
-  compScore: number, 
-  adDepth: number, 
-  cpc: number
-): number {
-  // 가중 평균: 조회량 35% + 경쟁도 35% + 광고깊이 20% + CPC 10%
-  const normalizedVolume = Math.min(volume / 100000 * 100, 100); // Max 100k volume = 100 points
-  const normalizedCpc = Math.min(cpc / 5000 * 100, 100); // Max 5000 CPC = 100 points  
-  const normalizedAdDepth = Math.min(adDepth / 10 * 100, 100); // Max 10 depth = 100 points
-  
-  const score = 
-    normalizedVolume * 0.35 + 
-    compScore * 0.35 + 
-    normalizedAdDepth * 0.20 + 
-    normalizedCpc * 0.10;
-    
-  return Math.round(score);
-}
+// 🔄 v10 B번: 중복된 함수 정의 제거됨 
+// 이제 설정 기반 async 함수들을 ./scoring-config에서 import하여 사용
 
 // ===== 시드 확장 Providers (명세서 3-1 ~ 3-5) =====
 
@@ -573,9 +546,9 @@ export class BFSKeywordCrawler {
         const estCpc = safeParseNumber(volumeData.avePcCpc);
         
         const overallScore = mode === 'searchads' 
-          ? calculateOverallScore(
+          ? await calculateOverallScore(
               rawVolume,
-              compIdxToScore(volumeData.compIdx || '중간'),
+              await compIdxToScore(volumeData.compIdx || '중간'),
               adDepth,
               estCpc
             )

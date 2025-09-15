@@ -1301,9 +1301,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Calculate score (Phase 1: 임시 저장 정책)
         const overallScore = mode === 'searchads' 
-          ? calculateOverallScore(
+          ? await calculateOverallScore(
               rawVolume,
-              compIdxToScore(volumeData.compIdx || '중간'),
+              await compIdxToScore(volumeData.compIdx || '중간'),
               volumeData.plAvgDepth || 0,
               volumeData.avePcCpc || 0
             )
@@ -1460,12 +1460,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             text,
             raw_volume: rawVolume,
             comp_idx: compIdx,
-            comp_score: compIdxToScore(compIdx),
+            comp_score: await compIdxToScore(compIdx),
             ad_depth: adDepth,
             has_ads: adDepth > 0,
             est_cpc_krw: estCpc,
             est_cpc_source: 'searchads',
-            score: calculateOverallScore(rawVolume, compIdxToScore(compIdx), adDepth, estCpc),
+            score: await calculateOverallScore(rawVolume, await compIdxToScore(compIdx), adDepth, estCpc),
             source: 'bfs_seed'
           });
         }
@@ -1871,12 +1871,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // 5개 지표 필드 파싱
         const comp_idx = row.comp_idx || row.compIdx || null;
-        const comp_score = parseInt(row.comp_score || row.compScore) || compIdxToScore(comp_idx);
+        const comp_score = parseInt(row.comp_score || row.compScore) || await compIdxToScore(comp_idx);
         const ad_depth = parseFloat(row.ad_depth || row.adDepth) || 0;
         const has_ads = (row.has_ads || row.hasAds) === 'true' || (row.has_ads || row.hasAds) === true || ad_depth > 0;
         const est_cpc_krw = parseInt(row.est_cpc_krw || row.estCpcKrw) || null;
         const est_cpc_source = row.est_cpc_source || row.estCpcSource || (est_cpc_krw ? 'csv' : 'unknown');
-        const score = parseInt(row.score) || calculateOverallScore(rawVolume, comp_score, ad_depth, est_cpc_krw || 0);
+        const score = parseInt(row.score) || await calculateOverallScore(rawVolume, comp_score, ad_depth, est_cpc_krw || 0);
 
         if (!text) {
           warnings.push(`Skipping row with empty text: ${JSON.stringify(row)}`);

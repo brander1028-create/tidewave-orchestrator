@@ -3,7 +3,8 @@ import { getVolumes, type SearchAdResult } from './searchad';
 import { naverApi, type NaverBlogSearchResult } from './naver-api';
 import { markHealthFail, markHealthyHint } from './health-cache';
 import { managedKeywords, type InsertManagedKeyword } from '@shared/schema';
-import { upsertMany, compIdxToScore, calculateOverallScore } from '../store/keywords';
+import { upsertMany } from '../store/keywords';
+import { compIdxToScore, calculateOverallScore } from './scoring-config.js';
 import { sql, inArray, gt, gte } from 'drizzle-orm';
 
 /**
@@ -90,7 +91,7 @@ export async function getVolumesWithHealth(
           
           // 5개 지표 처리
           const comp_idx = volumeData.compIdx || null;
-          const comp_score = compIdxToScore(comp_idx);
+          const comp_score = await compIdxToScore(comp_idx);
           const ad_depth = volumeData.plAvgDepth || 0;
           const has_ads = ad_depth > 0;
           
@@ -110,7 +111,7 @@ export async function getVolumesWithHealth(
           }
           
           // 종합점수 계산
-          const score = calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
+          const score = await calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
           
           keywordsToUpsert.push({
             text,
