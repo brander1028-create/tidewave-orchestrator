@@ -6,6 +6,12 @@ import {
   type TrackedTarget, type InsertTrackedTarget,
   type Settings,
   type ManualBlogEntry, type InsertManualBlogEntry,
+  // v6 새로운 타입들
+  type BlogTarget, type InsertBlogTarget,
+  type ProductTarget, type InsertProductTarget,
+  type RankSnapshot, type InsertRankSnapshot,
+  type MetricSnapshot, type InsertMetricSnapshot,
+  type ReviewState, type InsertReviewState,
   rankTimeSeries,
   metricTimeSeries,
   events,
@@ -13,7 +19,13 @@ import {
   submissions,
   trackedTargets,
   settings,
-  manualBlogEntries
+  manualBlogEntries,
+  // v6 새로운 테이블들
+  blogTargets,
+  productTargets,
+  rankSnapshots,
+  metricSnapshots,
+  reviewState
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { db } from "./db";
@@ -52,6 +64,42 @@ export interface IStorage {
   createManualBlogEntry(data: InsertManualBlogEntry): Promise<ManualBlogEntry>;
   updateManualBlogEntry(id: string, updates: Partial<ManualBlogEntry>): Promise<ManualBlogEntry>;
   deleteManualBlogEntry(id: string): Promise<void>;
+  
+  // v6 Blog Targets (자사 블로그 타겟 관리)
+  getBlogTargets(owner?: string): Promise<BlogTarget[]>;
+  createBlogTarget(data: InsertBlogTarget): Promise<BlogTarget>;
+  updateBlogTarget(id: string, updates: Partial<BlogTarget>): Promise<BlogTarget>;
+  deleteBlogTarget(id: string): Promise<void>;
+  getBlogTarget(id: string): Promise<BlogTarget | null>;
+  // Owner-aware methods for security
+  getBlogTargetById(owner: string, id: string): Promise<BlogTarget | null>;
+  updateBlogTargetByOwner(owner: string, id: string, updates: Partial<BlogTarget>): Promise<BlogTarget | null>;
+  deleteBlogTargetByOwner(owner: string, id: string): Promise<boolean>;
+
+  // v6 Product Targets (자사 상품 타겟 관리)
+  getProductTargets(owner?: string): Promise<ProductTarget[]>;
+  createProductTarget(data: InsertProductTarget): Promise<ProductTarget>;
+  updateProductTarget(id: string, updates: Partial<ProductTarget>): Promise<ProductTarget>;
+  deleteProductTarget(id: string): Promise<void>;
+  getProductTarget(id: string): Promise<ProductTarget | null>;
+  // Owner-aware methods for security  
+  getProductTargetById(owner: string, id: string): Promise<ProductTarget | null>;
+  updateProductTargetByOwner(owner: string, id: string, updates: Partial<ProductTarget>): Promise<ProductTarget | null>;
+  deleteProductTargetByOwner(owner: string, id: string): Promise<boolean>;
+
+  // v6 Rank Snapshots (실시간 랭킹 스냅샷)
+  getRankSnapshots(targetId?: string, kind?: string, range?: string): Promise<RankSnapshot[]>;
+  insertRankSnapshot(data: InsertRankSnapshot): Promise<RankSnapshot>;
+  getRankHistory(targetId: string, kind: string, query?: string, sort?: string, device?: string, range?: string): Promise<RankSnapshot[]>;
+
+  // v6 Metric Snapshots (리뷰/상품 헬스)
+  getMetricSnapshots(productKey?: string, range?: string): Promise<MetricSnapshot[]>;
+  insertMetricSnapshot(data: InsertMetricSnapshot): Promise<MetricSnapshot>;
+  getMetricHistory(productKey: string, range?: string): Promise<MetricSnapshot[]>;
+
+  // v6 Review State (신규 리뷰 감지)
+  getReviewState(productKey: string): Promise<ReviewState | null>;
+  updateReviewState(data: InsertReviewState): Promise<ReviewState>;
   
   // Analytics
   getKPIData(period?: string): Promise<any>;
@@ -430,6 +478,261 @@ export class DatabaseStorage implements IStorage {
       .set({ isActive: false, updatedAt: new Date() })
       .where(eq(manualBlogEntries.id, id));
   }
+
+  // v6 Blog Targets Implementation
+  async getBlogTargets(owner?: string): Promise<BlogTarget[]> {
+    const conditions = [eq(blogTargets.active, true)];
+    if (owner) {
+      conditions.push(eq(blogTargets.owner, owner));
+    }
+    return await db.select().from(blogTargets)
+      .where(and(...conditions))
+      .orderBy(desc(blogTargets.createdAt));
+  }
+
+  async createBlogTarget(data: InsertBlogTarget): Promise<BlogTarget> {
+    const [target] = await db.insert(blogTargets).values(data).returning();
+    return target;
+  }
+
+  async getBlogTargetById(owner: string, id: string): Promise<BlogTarget | null> {
+    const [target] = await db.select().from(blogTargets)
+      .where(and(
+        eq(blogTargets.id, id),
+        eq(blogTargets.owner, owner),
+        eq(blogTargets.active, true)
+      ));
+    return target || null;
+  }
+
+  async updateBlogTarget(id: string, updates: Partial<BlogTarget>): Promise<BlogTarget> {
+    const [updated] = await db.update(blogTargets)
+      .set(updates)
+      .where(eq(blogTargets.id, id))
+      .returning();
+    if (!updated) {
+      throw new Error(`Blog target not found: ${id}`);
+    }
+    return updated;
+  }
+
+  async updateBlogTargetByOwner(owner: string, id: string, updates: Partial<BlogTarget>): Promise<BlogTarget | null> {
+    const [updated] = await db.update(blogTargets)
+      .set(updates)
+      .where(and(
+        eq(blogTargets.id, id),
+        eq(blogTargets.owner, owner),
+        eq(blogTargets.active, true)
+      ))
+      .returning();
+    return updated || null;
+  }
+
+  async deleteBlogTarget(id: string): Promise<void> {
+    // Soft delete by setting active to false
+    await db.update(blogTargets)
+      .set({ active: false })
+      .where(eq(blogTargets.id, id));
+  }
+
+  async deleteBlogTargetByOwner(owner: string, id: string): Promise<boolean> {
+    const [result] = await db.update(blogTargets)
+      .set({ active: false })
+      .where(and(
+        eq(blogTargets.id, id),
+        eq(blogTargets.owner, owner),
+        eq(blogTargets.active, true)
+      ))
+      .returning({ id: blogTargets.id });
+    return !!result;
+  }
+
+  async getBlogTarget(id: string): Promise<BlogTarget | null> {
+    const [target] = await db.select().from(blogTargets)
+      .where(and(eq(blogTargets.id, id), eq(blogTargets.active, true)));
+    return target || null;
+  }
+
+  // v6 Product Targets Implementation
+  async getProductTargets(owner?: string): Promise<ProductTarget[]> {
+    const conditions = [eq(productTargets.active, true)];
+    if (owner) {
+      conditions.push(eq(productTargets.owner, owner));
+    }
+    return await db.select().from(productTargets)
+      .where(and(...conditions))
+      .orderBy(desc(productTargets.createdAt));
+  }
+
+  async createProductTarget(data: InsertProductTarget): Promise<ProductTarget> {
+    const [target] = await db.insert(productTargets).values(data).returning();
+    return target;
+  }
+
+  async getProductTargetById(owner: string, id: string): Promise<ProductTarget | null> {
+    const [target] = await db.select().from(productTargets)
+      .where(and(
+        eq(productTargets.id, id),
+        eq(productTargets.owner, owner),
+        eq(productTargets.active, true)
+      ));
+    return target || null;
+  }
+
+  async updateProductTarget(id: string, updates: Partial<ProductTarget>): Promise<ProductTarget> {
+    const [updated] = await db.update(productTargets)
+      .set(updates)
+      .where(eq(productTargets.id, id))
+      .returning();
+    if (!updated) {
+      throw new Error(`Product target not found: ${id}`);
+    }
+    return updated;
+  }
+
+  async updateProductTargetByOwner(owner: string, id: string, updates: Partial<ProductTarget>): Promise<ProductTarget | null> {
+    const [updated] = await db.update(productTargets)
+      .set(updates)
+      .where(and(
+        eq(productTargets.id, id),
+        eq(productTargets.owner, owner),
+        eq(productTargets.active, true)
+      ))
+      .returning();
+    return updated || null;
+  }
+
+  async deleteProductTarget(id: string): Promise<void> {
+    // Soft delete by setting active to false
+    await db.update(productTargets)
+      .set({ active: false })
+      .where(eq(productTargets.id, id));
+  }
+
+  async deleteProductTargetByOwner(owner: string, id: string): Promise<boolean> {
+    const [result] = await db.update(productTargets)
+      .set({ active: false })
+      .where(and(
+        eq(productTargets.id, id),
+        eq(productTargets.owner, owner),
+        eq(productTargets.active, true)
+      ))
+      .returning({ id: productTargets.id });
+    return !!result;
+  }
+
+  async getProductTarget(id: string): Promise<ProductTarget | null> {
+    const [target] = await db.select().from(productTargets)
+      .where(and(eq(productTargets.id, id), eq(productTargets.active, true)));
+    return target || null;
+  }
+
+  // v6 Rank Snapshots Implementation
+  async getRankSnapshots(targetId?: string, kind?: string, range = "30d"): Promise<RankSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const conditions = [gte(rankSnapshots.timestamp, cutoffDate)];
+    
+    if (targetId) {
+      conditions.push(eq(rankSnapshots.targetId, targetId));
+    }
+    if (kind) {
+      conditions.push(eq(rankSnapshots.kind, kind));
+    }
+
+    return await db.select().from(rankSnapshots)
+      .where(and(...conditions))
+      .orderBy(desc(rankSnapshots.timestamp));
+  }
+
+  async insertRankSnapshot(data: InsertRankSnapshot): Promise<RankSnapshot> {
+    const [snapshot] = await db.insert(rankSnapshots).values(data).returning();
+    return snapshot;
+  }
+
+  async getRankHistory(targetId: string, kind: string, query?: string, sort?: string, device?: string, range = "30d"): Promise<RankSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const conditions = [
+      eq(rankSnapshots.targetId, targetId),
+      eq(rankSnapshots.kind, kind),
+      gte(rankSnapshots.timestamp, cutoffDate)
+    ];
+
+    if (query) {
+      conditions.push(eq(rankSnapshots.query, query));
+    }
+    if (sort) {
+      conditions.push(eq(rankSnapshots.sort, sort));
+    }
+    if (device) {
+      conditions.push(eq(rankSnapshots.device, device));
+    }
+
+    return await db.select().from(rankSnapshots)
+      .where(and(...conditions))
+      .orderBy(asc(rankSnapshots.timestamp));
+  }
+
+  // v6 Metric Snapshots Implementation
+  async getMetricSnapshots(productKey?: string, range = "30d"): Promise<MetricSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const conditions = [gte(metricSnapshots.timestamp, cutoffDate)];
+    
+    if (productKey) {
+      conditions.push(eq(metricSnapshots.productKey, productKey));
+    }
+
+    return await db.select().from(metricSnapshots)
+      .where(and(...conditions))
+      .orderBy(desc(metricSnapshots.timestamp));
+  }
+
+  async insertMetricSnapshot(data: InsertMetricSnapshot): Promise<MetricSnapshot> {
+    const [snapshot] = await db.insert(metricSnapshots).values(data).returning();
+    return snapshot;
+  }
+
+  async getMetricHistory(productKey: string, range = "30d"): Promise<MetricSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    return await db.select().from(metricSnapshots)
+      .where(and(
+        eq(metricSnapshots.productKey, productKey),
+        gte(metricSnapshots.timestamp, cutoffDate)
+      ))
+      .orderBy(asc(metricSnapshots.timestamp));
+  }
+
+  // v6 Review State Implementation
+  async getReviewState(productKey: string): Promise<ReviewState | null> {
+    const [state] = await db.select().from(reviewState)
+      .where(eq(reviewState.productKey, productKey));
+    return state || null;
+  }
+
+  async updateReviewState(data: InsertReviewState): Promise<ReviewState> {
+    const [updated] = await db.insert(reviewState)
+      .values(data)
+      .onConflictDoUpdate({
+        target: reviewState.productKey,
+        set: {
+          lastReviewId: data.lastReviewId,
+          lastCheckedAt: new Date()
+        }
+      })
+      .returning();
+    return updated;
+  }
 }
 
 export class MemStorage implements IStorage {
@@ -442,6 +745,12 @@ export class MemStorage implements IStorage {
   private reviewMetrics: Map<string, MetricTimeSeries>;
   private exportJobs: Map<string, any>;
   private manualBlogEntries: Map<string, ManualBlogEntry>;
+  // v6 새로운 변수들
+  private blogTargets: Map<string, BlogTarget>;
+  private productTargets: Map<string, ProductTarget>;
+  private rankSnapshots: Map<string, RankSnapshot>;
+  private metricSnapshots: Map<string, MetricSnapshot>;
+  private reviewStates: Map<string, ReviewState>;
 
   constructor() {
     this.rankSeries = new Map();
@@ -453,6 +762,12 @@ export class MemStorage implements IStorage {
     this.reviewMetrics = new Map();
     this.exportJobs = new Map();
     this.manualBlogEntries = new Map();
+    // v6 새로운 변수들 초기화
+    this.blogTargets = new Map();
+    this.productTargets = new Map();
+    this.rankSnapshots = new Map();
+    this.metricSnapshots = new Map();
+    this.reviewStates = new Map();
     this.initializeMockData();
   }
 
@@ -1374,6 +1689,197 @@ export class MemStorage implements IStorage {
     // Soft delete by setting isActive to false
     const updated = { ...entry, isActive: false, updatedAt: new Date() };
     this.manualBlogEntries.set(id, updated);
+  }
+
+  // v6 Blog Targets Implementation
+  async getBlogTargets(owner?: string): Promise<BlogTarget[]> {
+    const targets = Array.from(this.blogTargets.values())
+      .filter(target => target.active)
+      .filter(target => !owner || target.owner === owner)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return targets;
+  }
+
+  async createBlogTarget(data: InsertBlogTarget): Promise<BlogTarget> {
+    const id = randomUUID();
+    const now = new Date();
+    const target: BlogTarget = {
+      id,
+      ...data,
+      createdAt: now,
+    };
+    this.blogTargets.set(id, target);
+    return target;
+  }
+
+  async updateBlogTarget(id: string, updates: Partial<BlogTarget>): Promise<BlogTarget> {
+    const target = this.blogTargets.get(id);
+    if (!target) {
+      throw new Error(`Blog target not found: ${id}`);
+    }
+    const updated = { ...target, ...updates };
+    this.blogTargets.set(id, updated);
+    return updated;
+  }
+
+  async deleteBlogTarget(id: string): Promise<void> {
+    const target = this.blogTargets.get(id);
+    if (!target) {
+      throw new Error(`Blog target not found: ${id}`);
+    }
+    // Soft delete by setting active to false
+    const updated = { ...target, active: false };
+    this.blogTargets.set(id, updated);
+  }
+
+  async getBlogTarget(id: string): Promise<BlogTarget | null> {
+    const target = this.blogTargets.get(id);
+    return (target && target.active) ? target : null;
+  }
+
+  // v6 Product Targets Implementation
+  async getProductTargets(owner?: string): Promise<ProductTarget[]> {
+    const targets = Array.from(this.productTargets.values())
+      .filter(target => target.active)
+      .filter(target => !owner || target.owner === owner)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return targets;
+  }
+
+  async createProductTarget(data: InsertProductTarget): Promise<ProductTarget> {
+    const id = randomUUID();
+    const now = new Date();
+    const target: ProductTarget = {
+      id,
+      ...data,
+      createdAt: now,
+    };
+    this.productTargets.set(id, target);
+    return target;
+  }
+
+  async updateProductTarget(id: string, updates: Partial<ProductTarget>): Promise<ProductTarget> {
+    const target = this.productTargets.get(id);
+    if (!target) {
+      throw new Error(`Product target not found: ${id}`);
+    }
+    const updated = { ...target, ...updates };
+    this.productTargets.set(id, updated);
+    return updated;
+  }
+
+  async deleteProductTarget(id: string): Promise<void> {
+    const target = this.productTargets.get(id);
+    if (!target) {
+      throw new Error(`Product target not found: ${id}`);
+    }
+    // Soft delete by setting active to false
+    const updated = { ...target, active: false };
+    this.productTargets.set(id, updated);
+  }
+
+  async getProductTarget(id: string): Promise<ProductTarget | null> {
+    const target = this.productTargets.get(id);
+    return (target && target.active) ? target : null;
+  }
+
+  // v6 Rank Snapshots Implementation
+  async getRankSnapshots(targetId?: string, kind?: string, range = "30d"): Promise<RankSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const snapshots = Array.from(this.rankSnapshots.values())
+      .filter(snapshot => snapshot.timestamp >= cutoffDate)
+      .filter(snapshot => !targetId || snapshot.targetId === targetId)
+      .filter(snapshot => !kind || snapshot.kind === kind)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    
+    return snapshots;
+  }
+
+  async insertRankSnapshot(data: InsertRankSnapshot): Promise<RankSnapshot> {
+    const id = randomUUID();
+    const snapshot: RankSnapshot = {
+      id,
+      ...data,
+      timestamp: new Date(),
+    };
+    this.rankSnapshots.set(id, snapshot);
+    return snapshot;
+  }
+
+  async getRankHistory(targetId: string, kind: string, query?: string, sort?: string, device?: string, range = "30d"): Promise<RankSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const snapshots = Array.from(this.rankSnapshots.values())
+      .filter(snapshot => 
+        snapshot.targetId === targetId &&
+        snapshot.kind === kind &&
+        snapshot.timestamp >= cutoffDate &&
+        (!query || snapshot.query === query) &&
+        (!sort || snapshot.sort === sort) &&
+        (!device || snapshot.device === device)
+      )
+      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    
+    return snapshots;
+  }
+
+  // v6 Metric Snapshots Implementation
+  async getMetricSnapshots(productKey?: string, range = "30d"): Promise<MetricSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const snapshots = Array.from(this.metricSnapshots.values())
+      .filter(snapshot => snapshot.timestamp >= cutoffDate)
+      .filter(snapshot => !productKey || snapshot.productKey === productKey)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    
+    return snapshots;
+  }
+
+  async insertMetricSnapshot(data: InsertMetricSnapshot): Promise<MetricSnapshot> {
+    const id = randomUUID();
+    const snapshot: MetricSnapshot = {
+      id,
+      ...data,
+      timestamp: new Date(),
+    };
+    this.metricSnapshots.set(id, snapshot);
+    return snapshot;
+  }
+
+  async getMetricHistory(productKey: string, range = "30d"): Promise<MetricSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const snapshots = Array.from(this.metricSnapshots.values())
+      .filter(snapshot => 
+        snapshot.productKey === productKey &&
+        snapshot.timestamp >= cutoffDate
+      )
+      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    
+    return snapshots;
+  }
+
+  // v6 Review State Implementation
+  async getReviewState(productKey: string): Promise<ReviewState | null> {
+    return this.reviewStates.get(productKey) || null;
+  }
+
+  async updateReviewState(data: InsertReviewState): Promise<ReviewState> {
+    const state: ReviewState = {
+      ...data,
+      lastCheckedAt: new Date()
+    };
+    this.reviewStates.set(data.productKey, state);
+    return state;
   }
 }
 

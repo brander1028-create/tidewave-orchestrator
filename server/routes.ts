@@ -1,7 +1,14 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertSubmissionSchema, insertTrackedTargetSchema, insertManualBlogEntrySchema } from "@shared/schema";
+import { 
+  insertSubmissionSchema, 
+  insertTrackedTargetSchema, 
+  insertManualBlogEntrySchema,
+  // v6 새로운 스키마들
+  insertBlogTargetSchema,
+  insertProductTargetSchema
+} from "@shared/schema";
 import { z } from "zod";
 import { scrapingService } from "./scraping-service";
 
@@ -27,6 +34,29 @@ const updateManualBlogEntrySchema = z.object({
   rank: z.number().min(1).nullable().optional(),
   notes: z.string().nullable().optional(),
 }).strict(); // Reject any extra fields
+
+// v6 Update schemas - only allow safe fields to be updated
+const updateBlogTargetSchema = z.object({
+  title: z.string().min(1).optional(),
+  url: z.string().url().optional(),
+  queries: z.array(z.string()).optional(),
+  windowMin: z.number().min(1).optional(),
+  windowMax: z.number().min(1).optional(),
+  scheduleCron: z.string().optional(),
+  active: z.boolean().optional(),
+}).strict();
+
+const updateProductTargetSchema = z.object({
+  title: z.string().min(1).optional(),
+  url: z.string().url().optional(),
+  queries: z.array(z.string()).optional(),
+  sortDefault: z.string().optional(),
+  deviceDefault: z.string().optional(),
+  windowMin: z.number().min(1).optional(),
+  windowMax: z.number().min(1).optional(),
+  scheduleCron: z.string().optional(),
+  active: z.boolean().optional(),
+}).strict();
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Real CRUD API routes for user data management
@@ -159,6 +189,216 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ message: "Manual blog entry deleted successfully" });
     } catch (error) {
       res.status(500).json({ message: "Failed to delete manual blog entry", error: String(error) });
+    }
+  });
+
+  // v6 Blog Targets API
+  app.get("/api/blog-targets", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      const targets = await storage.getBlogTargets(owner);
+      res.json(targets);
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.get("/api/blog-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const target = await storage.getBlogTargetById(owner, id);
+      if (!target) {
+        return res.status(404).json({ message: "블로그 타겟을 찾을 수 없습니다" });
+      }
+      
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/blog-targets", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = insertBlogTargetSchema.safeParse({
+        ...req.body,
+        owner
+      });
+      
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 블로그 타겟 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.createBlogTarget(validation.data);
+      res.status(201).json(target);
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/blog-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validation = updateBlogTargetSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 블로그 타겟 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.updateBlogTargetByOwner(owner, id, validation.data);
+      if (!target) {
+        return res.status(404).json({ message: "블로그 타겟을 찾을 수 없습니다" });
+      }
+      
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 수정에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.delete("/api/blog-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const deleted = await storage.deleteBlogTargetByOwner(owner, id);
+      if (!deleted) {
+        return res.status(404).json({ message: "블로그 타겟을 찾을 수 없습니다" });
+      }
+      
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 삭제에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v6 Product Targets API
+  app.get("/api/product-targets", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      const targets = await storage.getProductTargets(owner);
+      res.json(targets);
+    } catch (error) {
+      res.status(500).json({ message: "상품 타겟 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.get("/api/product-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const target = await storage.getProductTargetById(owner, id);
+      if (!target) {
+        return res.status(404).json({ message: "상품 타겟을 찾을 수 없습니다" });
+      }
+      
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "상품 타겟 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/product-targets", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = insertProductTargetSchema.safeParse({
+        ...req.body,
+        owner
+      });
+      
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 상품 타겟 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.createProductTarget(validation.data);
+      res.status(201).json(target);
+    } catch (error) {
+      res.status(500).json({ message: "상품 타겟 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/product-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validation = updateProductTargetSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 상품 타겟 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.updateProductTargetByOwner(owner, id, validation.data);
+      if (!target) {
+        return res.status(404).json({ message: "상품 타겟을 찾을 수 없습니다" });
+      }
+      
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "상품 타겟 수정에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.delete("/api/product-targets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const deleted = await storage.deleteProductTargetByOwner(owner, id);
+      if (!deleted) {
+        return res.status(404).json({ message: "상품 타겟을 찾을 수 없습니다" });
+      }
+      
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ message: "상품 타겟 삭제에 실패했습니다", error: String(error) });
     }
   });
 
