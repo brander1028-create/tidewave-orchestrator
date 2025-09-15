@@ -2067,6 +2067,86 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
         // Step 2.4: Store base_rank in blog record
         await storage.updateDiscoveredBlog(blog.id, { baseRank: baseRank });
         
+        // Step 2.5: Comprehensive tier checks for all input keywords (NEW v8 feature)
+        console.log(`   🔍 [Tier Checks] Starting comprehensive tier analysis for ${blog.blogName}`);
+        const T = 4; // Tier count as specified in requirements
+        
+        for (const inputKeyword of keywords) {
+          console.log(`   🎯 [Tier Checks] Processing input keyword: ${inputKeyword} for ${blog.blogName}`);
+          
+          for (const [postIndex, post] of Array.from(scrapedPosts.entries())) {
+            if (postIndex >= postsPerBlog) break; // Limit to P posts
+            
+            try {
+              // Extract tier keywords from post title
+              const postTitle = post.title;
+              console.log(`     📄 [Tier Checks] Post ${postIndex + 1}/${Math.min(scrapedPosts.length, postsPerBlog)}: "${postTitle.substring(0, 50)}..."`);
+              
+              // Extract T tiers of keywords from this post
+              const tierResult = await titleKeywordExtractor.extractTopNByCombined([postTitle], T);
+              
+              // Save tier checks for each tier
+              for (let tierNum = 1; tierNum <= T; tierNum++) {
+                const tierKeyword = tierResult.topN[tierNum - 1];
+                
+                if (tierKeyword) {
+                  // Check SERP ranking for this tier keyword
+                  console.log(`       🏅 [Tier ${tierNum}] Checking rank for: ${tierKeyword.text}`);
+                  const rank = await serpScraper.checkKeywordRankingInMobileNaver(tierKeyword.text, blog.blogUrl);
+                  
+                  // Get post ID from database
+                  const savedPosts = await storage.getAnalyzedPosts(blog.id);
+                  const savedPost = savedPosts.find(p => p.title === postTitle);
+                  
+                  if (savedPost) {
+                    // Save to post_tier_checks table
+                    await db.insert(postTierChecks).values({
+                      id: nanoid(),
+                      jobId: job.id,
+                      inputKeyword: inputKeyword,
+                      blogId: blog.blogId,
+                      postId: savedPost.id,
+                      tier: tierNum,
+                      textSurface: tierKeyword.text,
+                      volume: tierKeyword.raw_volume,
+                      rank: rank
+                    });
+                    
+                    console.log(`       ✅ [Tier ${tierNum}] Saved: ${tierKeyword.text} → rank ${rank || 'NA'} (vol: ${tierKeyword.raw_volume || 'NA'})`);
+                  }
+                } else {
+                  // No keyword found for this tier - save empty entry
+                  const savedPosts = await storage.getAnalyzedPosts(blog.id);
+                  const savedPost = savedPosts.find(p => p.title === postTitle);
+                  
+                  if (savedPost) {
+                    await db.insert(postTierChecks).values({
+                      id: nanoid(),
+                      jobId: job.id,
+                      inputKeyword: inputKeyword,
+                      blogId: blog.blogId,
+                      postId: savedPost.id,
+                      tier: tierNum,
+                      textSurface: "",
+                      volume: null,
+                      rank: null
+                    });
+                    
+                    console.log(`       ⚫ [Tier ${tierNum}] Empty tier saved`);
+                  }
+                }
+                
+                // Rate limiting between tier checks
+                await new Promise(resolve => setTimeout(resolve, 500));
+              }
+            } catch (error) {
+              console.error(`     ❌ [Tier Checks] Error processing post ${postIndex + 1}:`, error);
+            }
+          }
+        }
+        
+        console.log(`   ✅ [Tier Checks] Completed comprehensive analysis for ${blog.blogName}`);
+        
         await storage.updateSerpJob(jobId, {
           progress: Math.round(Math.min(35 + ((index + 1) * (30 / discoveredBlogs.length)), 65))
         });
