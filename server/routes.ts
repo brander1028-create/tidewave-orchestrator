@@ -3,9 +3,178 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertSubmissionSchema, insertTrackedTargetSchema } from "@shared/schema";
 import { z } from "zod";
+import { scrapingService } from "./scraping-service";
+
+// Scraping validation schemas
+const scrapingConfigSchema = z.object({
+  targetId: z.string().min(1),
+  query: z.string().min(1),
+  kind: z.enum(['blog', 'shop']),
+  device: z.enum(['mobile', 'pc']),
+  sort: z.string().optional(),
+  target: z.string().optional()
+});
+
+const batchScrapingSchema = z.object({
+  targets: z.array(scrapingConfigSchema).min(1).max(10) // Limit batch size
+});
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Mock API routes for rank monitoring
+  // Real-time web scraping API routes
+  
+  // Health check for scraping service
+  app.get("/api/scraping/health", async (req, res) => {
+    try {
+      const health = await scrapingService.healthCheck();
+      res.json(health);
+    } catch (error) {
+      res.status(500).json({ message: "Health check failed", error: String(error) });
+    }
+  });
+
+  // Start live rank check with real scraping
+  app.post("/api/scraping/rank-check", async (req, res) => {
+    try {
+      // Validate request body with Zod
+      const validation = scrapingConfigSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "Invalid request data",
+          errors: validation.error.errors
+        });
+      }
+      
+      const { targetId, query, kind, device, sort, target } = validation.data;
+
+      // Initialize scraping service if needed
+      await scrapingService.initialize();
+
+      const config = {
+        target: target || '',
+        query,
+        device: device as 'mobile' | 'pc',
+        kind: kind as 'blog' | 'shop',
+        sort,
+        maxRetries: 3,
+        backoffMs: 1000
+      };
+
+      const result = await scrapingService.scrapeRanking(config);
+      
+      if (result.success && result.data) {
+        // Save to database
+        const rankData = {
+          targetId,
+          kind,
+          query,
+          sort: sort || null,
+          device,
+          rank: result.data.rank || null,
+          page: result.data.page || null,
+          position: result.data.position || null,
+          source: 'playwright_scraping',
+          metadata: result.data.metadata
+        };
+
+        await storage.insertRankData(rankData);
+        
+        res.json({
+          success: true,
+          data: result.data,
+          message: "Rank data scraped and saved successfully"
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error,
+          message: "Scraping failed"
+        });
+      }
+    } catch (error) {
+      res.status(500).json({ 
+        message: "Rank check failed", 
+        error: String(error) 
+      });
+    }
+  });
+
+  // Batch rank check for multiple targets
+  app.post("/api/scraping/batch-rank-check", async (req, res) => {
+    try {
+      // Validate request body with Zod
+      const validation = batchScrapingSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "Invalid request data",
+          errors: validation.error.errors
+        });
+      }
+      
+      const { targets } = validation.data;
+
+      await scrapingService.initialize();
+      
+      const results = [];
+      
+      for (const targetConfig of targets) {
+        const { targetId, query, kind, device, sort, target } = targetConfig;
+        
+        const config = {
+          target: target || '',
+          query,
+          device: device as 'mobile' | 'pc',
+          kind: kind as 'blog' | 'shop',
+          sort,
+          maxRetries: 3,
+          backoffMs: 1000
+        };
+
+        const result = await scrapingService.scrapeRanking(config);
+        
+        if (result.success && result.data) {
+          // Save to database
+          const rankData = {
+            targetId,
+            kind,
+            query,
+            sort: sort || null,
+            device,
+            rank: result.data.rank || null,
+            page: result.data.page || null,
+            position: result.data.position || null,
+            source: 'playwright_scraping',
+            metadata: result.data.metadata
+          };
+
+          await storage.insertRankData(rankData);
+        }
+        
+        results.push({
+          targetId,
+          success: result.success,
+          data: result.data,
+          error: result.error
+        });
+        
+        // Small delay between requests to be respectful
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+      res.json({
+        message: "Batch rank check completed",
+        results,
+        successCount: results.filter(r => r.success).length,
+        totalCount: results.length
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        message: "Batch rank check failed", 
+        error: String(error) 
+      });
+    }
+  });
+
+  // Mock API routes for rank monitoring (fallback)
   
   // Get rank series data
   app.get("/api/mock/rank/series", async (req, res) => {

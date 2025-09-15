@@ -4,9 +4,18 @@ import {
   type Event, type Alert,
   type Submission, type InsertSubmission,
   type TrackedTarget, type InsertTrackedTarget,
-  type Settings, type InsertSettings
+  type Settings,
+  rankTimeSeries,
+  metricTimeSeries,
+  events,
+  alerts,
+  submissions,
+  trackedTargets,
+  settings
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { db } from "./db";
+import { eq, desc, asc, and, gte, lte, sql } from "drizzle-orm";
 
 export interface IStorage {
   // Rank operations
@@ -54,6 +63,332 @@ export interface IStorage {
   getExportDownload(jobId: string): Promise<any>;
   updateExportJobStatus(jobId: string, status: string, progress?: number): Promise<any>;
   processExportJob(jobId: string): Promise<void>;
+}
+
+// Database storage implementation
+export class DatabaseStorage implements IStorage {
+  async getRankSeries(targetId: string, range = "30d"): Promise<RankTimeSeries[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    return await db.select()
+      .from(rankTimeSeries)
+      .where(and(
+        eq(rankTimeSeries.targetId, targetId),
+        gte(rankTimeSeries.timestamp, cutoffDate)
+      ))
+      .orderBy(desc(rankTimeSeries.timestamp));
+  }
+
+  async insertRankData(data: InsertRankTimeSeries): Promise<RankTimeSeries> {
+    const [result] = await db.insert(rankTimeSeries)
+      .values(data)
+      .returning();
+    return result;
+  }
+
+  async getRankCompare(targetIds: string[], range = "30d"): Promise<RankTimeSeries[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    return await db.select()
+      .from(rankTimeSeries)
+      .where(and(
+        sql`${rankTimeSeries.targetId} = ANY(${targetIds})`,
+        gte(rankTimeSeries.timestamp, cutoffDate)
+      ))
+      .orderBy(desc(rankTimeSeries.timestamp));
+  }
+
+  async getRankHistory(targetId: string, period = "30d"): Promise<RankTimeSeries[]> {
+    return this.getRankSeries(targetId, period);
+  }
+
+  async getEvents(targetId?: string, range = "30d"): Promise<Event[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const conditions = [gte(events.timestamp, cutoffDate)];
+    if (targetId) {
+      conditions.push(eq(events.targetId, targetId));
+    }
+
+    return await db.select()
+      .from(events)
+      .where(and(...conditions))
+      .orderBy(desc(events.timestamp));
+  }
+
+  async getAlerts(seen?: boolean): Promise<Alert[]> {
+    const conditions = [];
+    if (seen !== undefined) {
+      conditions.push(eq(alerts.seen, seen));
+    }
+
+    return await db.select()
+      .from(alerts)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(alerts.timestamp));
+  }
+
+  async markAlertSeen(alertId: string): Promise<void> {
+    await db.update(alerts)
+      .set({ seen: true })
+      .where(eq(alerts.id, alertId));
+  }
+
+  async getSubmissions(status?: string): Promise<Submission[]> {
+    const conditions = [];
+    if (status) {
+      conditions.push(eq(submissions.status, status));
+    }
+
+    return await db.select()
+      .from(submissions)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(submissions.timestamp));
+  }
+
+  async createSubmission(data: InsertSubmission): Promise<Submission> {
+    const [result] = await db.insert(submissions)
+      .values(data)
+      .returning();
+    return result;
+  }
+
+  async updateSubmissionStatus(id: string, status: string, comment?: string): Promise<Submission> {
+    const updateData: any = { status };
+    if (comment) updateData.comment = comment;
+
+    const [result] = await db.update(submissions)
+      .set(updateData)
+      .where(eq(submissions.id, id))
+      .returning();
+    return result;
+  }
+
+  async getTrackedTargets(owner?: string): Promise<TrackedTarget[]> {
+    const conditions = [];
+    if (owner) {
+      conditions.push(eq(trackedTargets.owner, owner));
+    }
+
+    return await db.select()
+      .from(trackedTargets)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(trackedTargets.createdAt));
+  }
+
+  async createTrackedTarget(data: InsertTrackedTarget): Promise<TrackedTarget> {
+    const [result] = await db.insert(trackedTargets)
+      .values(data)
+      .returning();
+    return result;
+  }
+
+  async updateTrackedTarget(id: string, updates: Partial<TrackedTarget>): Promise<TrackedTarget> {
+    const [result] = await db.update(trackedTargets)
+      .set(updates)
+      .where(eq(trackedTargets.id, id))
+      .returning();
+    return result;
+  }
+
+  async deleteTrackedTarget(id: string): Promise<void> {
+    await db.delete(trackedTargets)
+      .where(eq(trackedTargets.id, id));
+  }
+
+  async getSettings(): Promise<Settings[]> {
+    return await db.select()
+      .from(settings)
+      .orderBy(asc(settings.key));
+  }
+
+  async updateSetting(key: string, value: any): Promise<Settings> {
+    // Try to update existing setting first
+    const existing = await db.select()
+      .from(settings)
+      .where(eq(settings.key, key))
+      .limit(1);
+
+    if (existing.length > 0) {
+      const [result] = await db.update(settings)
+        .set({ value, updatedAt: new Date() })
+        .where(eq(settings.key, key))
+        .returning();
+      return result;
+    } else {
+      // Create new setting
+      const [result] = await db.insert(settings)
+        .values({ key, value })
+        .returning();
+      return result;
+    }
+  }
+
+  async getSetting(key: string): Promise<Settings | undefined> {
+    const [result] = await db.select()
+      .from(settings)
+      .where(eq(settings.key, key))
+      .limit(1);
+    return result;
+  }
+
+  // Analytics methods with mock data for now
+  async getKPIData(period = "30d"): Promise<any> {
+    // This would need complex aggregation queries
+    return {
+      totalTargets: 25,
+      avgRank: 12.5,
+      rankingUp: 8,
+      rankingDown: 5,
+      weeklyChange: 2.3,
+      monthlyChange: -1.8,
+      volatility: 15.2,
+      sov: 0.42
+    };
+  }
+
+  async getRankDistribution(): Promise<any> {
+    return [
+      { range: "1-3", count: 4, percentage: 16 },
+      { range: "4-10", count: 8, percentage: 32 },
+      { range: "11-20", count: 7, percentage: 28 },
+      { range: "21-50", count: 4, percentage: 16 },
+      { range: "51+", count: 2, percentage: 8 }
+    ];
+  }
+
+  async getTopMovers(direction: "up" | "down", limit = 5): Promise<any> {
+    return Array.from({ length: limit }, (_, i) => ({
+      id: `target-${i + 1}`,
+      query: `키워드 ${i + 1}`,
+      prevRank: direction === "up" ? 20 + i * 3 : 5 + i * 2,
+      currRank: direction === "up" ? 8 + i * 2 : 15 + i * 3,
+      change: direction === "up" ? -(12 + i) : (10 + i),
+      url: `https://example.com/product/${i + 1}`
+    }));
+  }
+
+  async getHeatmapData(period = "30d"): Promise<any> {
+    const data = [];
+    const today = new Date();
+    for (let i = 0; i < 30; i++) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      data.push({
+        date: date.toISOString().split('T')[0],
+        value: Math.floor(Math.random() * 4) + 1
+      });
+    }
+    return data;
+  }
+
+  async getCompetitorAnalysis(targetId: string): Promise<any> {
+    return {
+      our_rank: 8,
+      competitors: [
+        { name: "경쟁사 A", rank: 5, change: -2 },
+        { name: "경쟁사 B", rank: 12, change: 3 },
+        { name: "경쟁사 C", rank: 15, change: 0 }
+      ]
+    };
+  }
+
+  async getReviewRankings(productKey: string): Promise<any[]> {
+    return Array.from({ length: 10 }, (_, i) => ({
+      rank: i + 1,
+      reviewer: `사용자${i + 1}`,
+      rating: 4 + Math.random(),
+      helpfulCount: Math.floor(Math.random() * 50) + 5,
+      date: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000),
+      change: Math.floor(Math.random() * 7) - 3
+    }));
+  }
+
+  async getReviewHealth(productKey: string): Promise<any> {
+    return {
+      starAvg: 4.2,
+      reviewCount: 1248,
+      photoRatio: 0.73,
+      newReviews7d: 15,
+      newReviews30d: 89,
+      qaCount: 23
+    };
+  }
+
+  async getAbuseDetection(productKey: string): Promise<any> {
+    return {
+      suspiciousReviews: 3,
+      abuseScore: 0.15,
+      flaggedKeywords: ["가짜", "조작"],
+      riskLevel: "low"
+    };
+  }
+
+  async createExportJob(config: any): Promise<any> {
+    const job = {
+      id: randomUUID(),
+      type: config.type,
+      status: "processing",
+      progress: 0,
+      createdAt: new Date(),
+      config
+    };
+    return job;
+  }
+
+  async getExportJobs(): Promise<any[]> {
+    return [];
+  }
+
+  async getExportDownload(jobId: string): Promise<any> {
+    const mimeTypes = {
+      csv: "text/csv",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      json: "application/json",
+      pdf: "application/pdf"
+    };
+    
+    return {
+      filename: `export-${jobId}.csv`,
+      mimeType: mimeTypes.csv,
+      data: "키워드,순위,변동\n홍삼,5,+2\n홍삼스틱,8,-1"
+    };
+  }
+
+  async updateExportJobStatus(jobId: string, status: string, progress = 0): Promise<any> {
+    return { id: jobId, status, progress };
+  }
+
+  async processExportJob(jobId: string): Promise<void> {
+    // Export processing logic would go here
+  }
+
+  // Initialize database with default settings if needed
+  async initializeDefaults(): Promise<void> {
+    const existingSettings = await this.getSettings();
+    if (existingSettings.length === 0) {
+      const defaultSettings = [
+        { key: 'checkInterval', value: { interval: '1h' } },
+        { key: 'alertCooldown', value: { cooldown: '6h' } },
+        { key: 'rateLimits', value: { perMin: 60, perDay: 10000 } },
+        { key: 'cacheTTL', value: { ttl: '10m' } },
+        { key: 'defaultDevice', value: 'mobile' },
+        { key: 'autoCheck', value: true },
+        { key: 'dataRetention', value: '90d' },
+        { key: 'dailySummaryTime', value: '09:00' },
+      ];
+
+      for (const setting of defaultSettings) {
+        await this.updateSetting(setting.key, setting.value);
+      }
+    }
+  }
 }
 
 export class MemStorage implements IStorage {
@@ -957,4 +1292,7 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
+
+// Initialize database defaults on startup
+storage.initializeDefaults().catch(console.error);

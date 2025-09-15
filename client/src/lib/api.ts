@@ -10,7 +10,42 @@ import type {
   InsertTrackedTarget
 } from "@shared/schema";
 
-// Rank monitoring API
+// Real-time scraping API
+export const scrapingApi = {
+  // Health check for scraping service
+  healthCheck: async () => {
+    const response = await apiRequest("GET", "/api/scraping/health");
+    return response.json();
+  },
+
+  // Start live rank check with real scraping
+  rankCheck: async (config: {
+    targetId: string;
+    query: string;
+    kind: 'blog' | 'shop';
+    device: 'mobile' | 'pc';
+    sort?: string;
+    target?: string;
+  }) => {
+    const response = await apiRequest("POST", "/api/scraping/rank-check", config);
+    return response.json();
+  },
+
+  // Batch rank check for multiple targets
+  batchRankCheck: async (targets: Array<{
+    targetId: string;
+    query: string;
+    kind: 'blog' | 'shop';
+    device: 'mobile' | 'pc';
+    sort?: string;
+    target?: string;
+  }>) => {
+    const response = await apiRequest("POST", "/api/scraping/batch-rank-check", { targets });
+    return response.json();
+  }
+};
+
+// Rank monitoring API (mock fallback)
 export const rankApi = {
   // Get rank series data for a specific target
   getSeries: async (targetId: string, range = "30d"): Promise<RankTimeSeries[]> => {
