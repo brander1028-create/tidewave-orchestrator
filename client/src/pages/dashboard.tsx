@@ -3,7 +3,6 @@ import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import KeywordInput from "@/components/keyword-input";
 import SerpProgress from "@/components/serp-progress";
-import { Navigation } from "@/components/navigation";
 import type { SerpJob } from "@shared/schema";
 
 export default function Dashboard() {
@@ -33,10 +32,13 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <Navigation />
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-16 lg:pt-8">
+        {/* Page Title */}
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-foreground mb-2">SERP 키워드 분석</h1>
+          <p className="text-muted-foreground">네이버 블로그 검색 순위를 분석하고 키워드를 발견하세요</p>
+        </div>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Keyword Input Section */}
         <KeywordInput onAnalysisStarted={handleAnalysisStarted} />
 

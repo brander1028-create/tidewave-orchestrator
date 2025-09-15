@@ -22,7 +22,7 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   const [location] = useLocation();
 
   // Simple health check for the sidebar indicator
-  const { data: health } = useQuery({
+  const { data: health } = useQuery<any>({
     queryKey: ["/api/health"],
     refetchInterval: 30000, // Refresh every 30 seconds
   });
@@ -68,7 +68,12 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   // Determine health status color
   const getHealthColor = () => {
     if (!health) return "bg-gray-400";
-    const hasIssues = health.searcha?.degraded || health.openapi?.degraded;
+    
+    // Check for issues in health response
+    const hasIssues = health.degraded || 
+                     (health.searcha && !health.searcha.ok) ||
+                     (health.openapi && !health.openapi.ok);
+    
     return hasIssues ? "bg-yellow-500" : "bg-green-500";
   };
 

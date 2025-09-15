@@ -40,7 +40,7 @@ function AppLayout() {
       <Sidebar isOpen={sidebarOpen} onToggle={toggleSidebar} />
       
       {/* Main Content */}
-      <div className="flex-1 lg:ml-0">
+      <div className="flex-1 lg:ml-64">
         {/* Mobile menu button */}
         <MobileMenuButton onClick={toggleSidebar} />
         

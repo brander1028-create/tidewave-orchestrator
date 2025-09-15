@@ -190,27 +190,20 @@ export default function ResultsPage() {
                             검색량 {fmtVol(keywordData.searchVolume)}
                           </Badge>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="sm" onClick={() => {
-                            if (isExpanded) {
-                              setExpandedKeywords(prev => {
-                                const newSet = new Set(prev);
-                                newSet.delete(keywordData.keyword);
-                                return newSet;
-                              });
-                            } else {
-                              setExpandedKeywords(prev => new Set(prev).add(keywordData.keyword));
-                            }
-                          }}>
-                            {isExpanded ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
-                            {isExpanded ? "접기" : "자세히"}
-                          </Button>
-                          <Link href={`/blog-database?keyword=${encodeURIComponent(keywordData.keyword)}`}>
-                            <Button variant="secondary" size="sm" data-testid={`navigate-blog-db-${keywordData.keyword}`}>
-                              블로그DB 이동
-                            </Button>
-                          </Link>
-                        </div>
+                        <Button variant="outline" size="sm" onClick={() => {
+                          if (isExpanded) {
+                            setExpandedKeywords(prev => {
+                              const newSet = new Set(prev);
+                              newSet.delete(keywordData.keyword);
+                              return newSet;
+                            });
+                          } else {
+                            setExpandedKeywords(prev => new Set(prev).add(keywordData.keyword));
+                          }
+                        }}>
+                          {isExpanded ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
+                          {isExpanded ? "접기" : "자세히"}
+                        </Button>
                       </div>
                       <div className="flex items-center gap-4 text-sm">
                         <Badge variant="outline" className="bg-blue-50">
