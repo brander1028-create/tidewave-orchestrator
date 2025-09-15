@@ -52,6 +52,8 @@ export interface IStorage {
   createExportJob(config: any): Promise<any>;
   getExportJobs(): Promise<any[]>;
   getExportDownload(jobId: string): Promise<any>;
+  updateExportJobStatus(jobId: string, status: string, progress?: number): Promise<any>;
+  processExportJob(jobId: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -663,10 +665,22 @@ export class MemStorage implements IStorage {
       status: "pending",
       progress: 0,
       createdAt: new Date(),
-      config
+      config,
+      data: null
     };
     
     this.exportJobs.set(id, job);
+    
+    // Process the export job synchronously for demonstration
+    try {
+      console.log('Starting export job processing for ID:', id);
+      await this.processExportJob(id);
+      console.log('Export job processing completed for ID:', id);
+    } catch (error) {
+      console.error('Export job processing failed:', error);
+      await this.updateExportJobStatus(id, "failed", 0);
+    }
+    
     return job;
   }
 
@@ -675,16 +689,270 @@ export class MemStorage implements IStorage {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
+  async updateExportJobStatus(jobId: string, status: string, progress?: number): Promise<any> {
+    const job = this.exportJobs.get(jobId);
+    if (!job) {
+      throw new Error("Export job not found");
+    }
+    
+    job.status = status;
+    if (progress !== undefined) {
+      job.progress = progress;
+    }
+    
+    this.exportJobs.set(jobId, job);
+    return job;
+  }
+
+  async processExportJob(jobId: string): Promise<void> {
+    const job = this.exportJobs.get(jobId);
+    if (!job) return;
+
+    try {
+      // Update status to processing
+      await this.updateExportJobStatus(jobId, "processing", 10);
+
+      // Generate data based on config
+      const data = await this.generateExportData(job.config);
+      await this.updateExportJobStatus(jobId, "processing", 50);
+
+      // Format data based on requested format
+      const formattedData = await this.formatExportData(data, job.format);
+      await this.updateExportJobStatus(jobId, "processing", 80);
+
+      // Store the formatted data
+      job.data = formattedData;
+      job.downloadUrl = `#`; // In a real app, this would be a file URL
+      
+      await this.updateExportJobStatus(jobId, "completed", 100);
+    } catch (error) {
+      await this.updateExportJobStatus(jobId, "failed", 0);
+    }
+  }
+
+  private async generateExportData(config: any): Promise<any> {
+    const { dataTypes, dateRange } = config;
+    const result: any = {};
+
+    for (const dataType of dataTypes) {
+      switch (dataType) {
+        case 'rankings':
+          result.rankings = await this.exportRankingData(dateRange);
+          break;
+        case 'alerts':
+          result.alerts = await this.exportAlertsData(dateRange);
+          break;
+        case 'submissions':
+          result.submissions = await this.exportSubmissionsData(dateRange);
+          break;
+        case 'events':
+          result.events = await this.exportEventsData(dateRange);
+          break;
+        case 'metrics':
+          result.metrics = await this.exportMetricsData(dateRange);
+          break;
+      }
+    }
+
+    return result;
+  }
+
+  private async exportRankingData(dateRange: any): Promise<any[]> {
+    const fromDate = new Date(dateRange.from);
+    const toDate = new Date(dateRange.to);
+    
+    return Array.from(this.rankSeries.values())
+      .filter(rank => {
+        const rankDate = new Date(rank.timestamp);
+        return rankDate >= fromDate && rankDate <= toDate;
+      })
+      .map(rank => ({
+        timestamp: rank.timestamp,
+        targetId: rank.targetId,
+        query: rank.query,
+        rank: rank.rank,
+        url: rank.url,
+        device: rank.device || 'desktop'
+      }));
+  }
+
+  private async exportAlertsData(dateRange: any): Promise<any[]> {
+    const fromDate = new Date(dateRange.from);
+    const toDate = new Date(dateRange.to);
+    
+    return Array.from(this.alerts.values())
+      .filter(alert => {
+        const alertDate = new Date(alert.timestamp);
+        return alertDate >= fromDate && alertDate <= toDate;
+      })
+      .map(alert => ({
+        id: alert.id,
+        timestamp: alert.timestamp,
+        type: alert.type,
+        severity: alert.severity,
+        title: alert.title,
+        message: alert.message,
+        targetId: alert.targetId,
+        seen: alert.seen
+      }));
+  }
+
+  private async exportSubmissionsData(dateRange: any): Promise<any[]> {
+    const fromDate = new Date(dateRange.from);
+    const toDate = new Date(dateRange.to);
+    
+    return Array.from(this.submissions.values())
+      .filter(submission => {
+        const submissionDate = new Date(submission.timestamp);
+        return submissionDate >= fromDate && submissionDate <= toDate;
+      })
+      .map(submission => ({
+        id: submission.id,
+        timestamp: submission.timestamp,
+        type: submission.type,
+        status: submission.status,
+        content: submission.content,
+        targetInfo: submission.targetInfo,
+        submitter: submission.submitter,
+        reviewer: submission.reviewer,
+        reviewedAt: submission.reviewedAt,
+        reviewComment: submission.reviewComment
+      }));
+  }
+
+  private async exportEventsData(dateRange: any): Promise<any[]> {
+    const fromDate = new Date(dateRange.from);
+    const toDate = new Date(dateRange.to);
+    
+    return Array.from(this.events.values())
+      .filter(event => {
+        const eventDate = new Date(event.timestamp);
+        return eventDate >= fromDate && eventDate <= toDate;
+      })
+      .map(event => ({
+        id: event.id,
+        timestamp: event.timestamp,
+        type: event.type,
+        description: event.description,
+        targetId: event.targetId,
+        metadata: event.metadata
+      }));
+  }
+
+  private async exportMetricsData(dateRange: any): Promise<any[]> {
+    const fromDate = new Date(dateRange.from);
+    const toDate = new Date(dateRange.to);
+    
+    return Array.from(this.reviewMetrics.values())
+      .filter(metric => {
+        const metricDate = new Date(metric.timestamp);
+        return metricDate >= fromDate && metricDate <= toDate;
+      })
+      .map(metric => ({
+        timestamp: metric.timestamp,
+        productKey: metric.productKey,
+        starAvg: metric.starAvg,
+        reviewCount: metric.reviewCount,
+        photoRatio: metric.photoRatio,
+        newReviews7d: metric.newReviews7d,
+        newReviews30d: metric.newReviews30d
+      }));
+  }
+
+  private async formatExportData(data: any, format: string): Promise<string> {
+    switch (format.toLowerCase()) {
+      case 'csv':
+        return this.formatAsCSV(data);
+      case 'xlsx':
+        return this.formatAsExcel(data);
+      case 'json':
+        return JSON.stringify(data, null, 2);
+      case 'pdf':
+        return this.formatAsPDF(data);
+      default:
+        return JSON.stringify(data, null, 2);
+    }
+  }
+
+  private formatAsCSV(data: any): string {
+    let csv = '';
+    
+    for (const [dataType, records] of Object.entries(data)) {
+      if (!Array.isArray(records) || records.length === 0) continue;
+      
+      csv += `\n=== ${dataType.toUpperCase()} ===\n`;
+      
+      // Get headers from first record
+      const headers = Object.keys(records[0]);
+      csv += headers.join(',') + '\n';
+      
+      // Add data rows
+      for (const record of records) {
+        const row = headers.map(header => {
+          const value = record[header];
+          if (typeof value === 'string' && value.includes(',')) {
+            return `"${value.replace(/"/g, '""')}"`;
+          }
+          return value || '';
+        });
+        csv += row.join(',') + '\n';
+      }
+      
+      csv += '\n';
+    }
+    
+    return csv;
+  }
+
+  private formatAsExcel(data: any): string {
+    // In a real implementation, you'd use a library like xlsx or exceljs
+    // For now, return CSV format as Excel can open CSV files
+    return this.formatAsCSV(data);
+  }
+
+  private formatAsPDF(data: any): string {
+    // In a real implementation, you'd use a library like jsPDF or pdfkit
+    // For now, return a formatted text representation
+    let pdf = 'DATA EXPORT REPORT\n';
+    pdf += '===================\n\n';
+    
+    for (const [dataType, records] of Object.entries(data)) {
+      if (!Array.isArray(records)) continue;
+      
+      pdf += `${dataType.toUpperCase()}:\n`;
+      pdf += `Records: ${records.length}\n\n`;
+      
+      // Show first few records as sample
+      const sample = records.slice(0, 3);
+      for (const record of sample) {
+        pdf += JSON.stringify(record, null, 2) + '\n\n';
+      }
+      
+      if (records.length > 3) {
+        pdf += `... and ${records.length - 3} more records\n\n`;
+      }
+    }
+    
+    return pdf;
+  }
+
   async getExportDownload(jobId: string): Promise<any> {
     const job = this.exportJobs.get(jobId);
     if (!job || job.status !== "completed") {
       throw new Error("Export job not found or not completed");
     }
     
+    const mimeTypes = {
+      csv: 'text/csv',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      json: 'application/json',
+      pdf: 'application/pdf'
+    };
+    
     return {
-      filename: `export-${jobId}.${job.format}`,
-      data: "mock export data",
-      mimeType: job.format === 'csv' ? 'text/csv' : 'application/json'
+      filename: `export-${job.createdAt.toISOString().split('T')[0]}-${jobId.substring(0, 8)}.${job.format}`,
+      data: job.data || 'No data available',
+      mimeType: mimeTypes[job.format] || 'text/plain'
     };
   }
 }

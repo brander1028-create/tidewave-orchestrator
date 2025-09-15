@@ -8,6 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { DatePickerWithRange } from "@/components/ui/date-picker";
 import { toast } from "@/hooks/use-toast";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { exportApi } from "@/lib/api";
+import { queryClient } from "@/lib/queryClient";
 import { 
   Download, 
   FileText, 
@@ -40,36 +43,62 @@ export default function Exports() {
     from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
     to: new Date(),
   });
-  const [exportJobs, setExportJobs] = React.useState<ExportJob[]>([
-    {
-      id: "1",
-      name: "순위 데이터 (30일)",
-      type: "rankings",
-      format: "csv",
-      status: "completed",
-      progress: 100,
-      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
-      downloadUrl: "#"
+  // Use React Query to fetch export jobs
+  const { data: exportJobs = [], isLoading, refetch } = useQuery({
+    queryKey: ['/api/mock/exports'],
+    refetchInterval: 2000, // Refetch every 2 seconds to update progress
+  });
+
+  // Mutation for creating export jobs
+  const createExportMutation = useMutation({
+    mutationFn: exportApi.startExport,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/mock/exports'] });
+      toast({
+        title: "내보내기 시작됨",
+        description: "데이터 내보내기 작업이 시작되었습니다.",
+      });
     },
-    {
-      id: "2", 
-      name: "알림 히스토리",
-      type: "alerts",
-      format: "json",
-      status: "processing",
-      progress: 75,
-      createdAt: new Date(Date.now() - 30 * 60 * 1000), // 30 minutes ago
-    },
-    {
-      id: "3",
-      name: "제출함 데이터",
-      type: "submissions",
-      format: "xlsx",
-      status: "failed",
-      progress: 0,
-      createdAt: new Date(Date.now() - 60 * 60 * 1000), // 1 hour ago
+    onError: () => {
+      toast({
+        title: "오류",
+        description: "내보내기 작업을 시작할 수 없습니다.",
+        variant: "destructive",
+      });
     }
-  ]);
+  });
+
+  // Mutation for downloading files
+  const downloadMutation = useMutation({
+    mutationFn: exportApi.download,
+    onSuccess: (blob, jobId) => {
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const job = exportJobs.find(j => j.id === jobId);
+      const filename = job ? `export-${job.createdAt.split('T')[0]}-${jobId.substring(0, 8)}.${job.format}` : `export-${jobId}.csv`;
+      
+      a.style.display = 'none';
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      toast({
+        title: "다운로드 완료",
+        description: "파일이 성공적으로 다운로드되었습니다.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "다운로드 실패",
+        description: "파일을 다운로드할 수 없습니다.",
+        variant: "destructive",
+      });
+    }
+  });
 
   const dataTypes = [
     { id: "rankings", label: "순위 데이터", description: "키워드별 순위 히스토리" },
@@ -106,48 +135,15 @@ export default function Exports() {
       return;
     }
 
-    const newJob: ExportJob = {
-      id: Date.now().toString(),
-      name: `${selectedData.map(d => dataTypes.find(dt => dt.id === d)?.label).join(", ")} (${selectedFormat.toUpperCase()})`,
-      type: selectedData.join(","),
+    createExportMutation.mutate({
+      dataTypes: selectedData,
       format: selectedFormat,
-      status: "pending",
-      progress: 0,
-      createdAt: new Date(),
-    };
-
-    setExportJobs([newJob, ...exportJobs]);
-
-    // Simulate export process
-    setTimeout(() => {
-      setExportJobs(prev => prev.map(job => 
-        job.id === newJob.id ? { ...job, status: "processing" } : job
-      ));
-      
-      const progressInterval = setInterval(() => {
-        setExportJobs(prev => prev.map(job => {
-          if (job.id === newJob.id && job.progress < 100) {
-            const newProgress = Math.min(job.progress + Math.random() * 20, 100);
-            if (newProgress >= 100) {
-              clearInterval(progressInterval);
-              return { 
-                ...job, 
-                progress: 100, 
-                status: "completed",
-                downloadUrl: "#"
-              };
-            }
-            return { ...job, progress: newProgress };
-          }
-          return job;
-        }));
-      }, 500);
-    }, 1000);
-
-    toast({
-      title: "내보내기 시작됨",
-      description: "데이터 내보내기 작업이 시작되었습니다.",
+      dateRange,
     });
+  };
+
+  const handleDownload = (jobId: string) => {
+    downloadMutation.mutate(jobId);
   };
 
   const getStatusIcon = (status: ExportJob["status"]) => {
@@ -316,11 +312,12 @@ export default function Exports() {
             <div className="pt-4">
               <Button 
                 onClick={handleExport} 
+                disabled={selectedData.length === 0 || !dateRange?.from || !dateRange?.to || createExportMutation.isPending}
                 className="w-full"
                 data-testid="button-start-export"
               >
                 <Download className="w-4 h-4 mr-2" />
-                내보내기 시작
+                {createExportMutation.isPending ? "내보내는 중..." : "내보내기 시작"}
               </Button>
             </div>
           </CardContent>
@@ -336,7 +333,12 @@ export default function Exports() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {exportJobs.length === 0 ? (
+          {isLoading ? (
+            <div className="text-center py-8">
+              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+              <p className="mt-2 text-muted-foreground">내보내기 목록을 불러오는 중...</p>
+            </div>
+          ) : exportJobs.length === 0 ? (
             <div className="text-center py-8">
               <Download className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-semibold text-foreground mb-2">내보내기 기록이 없습니다</h3>
@@ -357,7 +359,7 @@ export default function Exports() {
                     <div>
                       <h4 className="font-medium text-foreground">{job.name}</h4>
                       <p className="text-sm text-muted-foreground">
-                        {formatDate(job.createdAt)}
+                        {formatDate(new Date(job.createdAt))}
                       </p>
                     </div>
                   </div>
@@ -374,14 +376,16 @@ export default function Exports() {
                     
                     {getStatusBadge(job.status)}
                     
-                    {job.status === "completed" && job.downloadUrl && (
-                      <Button 
-                        variant="outline" 
+                    {job.status === "completed" && (
+                      <Button
+                        variant="outline"
                         size="sm"
+                        onClick={() => handleDownload(job.id)}
+                        disabled={downloadMutation.isPending}
                         data-testid={`button-download-${job.id}`}
                       >
                         <Download className="w-4 h-4 mr-2" />
-                        다운로드
+                        {downloadMutation.isPending ? "다운로드 중..." : "다운로드"}
                       </Button>
                     )}
                     
