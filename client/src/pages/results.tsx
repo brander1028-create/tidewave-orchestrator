@@ -97,7 +97,7 @@ export default function ResultsPage() {
 
   if (isLoading || !jobId) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
+      <div className="p-6">
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center gap-4 mb-6">
             <Link href="/">
@@ -120,7 +120,7 @@ export default function ResultsPage() {
 
   if (error || !results || !job) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
+      <div className="p-6">
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center gap-4 mb-6">
             <Link href="/">
@@ -165,7 +165,7 @@ export default function ResultsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
+    <div className="p-6">
       <div className="max-w-6xl mx-auto">
         {/* Header with keyword chips as specified */}
         <div className="mb-6">

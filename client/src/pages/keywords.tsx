@@ -273,7 +273,7 @@ export default function KeywordsPage() {
   });
 
   // Fetch keywords statistics
-  const { data: keywordsStats } = useQuery({
+  const { data: keywordsStats } = useQuery<KeywordsStatsResponse>({
     queryKey: ['/api/keywords', 'stats'],
     refetchInterval: 30000,
   });
@@ -1345,9 +1345,9 @@ export default function KeywordsPage() {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     활성 키워드 관리
-                    {keywordsStats && (
+                    {!!keywordsStats && (
                       <Badge variant="outline" className="text-xs">
-                        {(((keywordsStats as KeywordsStatsResponse)?.active || 0)).toLocaleString()}개
+                        {((keywordsStats as KeywordsStatsResponse)?.active || 0).toLocaleString()}개
                       </Badge>
                     )}
                   </CardTitle>
