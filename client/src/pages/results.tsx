@@ -7,7 +7,7 @@ import { ArrowLeft, Clock, Download, ChevronDown, ChevronUp, ExternalLink } from
 import { useState } from "react";
 import type { SerpJob } from "../../../shared/schema";
 
-// v8 Results Response Type
+// v8 Results Response Type with Enhanced Fields
 type V8ResultsResponse = {
   keywords: string[];
   status: string;
@@ -51,6 +51,31 @@ type V8ResultsResponse = {
       }>;
     }>;
   }>;
+  // Enhanced fields from server response schema
+  blogs?: Array<{
+    blog_id: string;
+    blog_name: string;
+    blog_url: string;
+    base_rank: number | null;
+    gathered_posts: number;
+  }>;
+  posts?: Array<{
+    blog_id: string;
+    title: string;
+    content: string;
+    url: string;
+  }>;
+  counters?: {
+    discovered_blogs: number;
+    blogs: number;
+    posts: number;
+    selected_keywords: number;
+    searched_keywords: number;
+    hit_blogs: number;
+    volumes_mode: string;
+  };
+  warnings?: string[];
+  errors?: string[];
 };
 
 // Format functions as specified in the requirements
@@ -259,6 +284,78 @@ export default function ResultsPage() {
               </div>
             </CardHeader>
           </Card>
+          
+          {/* Warnings and Errors Display */}
+          {(results.warnings && results.warnings.length > 0) || (results.errors && results.errors.length > 0) ? (
+            <Card className="mt-4">
+              <CardContent className="pt-6">
+                {results.errors && results.errors.length > 0 && (
+                  <div className="mb-4">
+                    <h4 className="text-sm font-medium text-red-600 mb-2">오류</h4>
+                    <div className="space-y-1">
+                      {results.errors.map((error, index) => (
+                        <div key={index} className="text-sm text-red-600 bg-red-50 p-2 rounded" data-testid={`error-${index}`}>
+                          {error}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {results.warnings && results.warnings.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-yellow-600 mb-2">경고</h4>
+                    <div className="space-y-1">
+                      {results.warnings.map((warning, index) => (
+                        <div key={index} className="text-sm text-yellow-600 bg-yellow-50 p-2 rounded" data-testid={`warning-${index}`}>
+                          {warning}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ) : null}
+          
+          {/* Enhanced Statistics Display with Counters */}
+          {results.counters && (
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle className="text-lg">분석 통계</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="text-center p-3 bg-blue-50 rounded-lg">
+                    <div className="text-2xl font-bold text-blue-600" data-testid="counter-discovered-blogs">
+                      {results.counters.discovered_blogs}
+                    </div>
+                    <div className="text-sm text-blue-600">발견된 블로그</div>
+                  </div>
+                  <div className="text-center p-3 bg-green-50 rounded-lg">
+                    <div className="text-2xl font-bold text-green-600" data-testid="counter-new-blogs">
+                      {results.counters.blogs}
+                    </div>
+                    <div className="text-sm text-green-600">NEW 블로그</div>
+                  </div>
+                  <div className="text-center p-3 bg-purple-50 rounded-lg">
+                    <div className="text-2xl font-bold text-purple-600" data-testid="counter-hit-blogs">
+                      {results.counters.hit_blogs}
+                    </div>
+                    <div className="text-sm text-purple-600">노출된 블로그</div>
+                  </div>
+                  <div className="text-center p-3 bg-yellow-50 rounded-lg">
+                    <div className="text-2xl font-bold text-yellow-600" data-testid="counter-analyzed-posts">
+                      {results.counters.posts}
+                    </div>
+                    <div className="text-sm text-yellow-600">분석된 포스트</div>
+                  </div>
+                </div>
+                <div className="mt-4 text-sm text-gray-600 text-center">
+                  검색량 모드: <Badge variant="outline" data-testid="volume-mode">{results.counters.volumes_mode}</Badge>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Keyword Summary Cards - v8 Design */}
