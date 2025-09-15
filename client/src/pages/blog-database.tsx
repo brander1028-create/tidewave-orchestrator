@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
+import { z } from "zod";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,18 +25,35 @@ import {
 } from "lucide-react";
 import { Link, useSearch } from "wouter";
 
-// Blog registry types based on our schema
-interface BlogRegistryItem {
-  id: string;
-  blogName: string;
-  blogUrl: string;
-  status: "collected" | "blacklist" | "outreach";
-  notes?: string;
-  exposureCount: number;
-  totalScore: number;
-  lastUpdated: string;
-  discoveredKeywords: string[];
-}
+// Blog registry schema with safe defaults
+const BlogRegistryItemSchema = z.object({
+  id: z.string().default(""),
+  blogId: z.string().optional(),
+  blogName: z.string().default(""),
+  name: z.string().optional(),
+  blogUrl: z.string().default(""),
+  url: z.string().optional(),
+  status: z.enum(["collected", "blacklist", "outreach"]).default("collected"),
+  notes: z.string().optional().default(""),
+  note: z.string().optional(),
+  exposureCount: z.number().default(0),
+  totalScore: z.number().default(0),
+  lastUpdated: z.string().default(""),
+  updatedAt: z.string().optional(),
+  discoveredKeywords: z.array(z.string()).default([]),
+}).transform((data) => ({
+  id: data.id || data.blogId || "",
+  blogName: data.blogName || data.name || "",
+  blogUrl: data.blogUrl || data.url || "",
+  status: data.status,
+  notes: data.notes || data.note || "",
+  exposureCount: data.exposureCount,
+  totalScore: data.totalScore,
+  lastUpdated: data.lastUpdated || data.updatedAt || "",
+  discoveredKeywords: data.discoveredKeywords,
+}));
+
+type BlogRegistryItem = z.infer<typeof BlogRegistryItemSchema>;
 
 export default function BlogDatabasePage() {
   const searchParams = new URLSearchParams(useSearch());
@@ -69,7 +87,8 @@ export default function BlogDatabasePage() {
       if (!response.ok) {
         throw new Error('Failed to fetch blog registry');
       }
-      return await response.json() as BlogRegistryItem[];
+      const rawData = await response.json();
+      return z.array(BlogRegistryItemSchema).parse(rawData);
     }
   });
 
@@ -89,7 +108,7 @@ export default function BlogDatabasePage() {
     }
     
     // Keyword filter from URL (additional local filter)
-    if (keywordFilter && !blog.discoveredKeywords.includes(keywordFilter)) {
+    if (keywordFilter && !((blog.discoveredKeywords || []).includes(keywordFilter))) {
       return false;
     }
     
@@ -323,8 +342,8 @@ export default function BlogDatabasePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredBlogs.map((blog: BlogRegistryItem) => (
-                      <tr key={blog.id} className="border-t hover:bg-gray-50">
+                    {filteredBlogs.map((blog: BlogRegistryItem, index: number) => (
+                      <tr key={blog.id || `blog-${index}`} className="border-t hover:bg-gray-50">
                         <td className="px-4 py-3">
                           <div className="font-medium">{blog.blogName}</div>
                           <div className="text-xs text-gray-500">{blog.lastUpdated}</div>
@@ -337,7 +356,7 @@ export default function BlogDatabasePage() {
                             className="text-blue-600 hover:text-blue-700 flex items-center gap-1"
                             data-testid={`blog-url-${blog.id}`}
                           >
-                            {blog.blogUrl.length > 30 ? blog.blogUrl.substring(0, 30) + '...' : blog.blogUrl}
+                            {(blog.blogUrl || "").length > 30 ? (blog.blogUrl || "").substring(0, 30) + '...' : (blog.blogUrl || "")}
                             <ExternalLink className="h-3 w-3" />
                           </a>
                         </td>
@@ -369,14 +388,14 @@ export default function BlogDatabasePage() {
                           <>
                             <td className="px-4 py-3">
                               <div className="flex flex-wrap gap-1">
-                                {blog.discoveredKeywords.slice(0, 3).map((keyword: string, idx: number) => (
+                                {(blog.discoveredKeywords || []).slice(0, 3).map((keyword: string, idx: number) => (
                                   <Badge key={idx} variant="outline" className="text-xs">
                                     {keyword}
                                   </Badge>
                                 ))}
-                                {blog.discoveredKeywords.length > 3 && (
+                                {(blog.discoveredKeywords || []).length > 3 && (
                                   <span className="text-xs text-gray-500">
-                                    +{blog.discoveredKeywords.length - 3}
+                                    +{(blog.discoveredKeywords || []).length - 3}
                                   </span>
                                 )}
                               </div>
