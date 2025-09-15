@@ -142,7 +142,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
   // Calculate if strict mode would block analysis
   const healthData = health as HealthResponse;
   const isSystemHealthy = healthData?.openapi?.ok && 
-                         healthData?.searchads?.ok && 
+                         healthData?.searchads?.mode !== 'fallback' && 
                          healthData?.keywordsdb?.ok;
   const strictModeBlocked = strictMode && !isSystemHealthy;
   
@@ -150,7 +150,7 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
     if (!healthData) return [];
     const unhealthy = [];
     if (!healthData.openapi?.ok) unhealthy.push('OpenAPI');
-    if (!healthData.searchads?.ok) unhealthy.push('SearchAds');
+    if (!healthData.searchads?.mode || healthData.searchads.mode === 'fallback') unhealthy.push('SearchAds');
     if (!healthData.keywordsdb?.ok) unhealthy.push('KeywordsDB');
     return unhealthy;
   };
