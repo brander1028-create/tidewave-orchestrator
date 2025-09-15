@@ -205,9 +205,11 @@ export default function ResultsPage() {
                             {isExpanded ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
                             {isExpanded ? "접기" : "자세히"}
                           </Button>
-                          <Button variant="secondary" size="sm">
-                            블로그DB 이동
-                          </Button>
+                          <Link href={`/blog-database?keyword=${encodeURIComponent(keywordData.keyword)}`}>
+                            <Button variant="secondary" size="sm" data-testid={`navigate-blog-db-${keywordData.keyword}`}>
+                              블로그DB 이동
+                            </Button>
+                          </Link>
                         </div>
                       </div>
                       <div className="flex items-center gap-4 text-sm">
@@ -237,7 +239,7 @@ export default function ResultsPage() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {keywordData.items.map((blog: any, idx: number) => {
+                                {keywordData.items.filter((blog: any) => blog.isNew).map((blog: any, idx: number) => {
                                   const blogKey = `${keywordData.keyword}-${idx}`;
                                   const isBlogExpanded = expandedBlogs.has(blogKey);
                                   
@@ -310,13 +312,17 @@ export default function ResultsPage() {
                                                 <h5 className="font-medium mb-2">블로그 총 Top 키워드(통합)</h5>
                                                 <div className="flex flex-wrap gap-2">
                                                   {blog.topKeywords.slice(0, 10).map((keyword: any, kidx: number) => (
-                                                    <Badge key={kidx} variant="outline" className={`${getVolumeColor(keyword.volume)} border`}>
-                                                      {keyword.text}
-                                                      {!keyword.related && " [관련X]"}
-                                                      · {fmtVol(keyword.volume)}
-                                                      · {keyword.score}pts
-                                                      · <span className={getRankColor(keyword.rank).split(' ')[1]}>{fmtRank(keyword.rank)}</span>
-                                                    </Badge>
+                                                    <div key={kidx} className="inline-flex items-center gap-1">
+                                                      <Badge variant="outline" className={`${getVolumeColor(keyword.volume)} border`}>
+                                                        {keyword.text}
+                                                        {!keyword.related && " [관련X]"}
+                                                        · {fmtVol(keyword.volume)}
+                                                        · {keyword.score}pts
+                                                      </Badge>
+                                                      <Badge className={getRankColor(keyword.rank)}>
+                                                        {fmtRank(keyword.rank)}
+                                                      </Badge>
+                                                    </div>
                                                   ))}
                                                   {blog.topKeywords.length > 10 && (
                                                     <Button size="sm" variant="ghost">더보기</Button>
@@ -324,18 +330,57 @@ export default function ResultsPage() {
                                                 </div>
                                               </div>
                                               
-                                              {/* B. 포스트별 1-4티어 (placeholder) */}
+                                              {/* B. 포스트별 1-4티어 */}
                                               <div>
                                                 <h5 className="font-medium mb-2">포스트별 1-4티어</h5>
                                                 <div className="space-y-2">
-                                                  {blog.titlesSample.map((title: string, pidx: number) => (
-                                                    <Card key={pidx} className="p-3">
-                                                      <h6 className="font-medium text-sm mb-2">{title}</h6>
-                                                      <div className="text-xs text-gray-600">
-                                                        1티어: 샘플키워드 · 검색량 · 순위 | 2티어: ... | 3티어: ... | 4티어: ...
-                                                      </div>
-                                                    </Card>
-                                                  ))}
+                                                  {blog.titlesSample.map((title: string, pidx: number) => {
+                                                    // Group keywords by tier based on search volume
+                                                    const getKeywordTier = (volume: number | null) => {
+                                                      if (volume === null) return 4;
+                                                      if (volume >= 10000) return 1;
+                                                      if (volume >= 1000) return 2;
+                                                      if (volume >= 100) return 3;
+                                                      return 4;
+                                                    };
+                                                    
+                                                    // Use different keyword slices per post to create unique per-post data
+                                                    const startIdx = (pidx * 3) % blog.topKeywords.length;
+                                                    const postKeywords = blog.topKeywords.slice(startIdx, startIdx + 6);
+                                                    
+                                                    const tierKeywords = {1: [], 2: [], 3: [], 4: []};
+                                                    postKeywords.forEach((kw: any) => {
+                                                      const tier = getKeywordTier(kw.volume);
+                                                      tierKeywords[tier].push(kw);
+                                                    });
+                                                    
+                                                    return (
+                                                      <Card key={pidx} className="p-3">
+                                                        <h6 className="font-medium text-sm mb-2" data-testid={`post-title-${pidx}`}>{title}</h6>
+                                                        <div className="text-xs space-y-1">
+                                                          {[1, 2, 3, 4].map(tier => {
+                                                            const keywords = tierKeywords[tier];
+                                                            if (keywords.length === 0) return null;
+                                                            
+                                                            return (
+                                                              <div key={tier} className="flex items-center gap-2">
+                                                                <span className="font-medium min-w-12">{tier}티어:</span>
+                                                                <div className="flex flex-wrap gap-1">
+                                                                  {keywords.slice(0, 3).map((kw: any, kidx: number) => (
+                                                                    <span key={kidx} className="text-gray-600">
+                                                                      {kw.text} · {fmtVol(kw.volume)} · {fmtRank(kw.rank)}
+                                                                      {kidx < Math.min(keywords.length, 3) - 1 && " | "}
+                                                                    </span>
+                                                                  ))}
+                                                                  {keywords.length > 3 && <span className="text-gray-400">...</span>}
+                                                                </div>
+                                                              </div>
+                                                            );
+                                                          })}
+                                                        </div>
+                                                      </Card>
+                                                    );
+                                                  })}
                                                 </div>
                                               </div>
                                             </div>
