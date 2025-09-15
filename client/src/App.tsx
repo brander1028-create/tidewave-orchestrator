@@ -11,6 +11,7 @@ import TitleAnalysisPage from "@/pages/title-analysis";
 import ResultsPage from "@/pages/results";
 import HistoryPage from "@/pages/history";
 import BlogDatabasePage from "@/pages/blog-database";
+import AdminPage from "@/pages/admin";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -22,6 +23,7 @@ function Router() {
       <Route path="/results/:jobId" component={ResultsPage} />
       <Route path="/history" component={HistoryPage} />
       <Route path="/blog-database" component={BlogDatabasePage} />
+      <Route path="/admin" component={AdminPage} />
       <Route component={NotFound} />
     </Switch>
   );

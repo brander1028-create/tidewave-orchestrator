@@ -7,6 +7,7 @@ import {
   History, 
   FolderOpen,
   Activity,
+  Settings,
   X,
   Menu
 } from "lucide-react";
@@ -62,6 +63,13 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       icon: History,
       description: "분석 기록",
       active: location === "/history" || location.startsWith("/history"),
+    },
+    {
+      href: "/admin",
+      label: "관리자",
+      icon: Settings,
+      description: "점수 엔진 설정 관리",
+      active: location === "/admin" || location.startsWith("/admin"),
     },
   ];
 

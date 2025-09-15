@@ -905,6 +905,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // =============================================
+  // SCORING CONFIG MANAGEMENT (Admin Panel API)
+  // =============================================
+  
+  // Get current scoring configuration
+  app.get('/api/scoring-config', async (req, res) => {
+    try {
+      const { loadScoringConfig } = await import('./services/scoring-config.js');
+      const config = await loadScoringConfig();
+      res.json(config);
+    } catch (error) {
+      console.error('Error fetching scoring config:', error);
+      res.status(500).json({ error: 'Failed to fetch scoring configuration' });
+    }
+  });
+
+  // Update scoring configuration (Admin only)
+  app.put('/api/scoring-config', async (req, res) => {
+    try {
+      const { loadScoringConfig, saveScoringConfig } = await import('./services/scoring-config.js');
+      
+      // Validate config structure with Zod
+      const configSchema = z.object({
+        version: z.string(),
+        description: z.string(),
+        scoring: z.object({
+          weights: z.object({
+            volume: z.number().min(0).max(1),
+            competition: z.number().min(0).max(1),
+            ad_depth: z.number().min(0).max(1),
+            cpc: z.number().min(0).max(1)
+          }),
+          normalization: z.object({
+            volume: z.object({
+              type: z.enum(['logarithmic', 'linear']),
+              base: z.number().optional(),
+              max_raw: z.number(),
+              scale_factor: z.number().optional()
+            }),
+            competition: z.object({
+              type: z.enum(['direct', 'linear']),
+              scale: z.number()
+            }),
+            ad_depth: z.object({
+              type: z.literal('linear'),
+              max: z.number()
+            }),
+            cpc: z.object({
+              type: z.literal('linear'),
+              max: z.number()
+            })
+          }),
+          competition_mapping: z.record(z.number())
+        }),
+        logging: z.object({
+          enabled: z.boolean(),
+          detailed: z.boolean(),
+          log_calculations: z.boolean()
+        }),
+        metadata: z.object({
+          last_modified: z.string(),
+          modified_by: z.string(),
+          change_log: z.array(z.object({
+            date: z.string(),
+            changes: z.string(),
+            author: z.string()
+          }))
+        })
+      });
+
+      const validatedConfig = configSchema.parse(req.body);
+      
+      // Validate weights sum approximately to 1
+      const weightSum = validatedConfig.scoring.weights.volume + 
+                       validatedConfig.scoring.weights.competition + 
+                       validatedConfig.scoring.weights.ad_depth + 
+                       validatedConfig.scoring.weights.cpc;
+      
+      if (Math.abs(weightSum - 1.0) > 0.01) {
+        return res.status(400).json({ 
+          error: 'Weights must sum to 1.0', 
+          currentSum: weightSum 
+        });
+      }
+      
+      await saveScoringConfig(validatedConfig);
+      console.log(`✅ [Admin API] Scoring config updated successfully`);
+      
+      res.json({ success: true, config: validatedConfig });
+    } catch (error) {
+      console.error('Error updating scoring config:', error);
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: 'Invalid configuration format', details: error.errors });
+      } else {
+        res.status(500).json({ error: 'Failed to update scoring configuration' });
+      }
+    }
+  });
+
   // ===========================================
   // UNIFIED HEALTH GATE + KEYWORDS MANAGEMENT
   // ===========================================
