@@ -26,7 +26,7 @@ export default function KeywordSummaryCard({
 }}) {
   const [open, setOpen] = useState(false);
   const fmtVol = (v: number | null) => v == null ? "–" : v.toLocaleString();
-  const fmtRank = (r: number | null) => r == null ? "미확인" : (r <= 10 ? `모바일 1p #${r}` : "미노출");
+  const fmtRank = (r: number | null) => r == null || r <= 0 ? "미확인" : (r <= 10 ? `모바일 1p #${r}` : "미노출");
 
   return (
     <div className="rounded-2xl border p-4 mb-4 shadow-sm bg-white">

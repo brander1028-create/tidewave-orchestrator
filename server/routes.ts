@@ -237,7 +237,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           // Add keywords for this blog with enhanced data format
           const keywordDetails = top3Keywords.map((kw, index) => {
-            const rawVolume = keywordVolumeMap[kw.keyword] || 0;
+            const rawVolume = keywordVolumeMap[kw.keyword] ?? null;
             const volumeScore = rawVolume > 0 ? Math.min(100, Math.round(Math.log10(Math.max(1, rawVolume)) / 5 * 100)) : 0;
             const score = 70; // Default score if not available
             const combinedScore = Math.round(0.7 * volumeScore + 0.3 * score);
@@ -251,7 +251,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               score: score,
               volume_score: volumeScore,
               combined_score: combinedScore,
-              rank: kw.rank || 0,
+              rank: kw.rank ?? null,
               meta: {
                 related: isRelated
               }
@@ -549,8 +549,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const top3Keywords = await storage.getTopKeywordsByBlog(blog.id);
         
         for (const keyword of top3Keywords) {
-          const raw_volume = keywordVolumeMap[keyword.keyword] || 0;
-          const rank = keyword.rank || 0;
+          const raw_volume = keywordVolumeMap[keyword.keyword] ?? null;
+          const rank = keyword.rank ?? null;
           
           csv += `${sanitizeCsvField(blog.blogId)},${sanitizeCsvField(keyword.keyword)},${sanitizeCsvField(raw_volume)},${sanitizeCsvField(rank)}\n`;
         }
