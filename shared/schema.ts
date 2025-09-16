@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, json, decimal, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, boolean, json, decimal, unique, primaryKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -372,6 +372,20 @@ export type InsertMetricSnapshot = z.infer<typeof insertMetricSnapshotSchema>;
 export type ReviewState = typeof reviewState.$inferSelect;
 export type InsertReviewState = z.infer<typeof insertReviewStateSchema>;
 
+// v7 키워드 매핑 시스템 (단일 소스 오브 트루스)
+
+// 타겟-키워드 매핑 테이블 (기존 queries_json 대체)
+export const targetKeywords = pgTable("target_keywords", {
+  targetId: varchar("target_id").notNull().references(() => blogTargets.id, { onDelete: "cascade" }),
+  keywordText: text("keyword_text").notNull(),
+  active: boolean("active").default(true),
+  addedBy: varchar("added_by").notNull(),
+  ts: timestamp("ts").notNull().defaultNow(),
+}, (table) => ({
+  // 복합 기본키
+  pk: primaryKey({ columns: [table.targetId, table.keywordText], name: "target_keywords_pk" }),
+}));
+
 // v7 키워드 그룹 시스템
 
 // 키워드 그룹 (블로그 전용)
@@ -451,6 +465,10 @@ export const collectionState = pgTable("collection_state", {
   autoStoppedAt: timestamp("auto_stopped_at"),
 });
 
+// v7 키워드 매핑 타입 정의들
+export type TargetKeyword = typeof targetKeywords.$inferSelect;
+export type InsertTargetKeyword = z.infer<typeof insertTargetKeywordSchema>;
+
 // v7 타입 정의들
 export type Group = typeof groups.$inferSelect;
 export type InsertGroup = z.infer<typeof insertGroupSchema>;
@@ -509,6 +527,11 @@ export const blogCheckSchema = z.object({
   query: z.string().min(1, "검색 키워드는 필수입니다"),
   device: z.enum(['pc', 'mobile']).default('pc'),
   maxPages: z.number().min(1).max(5).default(3),
+});
+
+// v7 키워드 매핑 Insert 스키마
+export const insertTargetKeywordSchema = createInsertSchema(targetKeywords).omit({
+  ts: true,
 });
 
 // v7 Insert 스키마들

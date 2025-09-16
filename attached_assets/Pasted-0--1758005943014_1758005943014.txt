@@ -1,0 +1,135 @@
+0) 문제 요약(재현)
+
+키워드 추가 후 하단 리스트에 반영되지 않음(실저장/프론트 상태 불일치 의심).
+
+“전체 체크 시작” 클릭 시 로딩/진행 상황 가시성 없음.
+
+상단 키워드 칩의 X 삭제는 중복 UX. → 테이블 액션 열로 이관 필요.
+
+핵심은 “키워드 ↔ 블로그(타겟) 매칭”이며, 동일 키워드에 다수 블로그 가능.
+
+1) 데이터 모델(경량 변경)
+
+기존 blog_targets.queries_json 유지하되, 정식 매핑 테이블을 추가:
+
+target_keywords(target_id, keyword_text, active, added_by, ts)
+
+PK: (target_id, keyword_text), FK: target_id → blog_targets.id
+
+이 테이블을 단일 소스 오브 트루스로 사용하고, 기존 queries_json은 마이그레이션/백필용만 사용.
+
+2) API (새로/수정)
+
+목록(확장)
+
+GET /api/targets/blog?expand=keywords
+→ 각 타겟에 keywords: string[] 포함.
+
+매핑 변경
+
+POST /api/targets/blog/:id/keywords
+body: { add?: string[], remove?: string[] } → 변경 후 최신 keywords[] 반환.
+
+랭크 체크 입력원 변경
+
+POST /api/rank/blog/check 에서 target_keywords 기준으로 작업 목록 생성
+(선택 키워드가 있으면 교집합으로 제한).
+
+마이그레이션: 기존 queries_json → target_keywords로 1회 백필.
+
+3) 프론트 수정
+A) 반영 버그 수습(소스 통일 + 낙관적 업데이트)
+
+GET /api/targets/blog?expand=keywords 응답을 페이지 데이터의 단일 소스로 사용.
+
+POST /api/targets/blog/:id/keywords 성공 시:
+
+invalidate 금지, queryClient.setQueryData 로 해당 타겟의 keywords[] 즉시 반영(낙관적).
+
+키워드 추가 모달/입력에서 중복 추가 방지(소문자 트림, 기존과 비교).
+
+B) 키워드 칩 영역 정리
+
+상단 키워드 관리 패널 기본 접힘(토글로 펼치기).
+
+칩의 X 삭제 버튼 제거.
+
+하단 테이블 액션 열에 ‘키워드 해제(X)’ 버튼 추가(선택된 타겟×키워드 단건 또는 일괄).
+
+C) 진행표시/로딩 UX
+
+“전체 체크 시작” 클릭 시:
+
+버튼에 스피너 + 텍스트 “진행 중… (0/총N)”
+
+상단바에 얇은 진행막대(N=‘타겟×키워드’ 개수 또는 /api/rank/blog/check?dryrun=1 응답의 planned).
+
+각 타겟 행에 로컬 스피너(해당 타겟 처리 중일 때만).
+
+진행 수집 방식:
+
+클라이언트 합산: 요청 배치마다 processed++ 후 UI 갱신.
+
+선택사항: Job API가 있으면 /api/jobs/:id/status 폴링으로 대체.
+
+D) 테이블 UX
+
+컬럼: 키워드 [조회량][점수] | 현재 순위 | 변동Δ | 유지 n일 | 바로가기 | 트렌드 | 마지막 체크 | 액션
+
+액션: 보기(👁), 재실행(⟳), 알림(🔔), 해제(X)
+→ 해제는 POST /api/targets/blog/:id/keywords { remove:[kw] }.
+
+검색/필터/정렬 유지:
+
+검색: 키워드/닉네임/URL
+
+필터: 노출/미노출/유지≥n/Δ≥N
+
+정렬: 최근업데이트/Δ/현재/조회량/점수
+
+4) 버튼 상태/오류 처리
+
+“전체 체크 시작” 버튼 disabled 조건: !selectedTargets.length || !effectiveKeywords.length || isRunning.
+
+네트워크 오류 시 토스트 + 실패 카운트 표기(성공 a / 실패 b / 전체 N).
+
+완료 시 버튼 라벨 “완료(성공 a/실패 b)” 3초 표시 후 원복.
+
+5) DoD(수락 기준)
+
+키워드 추가 후 하단 리스트 즉시 반영(새로고침 없이).
+
+“전체 체크 시작” 시 스피너/퍼센트/카운트가 보이고, 행별 로딩 인디케이터가 동작.
+
+상단 칩의 X 삭제가 사라지고, 테이블 액션 열의 X로 키워드 해제가 정상 동작.
+
+동일 키워드가 여러 블로그에 매핑되어도 각각 개별 체크/표시(행 분리).
+
+/api/targets/blog?expand=keywords 응답과 UI가 항상 일치(낙관적 업데이트로 깜빡임 없음).
+
+6) 스모크 테스트
+# 1) 매핑 추가/해제
+curl -sX POST http://localhost:3000/api/targets/blog/<id>/keywords \
+ -H "Content-Type: application/json" \
+ -d '{"add":["홍삼스틱","홍삼 효능"]}' | jq .
+
+curl -sX POST http://localhost:3000/api/targets/blog/<id>/keywords \
+ -H "Content-Type: application/json" \
+ -d '{"remove":["홍삼 효능"]}' | jq .
+
+# 2) 목록(확장)
+curl -s "http://localhost:3000/api/targets/blog?expand=keywords" | jq '.[0].keywords'
+
+# 3) 드라이런으로 계획량 확인(선택)
+curl -sX POST "http://localhost:3000/api/rank/blog/check?dryrun=1" \
+ -H "Content-Type: application/json" -d '{"target_ids":[]}' | jq .
+
+7) 구현 메모
+
+권한 헤더 자동 주입(v7.9 인터셉터) 계속 사용: x-role, x-owner.
+
+키워드 [조회량][점수]는 기존 /api/keywords/lookup 1h 캐시로 표기.
+
+중복/공백/대소문자 정규화: kw = normalize(kw) 후 비교/저장.
+
+성능: 체크는 서치피드 경계 위 + 없으면 15위까지만, TTL 캐시 10분.
