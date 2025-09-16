@@ -173,10 +173,10 @@ export function EditableCardGrid({
   const [localCards, setLocalCards] = useState(cards);
   const [draggedCard, setDraggedCard] = useState<string | null>(null);
 
-  // 로컬 변경사항을 부모에게 전달
+  // 로컬 변경사항을 부모에게 전달 (onCardsChange 의존성 제거하여 무한루프 방지)
   useEffect(() => {
     onCardsChange(localCards);
-  }, [localCards, onCardsChange]);
+  }, [localCards]);
 
   // 카드 표시/숨김 토글
   const toggleCardVisibility = (cardId: string) => {

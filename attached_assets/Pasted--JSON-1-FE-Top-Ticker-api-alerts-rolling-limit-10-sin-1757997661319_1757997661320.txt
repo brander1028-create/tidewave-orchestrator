@@ -1,0 +1,94 @@
+완료마다 체크리스트/증빙(스크린샷+샘플 JSON) 남겨.
+
+1) 블로그 대시보드 FE 연동 마무리
+
+Top Ticker: /api/alerts/rolling?limit=10&since=24h 실데이터로 롤링 표시(조회량 상위 우선).
+
+대시보드 카드 레이아웃: /api/dashboard/settings 저장/불러오기 연결(사용자별).
+
+탭 구조: “블로그 순위 / 인사이트” 두 탭에서 각각 데이터 소스 분리 확인.
+
+DoD
+
+새로고침 후에도 카드 배치 복원.
+
+Ticker 아이템 최소 1개 이상 실데이터 표출(샘플 JSON 첨부).
+
+2) 블로그 순위 페이지 – 1페이지 경계 + UI 확정
+
+경계 모드: “서치피드 문구 위”만 탐색. 문구 없으면 15위까지만.
+
+페이지 범위 UI 제거(이미 제거했으면 스킵).
+
+URL 칼럼 → ‘바로가기’ 아이콘 버튼으로 교체.
+
+유지기간(연속 노출 일수) 계산/표시: exposed=true가 끊기지 않은 일수 배지(녹색).
+
+노출/미노출 토글, 검색(키워드/닉네임/URL), 정렬(최근업데이트/Δ/현재순위/조회량/점수) 동작.
+
+“전체 체크 시작” 버튼: 선택 타겟×선택 키워드 기준으로 runAllChecks() 호출 → 폴링 3~5회.
+
+DoD
+
+POST /api/rank/blog/check 후 리스트에 순위 | 유지 n일 | 바로가기가 반영.
+
+미노출은 exposed=false로 표시되고 필터에 잡힘.
+
+“페이지 범위” UI 흔적 없음.
+
+3) 키워드 [조회량][점수] 연동 + 그룹
+
+프록시: GET /api/keywords/lookup?texts=...(1h 캐시) 결과를 칩 뱃지에 렌더.
+
+정렬 드롭다운: 조회량순/점수순/가나다순.
+
+그룹 API(/api/groups, /api/groups/:id/keywords, /api/groups/:id/index) 연결:
+
+그룹 만들기/키워드 배정/그룹 지수( rank_score_avg, top10_coverage ) 카드/차트 표시.
+
+DoD
+
+키워드 칩에 [조회량][점수] 뜸, 정렬이 실제로 리스트 순서를 바꿈.
+
+그룹 생성→키워드 배정→대시보드 카드에서 그룹 지수 확인 가능.
+
+4) DB 페이지 & 비용가드 마무리
+
+DB 탭 4종을 모두 실API로:
+
+/api/db/keywords, /api/db/targets, /api/db/snapshots/agg, /api/db/collection-rules
+
+자동 중지 규칙: “최근 30일 Top 페이지 미진입 시 수집 중지” 활성화, 토글로 재개 가능.
+
+토큰/호출/캐시 현황 위젯: /api/ops/stats 사용.
+
+DoD
+
+키워드/타겟 라인에서 수집 중지/재개 동작.
+
+30일 미진입 타겟이 자동으로 suspended 상태로 보임.
+
+스모크 테스트(반드시 실행·로그 남겨)
+# 블로그 랭크 체크 (임의 target_ids로)
+curl -sX POST http://localhost:3000/api/rank/blog/check -H "Content-Type: application/json" \
+ -d '{"target_ids":[],"query_override":["홍삼","홍삼스틱"]}' | jq .
+
+# 히스토리 (exposed, streak_days 포함 여부)
+curl -s "http://localhost:3000/api/rank/history?kind=blog&target_id=<ID>&range=14d" | jq '.[0]'
+
+# 키워드 조회량/점수
+curl -s "http://localhost:3000/api/keywords/lookup?texts=홍삼,홍삼스틱" | jq .
+
+# 그룹 지수
+curl -s "http://localhost:3000/api/groups/<gid>/index?range=30d" | jq .
+
+# DB 자동중지 규칙
+curl -s "http://localhost:3000/api/db/collection-rules" | jq .
+
+제출물
+
+체크리스트 항목별 스크린샷 1장 + 응답 JSON 1개.
+
+“Known issues & next” 5줄 요약.
+
+주의: 경쟁사/어뷰징 탐지/무작위 수집은 비활성 유지. 오직 내 자산 수동 타겟 + 신규 리뷰 감지만.

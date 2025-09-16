@@ -1,6 +1,21 @@
 import { useState, useEffect } from "react";
 import { AlertTriangle, TrendingUp, TrendingDown, Bell, Target, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+
+// RollingAlert API 타입 (shared/schema.ts와 일치)
+interface RollingAlert {
+  id: string;
+  owner: string;
+  type: "alert" | "success" | "info" | "warning";
+  icon: string;
+  message: string;
+  time: string;
+  priority: number;
+  isActive: boolean;
+  targetId: string | null;
+  createdAt: Date;
+}
 
 interface TickerItem {
   id: string;
@@ -60,12 +75,55 @@ const defaultItems: TickerItem[] = [
   }
 ];
 
-export function TopTicker({ items = defaultItems, speed = 50, className }: TopTickerProps) {
+// 아이콘 문자열을 실제 아이콘으로 변환
+const getIconComponent = (iconName: string) => {
+  switch (iconName) {
+    case "TrendingUp": return <TrendingUp className="w-4 h-4" />;
+    case "TrendingDown": return <TrendingDown className="w-4 h-4" />;
+    case "AlertTriangle": return <AlertTriangle className="w-4 h-4" />;
+    case "Target": return <Target className="w-4 h-4" />;
+    case "Activity": return <Activity className="w-4 h-4" />;
+    default: return <Bell className="w-4 h-4" />;
+  }
+};
+
+// RollingAlert를 TickerItem으로 변환
+const convertRollingAlertToTickerItem = (alert: RollingAlert): TickerItem => ({
+  id: alert.id,
+  type: alert.type,
+  icon: getIconComponent(alert.icon),
+  message: alert.message,
+  time: alert.time,
+  priority: alert.priority,
+});
+
+export function TopTicker({ items, speed = 50, className }: TopTickerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
 
+  // API에서 롤링 알림 데이터 가져오기
+  const { data: apiAlerts, isLoading } = useQuery<RollingAlert[]>({
+    queryKey: ['/api/alerts/rolling'],
+    queryFn: async () => {
+      const response = await fetch('/api/alerts/rolling?active=true&limit=10', {
+        headers: { 'x-role': 'system' }
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch rolling alerts');
+      }
+      return await response.json();
+    },
+    refetchInterval: 30000, // 30초마다 새로고침
+    staleTime: 10000, // 10초간 fresh 상태 유지
+  });
+
+  // API 데이터 우선, fallback은 전달받은 items 또는 기본값
+  const tickerItems = apiAlerts 
+    ? apiAlerts.map(convertRollingAlertToTickerItem)
+    : items || defaultItems;
+
   // 우선순위순으로 정렬
-  const sortedItems = [...items].sort((a, b) => a.priority - b.priority);
+  const sortedItems = [...tickerItems].sort((a, b) => a.priority - b.priority);
 
   useEffect(() => {
     if (isHovered || sortedItems.length === 0) return;

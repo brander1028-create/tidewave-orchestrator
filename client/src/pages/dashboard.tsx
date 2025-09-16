@@ -1,10 +1,15 @@
+import { useState, useCallback, useMemo } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { KPICard } from "@/components/ui/kpi-card";
 import { RankTrendChart } from "@/components/charts/rank-trend-chart";
 import { RankDistributionChart } from "@/components/charts/rank-distribution-chart";
 import { CalendarHeatmap } from "@/components/charts/calendar-heatmap";
+import { EditableCardGrid, type DashboardCardConfig } from "@/components/ui/editable-card-grid";
+import { TopTicker } from "@/components/ui/top-ticker";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -15,8 +20,58 @@ import {
   MessageSquare,
   Activity
 } from "lucide-react";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+
+// 대시보드 설정 타입 정의
+interface DashboardSettings {
+  id: string;
+  cardId: string;
+  visible: boolean;
+  order: number;
+  size: "small" | "medium" | "large";
+  position: { x: number; y: number };
+  config: any;
+}
 
 export default function Dashboard() {
+  const [editMode, setEditMode] = useState(false);
+  const [activeTab, setActiveTab] = useState("blog");
+
+  // 대시보드 설정 로드
+  const { data: dashboardSettings } = useQuery<DashboardSettings[]>({
+    queryKey: ['/api/dashboard/settings'],
+    queryFn: async () => {
+      const response = await fetch('/api/dashboard/settings', {
+        headers: { 'x-role': 'system' }
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch dashboard settings');
+      }
+      return await response.json();
+    },
+  });
+
+  // 대시보드 설정 저장
+  const saveDashboardSettings = useMutation({
+    mutationFn: async (cardSettings: { cardId: string; [key: string]: any }) => {
+      const response = await fetch('/api/dashboard/settings', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-role': 'system'
+        },
+        body: JSON.stringify(cardSettings)
+      });
+      if (!response.ok) {
+        throw new Error('Failed to save dashboard settings');
+      }
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/dashboard/settings'] });
+    },
+  });
+
   // Mock data for demonstration
   const kpiData = [
     {
@@ -108,6 +163,90 @@ export default function Dashboard() {
     { keyword: "홍삼 부작용", rank: null, change: null, trend: "stable" },
     { keyword: "홍삼 복용법", rank: 32, change: -7, trend: "down" },
   ];
+
+  // 카드 설정 변경 핸들러 - useCallback로 무한 루프 방지
+  const handleCardsChange = useCallback((cards: DashboardCardConfig[]) => {
+    // 편집 모드일 때만 실행하여 불필요한 API 호출 방지
+    if (!editMode) return;
+    
+    // 디바운스를 위해 setTimeout 사용
+    const timeoutId = setTimeout(() => {
+      cards.forEach(card => {
+        saveDashboardSettings.mutate({
+          cardId: card.id,
+          visible: card.visible,
+          order: card.order,
+          size: card.size,
+          position: { x: 0, y: 0 }, // 기본값
+          config: {}
+        });
+      });
+    }, 500);
+
+    return () => clearTimeout(timeoutId);
+  }, [editMode, saveDashboardSettings]);
+
+  // 대시보드 카드 구성 (useMemo로 최적화 및 API 설정 결합)
+  const dashboardCards = useMemo((): DashboardCardConfig[] => {
+    const defaultCards: DashboardCardConfig[] = [
+      {
+        id: "kpi-overview",
+        title: "KPI 개요",
+        type: "kpi",
+        icon: <Target className="w-4 h-4" />,
+        visible: true,
+        order: 1,
+        size: "large",
+        content: (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {kpiData.map((kpi, index) => (
+              <KPICard key={index} {...kpi} />
+            ))}
+          </div>
+        )
+      },
+      {
+        id: "trend-chart",
+        title: "순위 트렌드",
+        type: "chart",
+        icon: <TrendingUp className="w-4 h-4" />,
+        visible: true,
+        order: 2,
+        size: "large",
+        content: <RankTrendChart data={trendData} />
+      },
+      {
+        id: "rank-distribution",
+        title: "순위 분포",
+        type: "chart",
+        icon: <Target className="w-4 h-4" />,
+        visible: true,
+        order: 3,
+        size: "medium",
+        content: <RankDistributionChart data={distributionData} />
+      },
+      {
+        id: "calendar-heatmap",
+        title: "활동 히트맵",
+        type: "chart",
+        icon: <Activity className="w-4 h-4" />,
+        visible: true,
+        order: 4,
+        size: "large",
+        content: <CalendarHeatmap data={heatmapData} title="순위 변동 패턴 (최근 3개월)" />
+      }
+    ];
+
+    // API 설정이 있으면 기본값과 병합
+    if (dashboardSettings && dashboardSettings.length > 0) {
+      return defaultCards.map(card => {
+        const apiSetting = dashboardSettings.find(setting => setting.cardId === card.id);
+        return apiSetting ? { ...card, visible: apiSetting.visible, order: apiSetting.order, size: apiSetting.size } : card;
+      });
+    }
+
+    return defaultCards;
+  }, [dashboardSettings, kpiData, trendData, distributionData, heatmapData]);
 
   return (
     <div className="space-y-6">
@@ -210,59 +349,37 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Calendar Heatmap */}
-      <CalendarHeatmap data={heatmapData} title="순위 변동 패턴 (최근 3개월)" />
-
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              블로그 모니터링
-            </CardTitle>
-            <MessageSquare className="w-4 h-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-foreground">127개</div>
-            <div className="flex items-center gap-1 text-sm text-muted-foreground">
-              <span>키워드</span>
-              <Badge variant="outline" className="text-green-500">+5</Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              쇼핑몰 순위
-            </CardTitle>
-            <ShoppingCart className="w-4 h-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-foreground">23개</div>
-            <div className="flex items-center gap-1 text-sm text-muted-foreground">
-              <span>상품</span>
-              <Badge variant="outline" className="text-blue-500">정상</Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              리뷰 모니터링
-            </CardTitle>
-            <Star className="w-4 h-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-foreground">156개</div>
-            <div className="flex items-center gap-1 text-sm text-muted-foreground">
-              <span>리뷰 추적</span>
-              <Badge variant="outline" className="text-yellow-500">12 신규</Badge>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Top Ticker */}
+      <div className="mb-6">
+        <TopTicker data-testid="top-ticker" />
       </div>
+
+      {/* 탭 구조: 블로그 순위 / 인사이트 */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="blog" data-testid="tab-blog">블로그 순위</TabsTrigger>
+          <TabsTrigger value="insights" data-testid="tab-insights">인사이트</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="blog" className="space-y-6 mt-6">
+          {/* 블로그 순위 대시보드 */}
+          <EditableCardGrid
+            cards={dashboardCards}
+            onCardsChange={handleCardsChange}
+            editMode={editMode}
+            onEditModeChange={setEditMode}
+          />
+        </TabsContent>
+
+        <TabsContent value="insights" className="space-y-6 mt-6">
+          {/* 인사이트 대시보드 - 다른 데이터 소스 */}
+          <div className="text-center py-12 text-muted-foreground">
+            <MessageSquare className="w-12 h-12 mx-auto mb-4 opacity-50" />
+            <h3 className="text-lg font-medium mb-2">인사이트 대시보드</h3>
+            <p>고급 분석 및 인사이트 기능이 곧 추가됩니다.</p>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
