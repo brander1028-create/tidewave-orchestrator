@@ -25,22 +25,22 @@ import {
 } from "lucide-react";
 import { Link, useSearch } from "wouter";
 
-// Blog registry schema with safe defaults
+// Blog registry schema with safe defaults and null handling
 const BlogRegistryItemSchema = z.object({
-  id: z.string().default(""),
+  id: z.string(),
   blogId: z.string().optional(),
-  blogName: z.string().default(""),
+  blogName: z.string(),
   name: z.string().optional(),
-  blogUrl: z.string().default(""),
+  blogUrl: z.string(),
   url: z.string().optional(),
-  status: z.enum(["collected", "blacklist", "outreach"]).default("collected"),
-  notes: z.string().optional().default(""),
-  note: z.string().optional(),
-  exposureCount: z.number().default(0),
-  totalScore: z.number().default(0),
-  lastUpdated: z.string().default(""),
+  status: z.enum(["collected", "blacklist", "outreach"]),
+  notes: z.string().nullable().optional(),
+  note: z.string().nullable().optional(),
+  exposureCount: z.number(),
+  totalScore: z.number(),
+  lastUpdated: z.string(),
   updatedAt: z.string().optional(),
-  discoveredKeywords: z.array(z.string()).default([]),
+  discoveredKeywords: z.array(z.string()),
 }).transform((data) => ({
   id: data.id || data.blogId || "",
   blogName: data.blogName || data.name || "",
@@ -50,7 +50,7 @@ const BlogRegistryItemSchema = z.object({
   exposureCount: data.exposureCount,
   totalScore: data.totalScore,
   lastUpdated: data.lastUpdated || data.updatedAt || "",
-  discoveredKeywords: data.discoveredKeywords,
+  discoveredKeywords: data.discoveredKeywords || [],
 }));
 
 type BlogRegistryItem = z.infer<typeof BlogRegistryItemSchema>;
@@ -71,7 +71,7 @@ export default function BlogDatabasePage() {
     condition: string;
   }>>([]);
 
-  // Fetch real blog registry data from API
+  // Fetch real blog registry data from API with improved error handling
   const { data: blogs = [], isLoading, error } = useQuery({
     queryKey: ['/api/blog-registry', selectedStatus, searchText],
     queryFn: async () => {
@@ -85,10 +85,23 @@ export default function BlogDatabasePage() {
       
       const response = await fetch(`/api/blog-registry?${params}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch blog registry');
+        const errorText = await response.text();
+        console.error('API Error:', response.status, errorText);
+        throw new Error(`API Error ${response.status}: ${errorText}`);
       }
+      
       const rawData = await response.json();
-      return z.array(BlogRegistryItemSchema).parse(rawData);
+      console.log('Raw API response:', rawData);
+      
+      try {
+        const parsed = z.array(BlogRegistryItemSchema).parse(rawData);
+        console.log('Successfully parsed:', parsed.length, 'blogs');
+        return parsed;
+      } catch (zodError: any) {
+        console.error('Zod parsing error:', zodError);
+        console.error('Failed on data:', rawData);
+        throw new Error(`Data validation failed: ${zodError?.message || 'Unknown validation error'}`);
+      }
     }
   });
 
@@ -129,9 +142,10 @@ export default function BlogDatabasePage() {
     setAppliedFilters(prev => prev.filter(f => f.id !== filterId));
   };
 
-  // Use mutation for status updates with proper cache invalidation
+  // Use mutation for status updates with proper cache invalidation and feedback
   const updateStatusMutation = useMutation({
     mutationFn: async ({ blogId, status, note }: { blogId: string; status: "collected" | "blacklist" | "outreach"; note?: string }) => {
+      console.log(`Updating blog ${blogId} status to ${status}`);
       const response = await fetch(`/api/blog-registry/${blogId}/status`, {
         method: 'PATCH',
         headers: {
@@ -141,18 +155,23 @@ export default function BlogDatabasePage() {
       });
       
       if (!response.ok) {
-        throw new Error('Failed to update blog status');
+        const errorText = await response.text();
+        console.error('Status update failed:', response.status, errorText);
+        throw new Error(`Failed to update status: ${response.status} ${errorText}`);
       }
       
-      return response.json();
+      const result = await response.json();
+      console.log('Status update successful:', result);
+      return result;
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
+      console.log(`Successfully updated blog ${variables.blogId} to ${variables.status}`);
       // Invalidate and refetch blog registry data
       queryClient.invalidateQueries({ queryKey: ['/api/blog-registry'] });
     },
-    onError: (error) => {
+    onError: (error, variables) => {
       console.error('Error updating blog status:', error);
-      alert('상태 업데이트에 실패했습니다.');
+      alert(`상태 업데이트에 실패했습니다: ${error.message}`);
     }
   });
 
@@ -173,6 +192,9 @@ export default function BlogDatabasePage() {
     return <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 flex items-center justify-center">
       <div className="text-center">
         <p className="text-red-600 mb-4">데이터를 불러오는데 실패했습니다.</p>
+        <p className="text-sm text-gray-500 mb-4">
+          {error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.'}
+        </p>
         <Button onClick={() => window.location.reload()} data-testid="retry-button">
           다시 시도
         </Button>
@@ -413,25 +435,31 @@ export default function BlogDatabasePage() {
                               size="sm"
                               variant={blog.status === "collected" ? "default" : "outline"}
                               onClick={() => updateBlogStatus(blog.id, "collected")}
+                              disabled={updateStatusMutation.isPending}
                               data-testid={`status-collected-${blog.id}`}
+                              className={blog.status === "collected" ? "bg-green-600 hover:bg-green-700" : ""}
                             >
-                              수집됨
+                              {updateStatusMutation.isPending ? "..." : "수집됨"}
                             </Button>
                             <Button
                               size="sm"
                               variant={blog.status === "blacklist" ? "default" : "outline"}
                               onClick={() => updateBlogStatus(blog.id, "blacklist")}
+                              disabled={updateStatusMutation.isPending}
                               data-testid={`status-blacklist-${blog.id}`}
+                              className={blog.status === "blacklist" ? "bg-red-600 hover:bg-red-700" : ""}
                             >
-                              블랙
+                              {updateStatusMutation.isPending ? "..." : "블랙"}
                             </Button>
                             <Button
                               size="sm"
                               variant={blog.status === "outreach" ? "default" : "outline"}
                               onClick={() => updateBlogStatus(blog.id, "outreach")}
+                              disabled={updateStatusMutation.isPending}
                               data-testid={`status-outreach-${blog.id}`}
+                              className={blog.status === "outreach" ? "bg-blue-600 hover:bg-blue-700" : ""}
                             >
-                              섭외
+                              {updateStatusMutation.isPending ? "..." : "섭외"}
                             </Button>
                           </div>
                         </td>

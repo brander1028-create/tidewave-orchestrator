@@ -5,8 +5,8 @@
     "weights": {
       "volume": 0.35,
       "competition": 0.35,
-      "ad_depth": 0.20,
-      "cpc": 0.10
+      "ad_depth": 0.2,
+      "cpc": 0.1
     },
     "normalization": {
       "volume": {
@@ -29,15 +29,15 @@
       }
     },
     "competition_mapping": {
+      "0": 20,
+      "1": 60,
+      "2": 100,
       "높음": 100,
       "high": 100,
-      "2": 100,
       "중간": 60,
       "mid": 60,
-      "1": 60,
       "낮음": 20,
       "low": 20,
-      "0": 20,
       "default": 60
     }
   },
@@ -47,13 +47,18 @@
     "log_calculations": true
   },
   "metadata": {
-    "last_modified": "2025-09-15T13:45:00Z",
+    "last_modified": "2025-09-16T01:21:00.333Z",
     "modified_by": "system",
     "change_log": [
       {
         "date": "2025-09-15T13:45:00Z",
         "changes": "Initial score config creation for v10 B task",
         "author": "system"
+      },
+      {
+        "date": "2025-09-16T01:21:00.333Z",
+        "changes": "Configuration updated via admin panel",
+        "author": "admin"
       }
     ]
   }

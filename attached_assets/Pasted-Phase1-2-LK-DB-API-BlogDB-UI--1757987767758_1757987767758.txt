@@ -1,0 +1,179 @@
+Phase1/2 통합 · LK(로컬+키워드) 조합 · DB→API→업서트→동일응답 재스코어 · 티어 자동보강 · 점수엔진 · 복합어/밴리스트 · BlogDB · UI/계약/증거수집
+
+0) 먼저 증거 캡처(백 vs 프론트 판별)
+
+응답 스냅샷
+
+curl -s http://localhost:5000/api/serp/jobs/<JOB_ID>/results | jq \
+'{keywords,params,searchVolumes,sample:.summaryByKeyword[0].blogs[0]|{blogId,blogName,totalExposed,totalScore,post0:(.posts[0]|{title,tiers})}}'
+
+
+기대: post0.tiers에 1..T 각각 {text,volume,rank,score} 채워짐.
+
+전수 저장 수
+
+SELECT COUNT(*) FROM post_tier_checks WHERE job_id='<JOB_ID>';
+
+
+기대: NEW×P×T(P=postsPerBlog, T=tiersPerPost).
+
+복합어 upsert 확인
+
+SELECT text_surface,text_nrm,volume,status
+FROM keyword_db
+WHERE text_nrm IN ('혜화역맛집','레일바이크가격','왕송호수레일바이크');
+
+1) Phase 정의 + BlogDB 연동(필수)
+
+Phase1: 입력 키워드별 SERP 수집 → blog_registry로 NEW/중복 판정
+
+큐잉 직전: url→blog_id 정규화 → 조회
+
+없으면 insert(status='collected', first_seen_at=now) → 이번 실행에서 NEW
+
+있으면 last_seen_at=now 갱신
+
+status in ('blacklist','outreach') 는 수집 제외
+
+Phase2: NEW 블로그의 최근글 P개(기본10) 분석 → 티어 1..T(기본4) 채움
+
+blog_registry(최소 마이그): blog_id PK, url, name, status, tags, note, first_seen_at, last_seen_at, created_at, updated_at (+status/name/first_seen_at 인덱스)
+
+2) 키워드 생성 모드 = LK 모드(Location+Keyword Combo) 기본
+
+제목에서 로컬 토큰 추출 + 카테고리/상품 키워드 결합 → 2~3어 조합 생성
+예) “제주 흑돼지 오마카세 … 애월 … 맛집” →
+제주 맛집, 흑돼지 맛집, 제주 오마카세, 제주도 애월 맛집
+
+설정(기본):
+
+phase2.mode="LK" / lk.maxLocationPhrase=2 / lk.minTokens=2 / lk.allowThreeGram=true
+
+lk.categories=["맛집","카페","오마카세","호텔","숙소","여행","코스","레일바이크","가격","후기"]
+
+banSingles=["맛집","추천","방법","정리"](단일어 금지, 조합에서는 허용)
+
+로컬 휴리스틱: alias 사전 + 접미사(역/구/동/읍/면/리/군/시/도/로/길)
+
+3) DB→API→업서트→동일 응답 재스코어(검색량·랭크·점수)
+
+모든 후보(조합 포함)에 대해 KEYWORD_DB 조회(TTL 30d)
+
+miss/만료만 SearchAds 호출(variants: surface/nospace/hyphen, 429 Retry-After) → upsert
+
+업서트 값을 이번 요청 메모리에도 merge → 즉시 재스코어(반드시 await)
+
+랭크: 모바일 기준 1..10=노출, 0=1p 밖, null=미확인(기본값 금지)
+
+점수는 서버에서 계산 후 응답에 포함
+
+volumeScale = min(100, log10(max(1,volume))*25)
+
+contentScore = 0.5*freq율 + 0.3*제목내 위치점수 + 0.2*길이보너스
+
+total = 0.7*volumeScale + 0.3*contentScore (가중치는 설정에서 조정가능)
+
+scoreTrace 로그 남김 {text, volume→scale, content, total}
+
+4) 티어 자동보강(2~4티어 비면 즉시 채움)
+
+assignTiersLK(enriched)로 정렬(복합어/지역선행 보너스) 후 1..T 선택(중복 nrm 제거)
+
+티어 수 < T 이면:
+
+제목 n-gram(1~3, 조사제거/길이2~18/불용어 제외)에서 보충
+
+그래도 부족하면 SearchAds 연관키워드로 보강(볼륨>0 우선) → KEYWORD_DB upsert → 재배치
+
+각 티어는 최종 {text, volume, rank, totalScore}를 반드시 가짐
+
+5) 복합어 우선 + 밴리스트
+
+preferCompound=true일 때 2~3어(공백 포함) + 지역선행 조합에 보너스(+δ)
+
+keyword_db.status='banned'는 후보/보강 모두에서 제외(예: 단일 ‘맛집’)
+
+관리자 UI에서 키워드 칩 [밴]/[화이트] 토글
+
+6) 전수 저장(최소 마이그)
+
+post_tier_checks에 행 단위 전수 저장
+id PK, job_id, input_keyword, blog_id, post_id, post_title, tier(1..T), text_surface, text_nrm, volume INT?, rank INT?, device, related BOOL, created_at
+UNIQUE(job_id,input_keyword,blog_id,post_id,tier,text_nrm)
+
+7) UI/표시 규칙
+
+결과 헤더: 키워드 칩, 상태/분석일시, CSV 버튼, 상단 요약칩 검사 {Σ NEW×P×T}·1페이지 {Σ rank≤10}
+
+키워드 카드(키워드별 1장):
+제목 {키워드} 검색량 {fmtVol(searchVolumes[키])}
+KPI NEW {new}/{total} · Phase2(신규) {expNew}/{new} · 검사 {checks}
+버튼 [자세히] [블로그DB 이동]
+
+“자세히”
+(1) 블로그 리스트(NEW만) [블로그명/ID(↗) | 총 노출수 | 총합 점수 | 상태 | 액션]
+액션: [10개 포스트 보기](행 펼침) · [블로그 바로가기](새창) · 상태토글(수집/블랙/섭외 → /api/blogs/:id/status)
+(2) 블로그 상세
+· “블로그 총 Top 키워드(통합)” 칩 10개(더보기):
+{text}{[관련X]} · {fmtVol(volume)} · {score}pts · {fmtRank(rank)}
+· “포스트별 1~T티어(전수)” P개 카드:
+n티어 {text} · {fmtVol(volume)} · {fmtRank(rank)}
+
+포맷: fmtVol(null→"–", 0→"0"), fmtRank(null→"미확인", 0→"0", 1..10→"모바일 1p #N", >10→"미노출")
+
+내부 디버그 배지(“DB 전용/미적용”)는 화면 노출 금지(로그 전용)
+
+8) 응답 계약(스키마 변경 없이 “조립”만 보강)
+
+GET /api/serp/jobs/:id/results 에 반드시 포함:
+
+{
+  "keywords": [...],
+  "status": "...",
+  "analyzedAt": "...",
+  "params": { "postsPerBlog": P, "tiersPerPost": T },
+  "searchVolumes": { "<키>": <숫자|null> },
+  "attemptsByKeyword": { "K": NEW_K * P * T },
+  "exposureStatsByKeyword": { "K": { "page1": n, "zero": m, "unknown": u } },
+  "summaryByKeyword": [
+    {
+      "keyword": "K",
+      "searchVolume": <숫자|null>,
+      "totalBlogs": <int>, "newBlogs": <int>, "phase2ExposedNew": <int>,
+      "blogs": [
+        {
+          "blogId": "naverId", "blogName": "표시명|없으면 ID", "blogUrl": "https://...",
+          "status": "collected|blacklist|outreach",
+          "totalExposed": <int>, "totalScore": <int>,
+          "topKeywords": [ { "text": "...", "volume": <int|null>, "score": <int>, "rank": <int|null>, "related": true|false } ],
+          "posts": [
+            { "title": "...",
+              "tiers": [ { "tier":1, "text":"...", "volume":<int|null>, "rank":<int|null>, "score":<int> }, ... up to T ] }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+9) 수용 기준(DoD)
+
+ 카드에 검색량 숫자가 뜬다(미스→API 폴백→같은 응답에 반영).
+
+ “자세히” 리스트가 블로그명/ID로 나오고, [포스트 보기]/[바로가기]·상태토글이 동작, BlogDB에 반영.
+
+ 블로그 상세에 포스트 P×티어 T 전수가 text/volume/rank/score로 채워짐(0/미확인 포함).
+
+ LK 모드로 제주 맛집/흑돼지 맛집/제주 오마카세/제주도 애월 맛집 등 복합어가 상위로 선정되고, 단일 ‘맛집’은 밴 처리.
+
+ 점수 0pts 일색이 사라지고, Logs 탭에서 scoreTrace가 확인됨.
+
+ post_tier_checks 행 수 = NEW×P×T와 일치.
+
+10) 금지/주의
+
+rank/volume에 기본값 대입(|| 0, || 1) 금지.
+
+SearchAds 실패 시 Retry-After 준수, 실패해도 partial 진행(표시는 –/미확인).
+
+새 대공사/엔드포인트 남발 금지(마이그는 blog_registry, post_tier_checks만).
