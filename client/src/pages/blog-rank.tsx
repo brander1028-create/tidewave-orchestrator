@@ -72,7 +72,7 @@ interface RankingData {
 const addManualBlogSchema = z.object({
   keyword: z.string().min(1, "키워드를 입력해주세요"),
   url: z.string().url("올바른 URL을 입력해주세요"),
-  title: z.string().min(1, "블로그 제목을 입력해주세요"),
+  title: z.string().optional(), // 선택사항으로 변경 - URL 긁어올 때 제목도 자동으로 가져올 수 있음
   rank: z.number().min(1, "순위는 1 이상이어야 합니다").optional(),
   notes: z.string().optional(),
   submittedBy: z.string().default("admin"),
@@ -120,7 +120,7 @@ export default function BlogRank() {
       return await manualBlogApi.create({
         keyword: data.keyword,
         url: data.url,
-        title: data.title,
+        title: data.title ?? "", // 선택사항이므로 빈 문자열로 기본값 설정
         rank: data.rank ?? null,
         notes: data.notes ?? null,
         submittedBy: data.submittedBy,
