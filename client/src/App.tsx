@@ -12,6 +12,7 @@ import ResultsPage from "@/pages/results";
 import HistoryPage from "@/pages/history";
 import BlogDatabasePage from "@/pages/blog-database";
 import AdminPage from "@/pages/admin";
+import SandboxPage from "@/pages/sandbox";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -24,6 +25,7 @@ function Router() {
       <Route path="/history" component={HistoryPage} />
       <Route path="/blog-database" component={BlogDatabasePage} />
       <Route path="/admin" component={AdminPage} />
+      <Route path="/sandbox" component={SandboxPage} />
       <Route component={NotFound} />
     </Switch>
   );

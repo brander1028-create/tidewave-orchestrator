@@ -13,6 +13,40 @@ import { postTierChecks } from '../../shared/schema';
 import { engineRegistry } from '../phase2';
 import { Candidate, Tier } from '../phase2/types';
 
+/**
+ * Decide whether to activate canary configuration based on ratio and keywords
+ */
+function shouldActivateCanary(inputKeyword: string, canaryConfig: any): boolean {
+  if (!canaryConfig.enabled) {
+    return false;
+  }
+  
+  // If specific keywords are defined, only apply canary to those keywords
+  if (canaryConfig.keywords && canaryConfig.keywords.length > 0) {
+    const normalizedKeyword = inputKeyword.toLowerCase().trim();
+    const isTargetKeyword = canaryConfig.keywords.some((keyword: string) => 
+      normalizedKeyword.includes(keyword.toLowerCase()) || 
+      keyword.toLowerCase().includes(normalizedKeyword)
+    );
+    
+    if (!isTargetKeyword) {
+      return false; // Not a target keyword, use production
+    }
+  }
+  
+  // Apply ratio-based decision
+  const randomValue = Math.random();
+  const shouldActivate = randomValue < canaryConfig.ratio;
+  
+  if (canaryConfig.keywords && canaryConfig.keywords.length > 0) {
+    console.log(`🎯 [Canary] Keyword "${inputKeyword}" matched target keywords, ratio check: ${randomValue.toFixed(3)} < ${canaryConfig.ratio} = ${shouldActivate}`);
+  } else {
+    console.log(`🎲 [Canary] Ratio check: ${randomValue.toFixed(3)} < ${canaryConfig.ratio} = ${shouldActivate}`);
+  }
+  
+  return shouldActivate;
+}
+
 export interface V17PipelineResult {
   tiers: Array<{
     tier: number;
@@ -45,8 +79,36 @@ export async function processPostTitleV17(
   console.log(`🚀 [v17 Pipeline] Starting for title: "${title.substring(0, 50)}..."`);
   
   // Step 1: v17 핫리로드 설정
-  const cfg = await getAlgoConfig();
-  console.log(`⚙️ [v17 Pipeline] Config loaded - Engine: ${cfg.phase2.engine}, Gate: ${cfg.features.scoreFirstGate ? 'ON' : 'OFF'}`);
+  const baseCfg = await getAlgoConfig();
+  
+  // Step 1.1: Canary System - Decide configuration to use
+  let cfg = baseCfg;
+  let isCanaryTraffic = false;
+  
+  if (baseCfg.features?.canary?.enabled === true) {
+    // Check if this request should use canary configuration
+    const shouldUseCanary = shouldActivateCanary(inputKeyword, baseCfg.features.canary);
+    
+    if (shouldUseCanary) {
+      isCanaryTraffic = true;
+      // Load test/canary configuration (for now, use base config with modifications)
+      // In future, this could load from a separate canary config store
+      cfg = {
+        ...baseCfg,
+        // Example: Use different engine for canary traffic
+        phase2: {
+          ...baseCfg.phase2,
+          engine: baseCfg.phase2.engine === 'lk' ? 'hybrid' : 'lk'
+        }
+      };
+      console.log(`🧪 [v17 Canary] ACTIVE - Using canary config for keyword "${inputKeyword}"`);
+      console.log(`🧪 [v17 Canary] Engine switch: ${baseCfg.phase2.engine} → ${cfg.phase2.engine}`);
+    } else {
+      console.log(`📊 [v17 Canary] INACTIVE - Using production config`);
+    }
+  }
+  
+  console.log(`⚙️ [v17 Pipeline] Config loaded - Engine: ${cfg.phase2.engine}, Gate: ${cfg.features.scoreFirstGate ? 'ON' : 'OFF'}${isCanaryTraffic ? ' [CANARY]' : ''}`);
   
   // Step 2: Phase2 엔진으로 후보 생성
   const engine = engineRegistry.get(cfg.phase2.engine);

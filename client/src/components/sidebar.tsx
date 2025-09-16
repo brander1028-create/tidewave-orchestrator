@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Activity,
   Settings,
+  TestTube,
   X,
   Menu
 } from "lucide-react";
@@ -63,6 +64,13 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       icon: History,
       description: "분석 기록",
       active: location === "/history" || location.startsWith("/history"),
+    },
+    {
+      href: "/sandbox",
+      label: "샌드박스",
+      icon: TestTube,
+      description: "알고리즘 테스트 및 Canary 시스템",
+      active: location === "/sandbox" || location.startsWith("/sandbox"),
     },
     {
       href: "/admin",

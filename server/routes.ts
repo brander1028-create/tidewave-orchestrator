@@ -344,6 +344,87 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ===============================
+  // SANDBOX & TESTING APIs
+  // ===============================
+  
+  // Start test job with specific configuration
+  app.post("/api/serp/test", async (req, res) => {
+    try {
+      const validatedBody = z.object({
+        keyword: z.string().min(1),
+        configName: z.string().min(1),
+        testMode: z.boolean().default(true),
+        config: z.any().optional() // Allow any test configuration
+      }).parse(req.body);
+
+      const { keyword, configName, testMode, config } = validatedBody;
+
+      console.log(`🧪 [SANDBOX] Starting test job for keyword: "${keyword}" with config: ${configName}`);
+      
+      // Create test SERP job with special test flag
+      const job = await storage.createSerpJob({
+        keywords: [keyword],
+        minRank: 2,
+        maxRank: 15,
+        status: "pending",
+        currentStep: "discovering_blogs",
+        totalSteps: 3,
+        completedSteps: 0,
+        progress: 0,
+        // Add test metadata
+        results: {
+          testMode: true,
+          configName,
+          testConfig: config || {},
+          startTime: new Date().toISOString()
+        } as any
+      });
+
+      // Start analysis with test configuration
+      console.log(`🧪 [SANDBOX] Created test job ${job.id}, starting analysis...`);
+      
+      // Use the existing analysis function but mark as test
+      processSerpAnalysisJob(job.id, [keyword], 2, 15, 10, true, {
+        enableLKMode: false,
+        preferCompound: true,
+        testMode: true,
+        testConfig: config
+      });
+
+      res.json({ 
+        jobId: job.id,
+        message: `Test job started for keyword "${keyword}" with ${configName} configuration`,
+        testMode: true
+      });
+
+    } catch (error) {
+      console.error('🧪 [SANDBOX] Error starting test job:', error);
+      res.status(500).json({ error: "Failed to start test job" });
+    }
+  });
+
+  // Get test jobs list
+  app.get("/api/serp/test/jobs", async (req, res) => {
+    try {
+      const allJobs = await storage.listSerpJobs(50);
+      
+      // Filter for test jobs (those with testMode in results)
+      const testJobs = allJobs.filter(job => 
+        job.results && 
+        typeof job.results === 'object' && 
+        (job.results as any).testMode === true
+      );
+
+      console.log(`🧪 [SANDBOX] Retrieved ${testJobs.length} test jobs out of ${allJobs.length} total jobs`);
+
+      res.json(testJobs);
+    } catch (error) {
+      console.error('🧪 [SANDBOX] Error fetching test jobs:', error);
+      res.status(500).json({ error: "Failed to fetch test jobs" });
+    }
+  });
+
   // Get SERP job results in v8 contract format (comprehensive tier recording)
   app.get("/api/serp/jobs/:jobId/results", async (req, res) => {
     try {
