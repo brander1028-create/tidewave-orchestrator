@@ -133,7 +133,7 @@ export const blogTargets = pgTable("blog_targets", {
   windowMax: integer("window_max").default(10),
   scheduleCron: varchar("schedule_cron").default("0 * * * *"), // 기본 1시간
   owner: varchar("owner").notNull(),
-  active: boolean("active").default(true),
+  active: boolean("active").default(true).notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -150,7 +150,7 @@ export const productTargets = pgTable("product_targets", {
   windowMax: integer("window_max").default(40),
   scheduleCron: varchar("schedule_cron").default("0 * * * *"),
   owner: varchar("owner").notNull(),
-  active: boolean("active").default(true),
+  active: boolean("active").default(true).notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

@@ -1,0 +1,120 @@
+Replit 패치요청 v7.12 — “키워드 추가 반영·진행표시·칩 정리(최종 정렬)”
+0) 즉시 진단 (1분 체크)
+
+코드베이스에서 엔드포인트 혼용 여부 검색:
+
+rg -n "/api/blog-targets|/api/targets/blog" -S
+
+
+→ 둘 다 나오면 불일치. 이번 패치에서 단일 표준 /api/targets/blog 로 통일(백엔드에 alias도 추가).
+
+A) 백엔드 정렬(안전한 양방향 alias)
+
+표준 경로
+
+GET /api/targets/blog?expand=keywords
+
+POST /api/targets/blog/:id/keywords (body: { add?: string[], remove?: string[] })
+
+호환 alias (기존 코드 보호용)
+
+GET /api/blog-targets → 위 표준으로 프록시
+
+POST /api/blog-targets/:id/keywords → 위 표준으로 프록시
+
+응답 형태 고정
+
+{
+  "id":"...", "nickname":"...", "url":"...",
+  "keywords":["홍삼","홍삼스틱"]   // 반드시 포함
+}
+
+
+랭크 체크 입력원 교정
+POST /api/rank/blog/check 는 target_keywords 테이블 기준으로 작업 목록 생성(선택 키워드 있으면 교집합).
+
+DoD-백엔드: 위 4개 경로 모두 200, 응답에 keywords[] 포함. rank/blog/check?dryrun=1 응답에 planned 수가 target×keyword 와 일치.
+
+B) 프론트 교정 — “단일 소스 + 낙관적 업데이트”
+
+단일 소스
+
+useQuery(['blogTargets',{expand:'keywords'}], api.targets.blog.list) 결과를 페이지 유일 소스로 사용.
+
+상단 칩 state 제거(필터용만 남기고 데이터 소스 아님).
+
+추가/삭제 배선
+
+추가: api.targets.blog.patchKeywords(id,{add:[kw]})
+
+삭제: 액션열(X) → patchKeywords(id,{remove:[kw]})
+
+invalidate 금지, queryClient.setQueryData로 해당 타겟의 keywords[]만 즉시 반영(낙관적).
+
+키워드 칩 영역 정리
+
+칩의 X 아이콘 제거(혼선 방지).
+
+키워드 관리는 테이블 액션열에서만 수행.
+
+DoD-프론트(반영): 키워드 추가 직후 하단 리스트가 즉시 1행 증가(새로고침 불필요). 칩의 X가 사라짐.
+
+C) 진행표시/로딩 (버튼·상단바·행별)
+
+“전체 체크 시작” 클릭 시:
+
+버튼: 스피너 + 진행 중… (0/N)
+
+상단 얇은 프로그레스바(%)
+
+행별 스피너(해당 타겟 처리 중일 때만)
+
+집계 로직:
+
+dryrun=1으로 총 N 먼저 받기 → 진행률 계산
+
+각 배치 완료 때 processed++ → UI 갱신
+
+DoD-진행: 네트워크 탭에 dryrun 1회 + 실제 호출, 버튼 라벨 카운팅, 상단바 %가 증가.
+
+D) 테이블 UX 확정
+
+컬럼: 키워드 [조회량][점수] | 현재 | Δ | 유지 n일 | 바로가기 | 트렌드 | 마지막 체크 | 액션(보기/재실행/알림/해제X)
+
+검색: 키워드/닉네임/URL
+
+필터: 노출/미노출/유지≥n/Δ≥N
+
+정렬: 최근업데이트/Δ/현재/조회량/점수
+
+DoD-테이블: 액션열의 해제(X) 로 키워드 해제가 정상 동작(즉시 반영).
+
+E) 스모크 테스트 (복붙 실행)
+# 1) 목록(확장)
+curl -s "http://localhost:3000/api/targets/blog?expand=keywords" | jq '.[0]'
+
+# 2) 매핑 추가
+curl -sX POST "http://localhost:3000/api/targets/blog/<id>/keywords" \
+ -H "Content-Type: application/json" -d '{"add":["홍삼 효능"]}' | jq .
+
+# 3) 매핑 해제
+curl -sX POST "http://localhost:3000/api/targets/blog/<id>/keywords" \
+ -H "Content-Type: application/json" -d '{"remove":["홍삼 효능"]}' | jq .
+
+# 4) 드라이런으로 계획량 확인
+curl -sX POST "http://localhost:3000/api/rank/blog/check?dryrun=1" \
+ -H "Content-Type: application/json" -d '{"target_ids":[]}' | jq .
+
+F) 원인 정리(왜 그대로처럼 보였나?)
+
+프론트가 로컬 칩 state를 보여주고, 테이블은 서버 응답을 보여줘서 두 소스가 불일치.
+
+백엔드도 /api/blog-targets vs /api/targets/blog 혼용으로 추가는 됐는데 리스트는 다른 경로를 조회 → 화면상 “그대로”.
+
+G) 제출물(간단)
+
+① 키워드 추가 전/후 리스트 캡처(새로고침 없이 반영)
+
+② 진행표시(버튼·상단바·행별) 캡처
+
+③ targets/blog?expand=keywords 응답 JSON 1건

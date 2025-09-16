@@ -393,6 +393,173 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ===== v7.12 표준 경로 /api/targets/blog =====
+  // 표준: GET /api/targets/blog?expand=keywords
+  app.get("/api/targets/blog", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      // 표준: 항상 keywords 포함
+      const targets = await storage.getBlogTargetsWithKeywords(owner);
+      res.json(targets);
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 표준: GET /api/targets/blog/:id
+  app.get("/api/targets/blog/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const target = await storage.getBlogTargetById(owner, id);
+      if (!target) {
+        return res.status(404).json({ message: "블로그 타겟을 찾을 수 없습니다" });
+      }
+      
+      // 키워드도 포함하여 반환
+      const keywords = await storage.getTargetKeywords(id);
+      res.json({
+        ...target,
+        keywords: keywords.map(tk => tk.keywordText)
+      });
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 표준: POST /api/targets/blog
+  app.post("/api/targets/blog", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = insertBlogTargetSchema.safeParse({
+        ...req.body,
+        owner
+      });
+      
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 블로그 타겟 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.createBlogTarget(validation.data);
+      
+      // 표준: 키워드 필드도 포함하여 반환
+      const keywords = await storage.getTargetKeywords(target.id);
+      res.status(201).json({
+        ...target,
+        keywords: keywords.map(tk => tk.keywordText)
+      });
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 표준: PATCH /api/targets/blog/:id
+  app.patch("/api/targets/blog/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validation = updateBlogTargetSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 블로그 타겟 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.updateBlogTargetByOwner(owner, id, validation.data);
+      if (!target) {
+        return res.status(404).json({ message: "블로그 타겟을 찾을 수 없습니다" });
+      }
+      
+      // 표준: 키워드 필드도 포함하여 반환
+      const keywords = await storage.getTargetKeywords(target.id);
+      res.json({
+        ...target,
+        keywords: keywords.map(tk => tk.keywordText)
+      });
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 수정에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 표준: DELETE /api/targets/blog/:id
+  app.delete("/api/targets/blog/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const deleted = await storage.deleteBlogTargetByOwner(owner, id);
+      if (!deleted) {
+        return res.status(404).json({ message: "블로그 타겟을 찾을 수 없습니다" });
+      }
+      
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ message: "블로그 타겟 삭제에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 표준: POST /api/targets/blog/:id/keywords
+  app.post("/api/targets/blog/:id/keywords", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = targetKeywordsManageSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 키워드 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+
+      const { add, remove, addedBy } = validation.data;
+      let result: any[] = [];
+
+      // 키워드 추가
+      if (add && add.length > 0) {
+        result = await storage.addTargetKeywords(owner, id, add, addedBy || owner);
+      }
+
+      // 키워드 제거
+      if (remove && remove.length > 0) {
+        await storage.removeTargetKeywords(owner, id, remove);
+        result = await storage.getTargetKeywords(id);
+      }
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ message: "키워드 관리에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // ===== 호환성 alias: 기존 /api/blog-targets 경로들을 표준으로 프록시 =====
+  
   // v6 Product Targets API
   app.get("/api/product-targets", async (req, res) => {
     try {

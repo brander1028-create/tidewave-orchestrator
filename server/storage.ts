@@ -566,7 +566,8 @@ export class DatabaseStorage implements IStorage {
   async createBlogTarget(data: InsertBlogTarget): Promise<BlogTarget> {
     const insertData = {
       ...data,
-      queries: data.queries as string[]
+      queries: data.queries as string[],
+      active: data.active ?? true  // 기본값을 true로 설정하여 getBlogTargets에서 조회되도록 함
     };
     const [target] = await db.insert(blogTargets).values([insertData]).returning();
     if (!target) {
@@ -1463,13 +1464,14 @@ export class DatabaseStorage implements IStorage {
     // 먼저 블로그 타겟들 조회 (소유권 필터링 적용)
     const targets = await this.getBlogTargets(owner);
     
-    // 각 타겟에 대해 키워드 목록 조회
+    // 각 타겟에 대해 키워드 목록 조회 - 키워드가 없어도 타겟은 포함
     const result = [];
     for (const target of targets) {
       const keywords = await this.getTargetKeywords(target.id);
       result.push({
         ...target,
-        keywords: keywords.map(tk => tk.keywordText)
+        // 키워드가 없으면 빈 배열 또는 기존 queries를 fallback으로 사용
+        keywords: keywords.length > 0 ? keywords.map(tk => tk.keywordText) : (target.queries || [])
       });
     }
 
@@ -2478,7 +2480,7 @@ export class MemStorage implements IStorage {
       windowMin: data.windowMin ?? null,
       windowMax: data.windowMax ?? null,
       scheduleCron: data.scheduleCron ?? null,
-      active: data.active ?? null,
+      active: data.active ?? true,  // 기본값을 true로 설정하여 getBlogTargets에서 조회되도록 함
       createdAt: now,
     };
     this.blogTargets.set(id, target);
@@ -3376,7 +3378,8 @@ export class MemStorage implements IStorage {
       const keywords = await this.getTargetKeywords(target.id);
       result.push({
         ...target,
-        keywords: keywords.map(tk => tk.keywordText)
+        // 키워드가 없으면 빈 배열 또는 기존 queries를 fallback으로 사용
+        keywords: keywords.length > 0 ? keywords.map(tk => tk.keywordText) : (target.queries || [])
       });
     }
 
