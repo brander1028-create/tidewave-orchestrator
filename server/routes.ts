@@ -18,7 +18,9 @@ import {
   insertGroupIndexDailySchema,
   insertRankAggDaySchema,
   insertCollectionRuleSchema,
-  insertCollectionStateSchema
+  insertCollectionStateSchema,
+  insertRollingAlertSchema,
+  insertDashboardSettingsSchema
 } from "@shared/schema";
 import { naverBlogScraper } from "./blog-scraper";
 import { z } from "zod";
@@ -1456,6 +1458,314 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(indexData);
     } catch (error) {
       res.status(500).json({ message: "그룹 지수 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v7 Database Page APIs - 데이터베이스 페이지용 API 엔드포인트들
+  
+  // 키워드 보관소 API
+  app.get("/api/db/keywords", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const keywords = await storage.getKeywordRepository(owner);
+      res.json(keywords);
+    } catch (error) {
+      res.status(500).json({ message: "키워드 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/db/keywords/:keyword/status", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { keyword } = req.params;
+      const { status } = req.body;
+      
+      if (!status || !['active', 'paused', 'disabled'].includes(status)) {
+        return res.status(400).json({ message: "유효하지 않은 상태입니다" });
+      }
+      
+      const success = await storage.updateKeywordStatus(owner, decodeURIComponent(keyword), status);
+      if (!success) {
+        return res.status(404).json({ message: "키워드를 찾을 수 없습니다" });
+      }
+      
+      res.json({ message: "키워드 상태가 업데이트되었습니다" });
+    } catch (error) {
+      res.status(500).json({ message: "키워드 상태 업데이트에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 타겟 관리 API
+  app.get("/api/db/targets", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const targets = await storage.getTargetManagement(owner);
+      res.json(targets);
+    } catch (error) {
+      res.status(500).json({ message: "타겟 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/db/targets/:id/schedule", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { id } = req.params;
+      const { schedule } = req.body;
+      
+      if (!schedule) {
+        return res.status(400).json({ message: "스케줄이 필요합니다" });
+      }
+      
+      const success = await storage.updateTargetSchedule(owner, id, schedule);
+      if (!success) {
+        return res.status(404).json({ message: "타겟을 찾을 수 없습니다" });
+      }
+      
+      res.json({ message: "타겟 스케줄이 업데이트되었습니다" });
+    } catch (error) {
+      res.status(500).json({ message: "타겟 스케줄 업데이트에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 스냅샷 집계 API
+  app.get("/api/db/snapshots/agg", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { range = "7d" } = req.query;
+      const snapshots = await storage.getSnapshotAggregation(owner, range as string);
+      res.json(snapshots);
+    } catch (error) {
+      res.status(500).json({ message: "스냅샷 집계 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 수집 규칙 API
+  app.get("/api/db/collection-rules", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const rules = await storage.getCollectionRules(owner);
+      res.json(rules);
+    } catch (error) {
+      res.status(500).json({ message: "수집 규칙 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/db/collection-rules", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validatedData = insertCollectionRuleSchema.parse({
+        ...req.body,
+        owner // 자동으로 owner 설정
+      });
+      
+      const rule = await storage.createCollectionRule(validatedData);
+      res.status(201).json(rule);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ message: "잘못된 요청 데이터입니다", errors: error.errors });
+      } else {
+        res.status(500).json({ message: "수집 규칙 생성에 실패했습니다", error: String(error) });
+      }
+    }
+  });
+
+  app.patch("/api/db/collection-rules/:id", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { id } = req.params;
+      const updates = req.body;
+      
+      // owner 변경 방지
+      delete updates.owner;
+      delete updates.id;
+      delete updates.createdAt;
+      
+      const updated = await storage.updateCollectionRuleByOwner(owner, id, updates);
+      if (!updated) {
+        return res.status(404).json({ message: "수집 규칙을 찾을 수 없습니다" });
+      }
+      
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "수집 규칙 업데이트에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.delete("/api/db/collection-rules/:id", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { id } = req.params;
+      const deleted = await storage.deleteCollectionRuleByOwner(owner, id);
+      if (!deleted) {
+        return res.status(404).json({ message: "수집 규칙을 찾을 수 없습니다" });
+      }
+      
+      res.json({ message: "수집 규칙이 삭제되었습니다" });
+    } catch (error) {
+      res.status(500).json({ message: "수집 규칙 삭제에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 토큰 사용량 통계 API
+  app.get("/api/db/token-usage", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const stats = await storage.getTokenUsageStats(owner);
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ message: "토큰 사용량 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v7 Dashboard APIs - Rolling Alerts for Top Ticker
+  app.get("/api/alerts/rolling", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { active } = req.query;
+      const isActive = active === 'true' ? true : active === 'false' ? false : undefined;
+      
+      const alerts = await storage.getRollingAlerts(owner, isActive);
+      res.json(alerts);
+    } catch (error) {
+      res.status(500).json({ message: "롤링 알림 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/alerts/rolling", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validation = insertRollingAlertSchema.safeParse({
+        ...req.body,
+        owner
+      });
+      
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 롤링 알림 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const alert = await storage.createRollingAlert(validation.data);
+      res.status(201).json(alert);
+    } catch (error) {
+      res.status(500).json({ message: "롤링 알림 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/alerts/rolling/:id", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { id } = req.params;
+      const { isActive } = req.body;
+      
+      if (typeof isActive !== 'boolean') {
+        return res.status(400).json({ message: "isActive는 boolean 타입이어야 합니다" });
+      }
+      
+      const updated = await storage.updateRollingAlertStatus(owner, id, isActive);
+      if (!updated) {
+        return res.status(404).json({ message: "롤링 알림을 찾을 수 없습니다" });
+      }
+      
+      res.json({ message: "롤링 알림 상태가 업데이트되었습니다" });
+    } catch (error) {
+      res.status(500).json({ message: "롤링 알림 업데이트에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v7 Dashboard APIs - Dashboard Settings for Editable Card Grid
+  app.get("/api/dashboard/settings", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const settings = await storage.getDashboardSettings(owner);
+      res.json(settings);
+    } catch (error) {
+      res.status(500).json({ message: "대시보드 설정 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/dashboard/settings", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { cardId } = req.body;
+      if (!cardId) {
+        return res.status(400).json({ message: "cardId는 필수 항목입니다" });
+      }
+      
+      const validation = insertDashboardSettingsSchema.omit({ owner: true }).safeParse(req.body);
+      
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 대시보드 설정 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const settings = await storage.updateDashboardSettings(owner, cardId, validation.data);
+      res.json(settings);
+    } catch (error) {
+      res.status(500).json({ message: "대시보드 설정 저장에 실패했습니다", error: String(error) });
     }
   });
 

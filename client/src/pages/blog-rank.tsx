@@ -60,8 +60,6 @@ interface RankingData {
   keyword: string;
   rank: number;
   change: number;
-  page: number;
-  position: number;
   url: string;
   trend: number[];
   status: "active" | "warning" | "error";
@@ -87,6 +85,14 @@ export default function BlogRank() {
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
   const [selectedPeriod, setSelectedPeriod] = React.useState("30d");
+  
+  // 고급 검색/필터 상태
+  const [searchKeyword, setSearchKeyword] = React.useState("");
+  const [rankRangeFilter, setRankRangeFilter] = React.useState("all");
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const [sortOption, setSortOption] = React.useState("recent");
+  const [exposureFilter, setExposureFilter] = React.useState("all");
+  
   const queryClient = useQueryClient();
   
   // Fetch tracked targets from API (블로그만 필터링)
@@ -173,8 +179,6 @@ export default function BlogRank() {
           keyword: target.query || `키워드 ${index + 1}`,
           rank: baseRank,
           change: baseChange,
-          page: Math.floor((baseRank - 1) / 10) + 1,
-          position: ((baseRank - 1) % 10) + 1,
           url: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
           trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
           status: target.enabled ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
@@ -187,6 +191,77 @@ export default function BlogRank() {
 
   // Current ranking data (블로그만)
   const currentRankingData = convertTargetsToRankingData(trackedTargets);
+
+  // 고급 필터링/정렬 로직
+  const filteredAndSortedData = React.useMemo(() => {
+    let filtered = currentRankingData;
+
+    // 키워드 검색 필터
+    if (searchKeyword.trim()) {
+      filtered = filtered.filter(item => 
+        item.keyword.toLowerCase().includes(searchKeyword.toLowerCase())
+      );
+    }
+
+    // 순위 범위 필터
+    if (rankRangeFilter !== "all") {
+      switch (rankRangeFilter) {
+        case "1-10":
+          filtered = filtered.filter(item => item.rank >= 1 && item.rank <= 10);
+          break;
+        case "11-20":
+          filtered = filtered.filter(item => item.rank >= 11 && item.rank <= 20);
+          break;
+        case "21-50":
+          filtered = filtered.filter(item => item.rank >= 21 && item.rank <= 50);
+          break;
+        case "51-100":
+          filtered = filtered.filter(item => item.rank >= 51 && item.rank <= 100);
+          break;
+        case "100+":
+          filtered = filtered.filter(item => item.rank > 100);
+          break;
+      }
+    }
+
+    // 상태 필터
+    if (statusFilter !== "all") {
+      filtered = filtered.filter(item => item.status === statusFilter);
+    }
+
+    // 노출 필터
+    if (exposureFilter !== "all") {
+      if (exposureFilter === "exposed") {
+        filtered = filtered.filter(item => item.exposed);
+      } else if (exposureFilter === "hidden") {
+        filtered = filtered.filter(item => !item.exposed);
+      }
+    }
+
+    // 정렬
+    const sorted = [...filtered].sort((a, b) => {
+      switch (sortOption) {
+        case "recent":
+          return 0; // 기본 순서 유지
+        case "volume":
+          return 0; // 조회량 데이터가 없으므로 기본 순서
+        case "score":
+          return 0; // 점수 데이터가 없으므로 기본 순서
+        case "rank-asc":
+          return a.rank - b.rank; // 순위 낮은 순 (1위가 먼저)
+        case "rank-desc":
+          return b.rank - a.rank; // 순위 높은 순 (100위가 먼저)
+        case "change":
+          return Math.abs(b.change) - Math.abs(a.change); // 변동 큰 순
+        case "keyword":
+          return a.keyword.localeCompare(b.keyword); // 키워드 가나다순
+        default:
+          return 0;
+      }
+    });
+
+    return sorted;
+  }, [currentRankingData, searchKeyword, rankRangeFilter, statusFilter, sortOption, exposureFilter]);
 
   // Handle form submission
   const onSubmit = (data: AddManualBlogForm) => {
@@ -474,14 +549,6 @@ export default function BlogRank() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground">페이지 범위</Label>
-                  <div className="flex gap-2 mt-1">
-                    <Input type="number" placeholder="1" defaultValue="1" className="flex-1" />
-                    <span className="self-center text-muted-foreground">~</span>
-                    <Input type="number" placeholder="10" defaultValue="10" className="flex-1" />
-                  </div>
-                </div>
               </CardContent>
             </Card>
 
@@ -566,41 +633,129 @@ export default function BlogRank() {
                 히스토리 보기
               </Button>
             </div>
-            <div className="flex gap-4 items-center">
-              <div className="flex items-center gap-3">
-                <Label className="text-sm text-muted-foreground">노출 필터:</Label>
-                <ExposureFilter
-                  value="all"
-                  onChange={(value) => {
-                    console.log("Filter changed:", value);
-                  }}
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <Label className="text-sm text-muted-foreground">정렬:</Label>
-                <Select defaultValue="recent">
-                  <SelectTrigger className="w-32">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="recent">최근 업데이트순</SelectItem>
-                    <SelectItem value="volume">조회량순</SelectItem>
-                    <SelectItem value="score">점수순</SelectItem>
-                    <SelectItem value="rank-asc">순위 높은순</SelectItem>
-                    <SelectItem value="rank-desc">순위 낮은순</SelectItem>
-                    <SelectItem value="change">변동 큰순</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
           </div>
+
+          {/* 고급 검색/필터 패널 */}
+          <Card className="bg-background/50">
+            <CardContent className="p-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+                
+                {/* 키워드 검색 */}
+                <div className="space-y-2">
+                  <Label className="text-sm text-muted-foreground">키워드 검색</Label>
+                  <div className="relative">
+                    <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
+                    <Input
+                      placeholder="키워드 검색..."
+                      value={searchKeyword}
+                      onChange={(e) => setSearchKeyword(e.target.value)}
+                      className="pl-10"
+                      data-testid="input-search-keyword"
+                    />
+                  </div>
+                </div>
+
+                {/* 순위 범위 필터 */}
+                <div className="space-y-2">
+                  <Label className="text-sm text-muted-foreground">순위 범위</Label>
+                  <Select value={rankRangeFilter} onValueChange={setRankRangeFilter}>
+                    <SelectTrigger data-testid="select-rank-range">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">전체</SelectItem>
+                      <SelectItem value="1-10">1-10위</SelectItem>
+                      <SelectItem value="11-20">11-20위</SelectItem>
+                      <SelectItem value="21-50">21-50위</SelectItem>
+                      <SelectItem value="51-100">51-100위</SelectItem>
+                      <SelectItem value="100+">100위+</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* 상태 필터 */}
+                <div className="space-y-2">
+                  <Label className="text-sm text-muted-foreground">상태</Label>
+                  <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <SelectTrigger data-testid="select-status">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">전체</SelectItem>
+                      <SelectItem value="active">정상</SelectItem>
+                      <SelectItem value="warning">주의</SelectItem>
+                      <SelectItem value="error">오류</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* 노출 필터 */}
+                <div className="space-y-2">
+                  <Label className="text-sm text-muted-foreground">노출 상태</Label>
+                  <Select value={exposureFilter} onValueChange={setExposureFilter}>
+                    <SelectTrigger data-testid="select-exposure">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">전체</SelectItem>
+                      <SelectItem value="exposed">노출됨</SelectItem>
+                      <SelectItem value="hidden">숨겨짐</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* 정렬 */}
+                <div className="space-y-2">
+                  <Label className="text-sm text-muted-foreground">정렬</Label>
+                  <Select value={sortOption} onValueChange={setSortOption}>
+                    <SelectTrigger data-testid="select-sort">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="recent">최근 업데이트순</SelectItem>
+                      <SelectItem value="keyword">키워드 가나다순</SelectItem>
+                      <SelectItem value="rank-asc">순위 높은순 (1위부터)</SelectItem>
+                      <SelectItem value="rank-desc">순위 낮은순 (100위부터)</SelectItem>
+                      <SelectItem value="change">변동 큰순</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+              </div>
+              
+              {/* 필터 결과 요약 */}
+              <div className="mt-4 pt-4 border-t border-border/50">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground" data-testid="text-filter-summary">
+                    전체 {currentRankingData.length}개 중 {filteredAndSortedData.length}개 표시
+                  </span>
+                  {(searchKeyword || rankRangeFilter !== "all" || statusFilter !== "all" || exposureFilter !== "all") && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setSearchKeyword("");
+                        setRankRangeFilter("all");
+                        setStatusFilter("all");
+                        setExposureFilter("all");
+                        setSortOption("recent");
+                      }}
+                      data-testid="button-clear-filters"
+                    >
+                      필터 초기화
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Ranking Table */}
           <DataTable
             columns={rankingColumns}
-            data={currentRankingData}
+            data={filteredAndSortedData}
             title="블로그 순위 현황"
-            description={`총 ${currentRankingData.length}개 키워드`}
+            description={`총 ${filteredAndSortedData.length}개 키워드 표시 중`}
             onRowClick={(row) => setSelectedRankingDetail(row)}
           />
         </TabsContent>

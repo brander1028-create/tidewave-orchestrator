@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, json, decimal } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, boolean, json, decimal, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -266,6 +266,36 @@ export const listingOptimization = pgTable("listing_optimization", {
   improvements: json("improvements"),
 });
 
+// v7 롤링 알림 (Top Ticker용)
+export const rollingAlerts = pgTable("rolling_alerts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  owner: varchar("owner").notNull(), // multi-tenant
+  type: varchar("type").notNull(), // 'alert' | 'success' | 'warning' | 'info'
+  icon: varchar("icon"), // lucide icon name
+  message: text("message").notNull(),
+  time: varchar("time").notNull(), // "30분 전", "1시간 전" 등 
+  priority: integer("priority").notNull().default(1),
+  isActive: boolean("is_active").notNull().default(true),
+  targetId: varchar("target_id"), // 관련 타겟 ID (optional)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// v7 대시보드 설정 (사용자별 카드 설정)
+export const dashboardSettings = pgTable("dashboard_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  owner: varchar("owner").notNull(), // multi-tenant
+  cardId: varchar("card_id").notNull(), // 카드 식별자
+  visible: boolean("visible").notNull().default(true),
+  order: integer("order").notNull().default(1),
+  size: varchar("size").default("medium"), // 'small' | 'medium' | 'large'
+  position: json("position"), // { x: number, y: number } 등 위치 정보
+  config: json("config"), // 카드별 추가 설정
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  // 한 사용자당 카드별로 하나의 설정만 가능
+  uniqueOwnerCard: unique("unique_owner_card").on(table.owner, table.cardId),
+}));
+
 // Type exports
 export type RankTimeSeries = typeof rankTimeSeries.$inferSelect;
 export type InsertRankTimeSeries = z.infer<typeof insertRankTimeSeriesSchema>;
@@ -440,6 +470,9 @@ export type InsertCollectionRule = z.infer<typeof insertCollectionRuleSchema>;
 export type CollectionState = typeof collectionState.$inferSelect;
 export type InsertCollectionState = z.infer<typeof insertCollectionStateSchema>;
 
+export type RollingAlert = typeof rollingAlerts.$inferSelect;
+export type DashboardSettings = typeof dashboardSettings.$inferSelect;
+
 // v6 Insert 스키마들
 export const insertBlogTargetSchema = createInsertSchema(blogTargets).omit({
   id: true,
@@ -509,3 +542,17 @@ export const insertCollectionStateSchema = createInsertSchema(collectionState).o
   lastCheckAt: true,
   autoStoppedAt: true,
 });
+
+// v7 Dashboard APIs Insert 스키마들
+export const insertRollingAlertSchema = createInsertSchema(rollingAlerts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertDashboardSettingsSchema = createInsertSchema(dashboardSettings).omit({
+  id: true,
+  updatedAt: true,
+});
+
+export type InsertRollingAlert = z.infer<typeof insertRollingAlertSchema>;
+export type InsertDashboardSettings = z.infer<typeof insertDashboardSettingsSchema>;
