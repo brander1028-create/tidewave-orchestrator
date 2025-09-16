@@ -68,6 +68,18 @@ interface RankingData {
   streakDays: number;
 }
 
+// v7.12.2: Task 타입 정의
+interface Task {
+  target_id: string;
+  nickname: string;
+  query: string;
+}
+
+interface Plan {
+  total: number;
+  tasks: Task[];
+}
+
 // Form schema for manual blog entry
 const addManualBlogSchema = z.object({
   keyword: z.string().min(1, "키워드를 입력해주세요"),
@@ -92,6 +104,14 @@ export default function BlogRank() {
   const [statusFilter, setStatusFilter] = React.useState("all");
   const [sortOption, setSortOption] = React.useState("recent");
   const [exposureFilter, setExposureFilter] = React.useState("all");
+  
+  // v7.12.2: 배치 러너 상태
+  const [isRunning, setIsRunning] = React.useState(false);
+  const [progress, setProgress] = React.useState({ done: 0, total: 0, text: '준비 중...' });
+  const [currentTask, setCurrentTask] = React.useState<{ query: string; nickname: string } | null>(null);
+  const [cancelled, setCancelled] = React.useState(false);
+  const [failures, setFailures] = React.useState<Array<{ task: any; error: string }>>([]);
+  const [rowLoadingState, setRowLoadingState] = React.useState<Set<string>>(new Set());
   
   const queryClient = useQueryClient();
   
@@ -277,6 +297,147 @@ export default function BlogRank() {
     if (confirm("정말로 이 키워드 추적을 중단하시겠습니까?")) {
       deleteTargetMutation.mutate(targetId);
     }
+  };
+
+  // v7.12.2: 배치 실행 로직
+  const runAllChecks = React.useCallback(async () => {
+    setIsRunning(true);
+    setCancelled(false);
+    setFailures([]);
+    setProgress({ done: 0, total: 0, text: '준비중...' });
+    setCurrentTask(null);
+
+    try {
+      // 1) 계획 조회
+      const selectedBlogIds = trackedTargets.map(t => t.id);
+      const selectedKeywords = trackedTargets.flatMap(t => t.keywords || t.queries || [t.title]).filter(Boolean);
+      
+      const plan: Plan = await rankApi.plan({ 
+        kind: 'blog',
+        target_ids: selectedBlogIds.length > 0 ? selectedBlogIds : undefined,
+        query_override: selectedKeywords.length > 0 ? selectedKeywords : undefined
+      });
+
+      if (!plan.total || plan.tasks.length === 0) {
+        toast({
+          title: "체크할 대상 없음",
+          description: "체크할 키워드/타겟이 없습니다.",
+          variant: "destructive"
+        });
+        setIsRunning(false);
+        return;
+      }
+
+      setProgress({ done: 0, total: plan.total, text: '시작합니다' });
+
+      // 2) 배치 실행 (동시성 3개)
+      const tasks = plan.tasks;
+      const CONCURRENCY = 3;
+      let done = 0;
+      let active = 0;
+      let i = 0;
+      let completedCount = 0; // 완료 추적 카운터
+
+      // 행별 로딩 상태 설정
+      const taskKeys = tasks.map((t: Task) => `${t.target_id}-${t.query}`);
+      setRowLoadingState(new Set(taskKeys));
+
+      const runNext = async () => {
+        if (cancelled || i >= tasks.length) return;
+        
+        const task = tasks[i++];
+        active++;
+        setCurrentTask({ query: task.query, nickname: task.nickname });
+
+        try {
+          await rankApi.blogCheck({ 
+            target_ids: [task.target_id], 
+            query_override: [task.query] 
+          });
+          
+          done++;
+          setRowLoadingState(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(`${task.target_id}-${task.query}`);
+            return newSet;
+          });
+        } catch (error) {
+          setFailures(prev => [...prev, { task, error: String(error) }]);
+          setRowLoadingState(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(`${task.target_id}-${task.query}`);
+            return newSet;
+          });
+        }
+        
+        // 완료 카운터 증가 (성공/실패 무관)
+        completedCount++;
+
+        active--;
+        setProgress({ 
+          done, 
+          total: tasks.length, 
+          text: `${task.query} / ${task.nickname}` 
+        });
+
+        if (i < tasks.length && !cancelled) {
+          runNext();
+        }
+      };
+
+      // 완료 대기 함수 정의
+      const checkCompletion = () => {
+        if (completedCount >= tasks.length || cancelled) {
+          setRowLoadingState(new Set());
+          setIsRunning(false);
+          setCurrentTask(null);
+          
+          const successCount = done;
+          const failCount = completedCount - done;
+          
+          toast({
+            title: "체크 완료",
+            description: `성공: ${successCount}개, 실패: ${failCount}개`,
+            variant: failCount > 0 ? "destructive" : "default"
+          });
+          
+          // 데이터 새로고침
+          queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
+          return;
+        }
+        setTimeout(checkCompletion, 500);
+      };
+
+      // 동시 실행 시작
+      for (let k = 0; k < Math.min(CONCURRENCY, tasks.length); k++) {
+        runNext();
+      }
+      
+      // 완료 대기 시작
+      checkCompletion();
+
+    } catch (error) {
+      setIsRunning(false);
+      setRowLoadingState(new Set());
+      setCurrentTask(null);
+      toast({
+        title: "체크 실패",
+        description: `오류: ${String(error)}`,
+        variant: "destructive"
+      });
+    }
+  }, [trackedTargets, cancelled, queryClient]);
+
+  // 취소 처리
+  const handleCancel = () => {
+    setCancelled(true);
+    setIsRunning(false);
+    setRowLoadingState(new Set());
+    setCurrentTask(null);
+    toast({
+      title: "체크 취소됨",
+      description: "사용자가 체크를 중단했습니다."
+    });
   };
 
   // 블로그 순위 테이블 컬럼
@@ -620,14 +781,58 @@ export default function BlogRank() {
           {/* Quick Actions */}
           <div className="flex flex-wrap gap-4 items-center justify-between">
             <div className="flex flex-wrap gap-3">
-              <StartAllChecksButton
-                onClick={() => {
-                  toast({
-                    title: "순위 체크 시작",
-                    description: "블로그 키워드 순위 체크를 진행합니다.",
-                  });
-                }}
-              />
+              <div className="flex items-center gap-3">
+                <StartAllChecksButton
+                  isRunning={isRunning}
+                  disabled={isRunning || trackedTargets.length === 0}
+                  onClick={runAllChecks}
+                />
+                {isRunning && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancel}
+                    className="text-red-600 hover:text-red-700"
+                    data-testid="button-cancel-checks"
+                  >
+                    <X className="w-4 h-4 mr-2" />
+                    중지
+                  </Button>
+                )}
+              </div>
+              
+              {/* v7.12.2: 진행 표시 UI */}
+              {isRunning && (
+                <div className="flex items-center gap-4 min-w-0">
+                  {/* 현재 작업 표시 */}
+                  {currentTask && (
+                    <div className="text-sm text-muted-foreground truncate">
+                      <span className="font-medium">지금:</span>{' '}
+                      <span className="text-blue-600">{currentTask.query}</span>{' '}
+                      <span className="text-muted-foreground">·</span>{' '}
+                      <span>{currentTask.nickname}</span>
+                    </div>
+                  )}
+                  
+                  {/* 진행 상태 및 막대 */}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium whitespace-nowrap">
+                      ({progress.done}/{progress.total})
+                    </span>
+                    <div className="w-20 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-blue-500 transition-all duration-300 ease-out"
+                        style={{ 
+                          width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%` 
+                        }}
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      {progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%
+                    </span>
+                  </div>
+                </div>
+              )}
               <Button variant="outline" className="flex items-center gap-2">
                 <Download className="w-4 h-4" />
                 결과 내보내기

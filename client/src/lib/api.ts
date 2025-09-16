@@ -107,7 +107,44 @@ export const rankApi = {
     return response.json();
   },
 
-  // Start rank check for specific targets
+  // v7.12.2: Get rank check plan (계획 조회)
+  plan: async (params: { 
+    kind?: string; 
+    target_ids?: string[]; 
+    query_override?: string[]; 
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (params.kind) searchParams.append('kind', params.kind);
+    if (params.target_ids) {
+      params.target_ids.forEach(id => searchParams.append('target_ids', id));
+    }
+    if (params.query_override) {
+      params.query_override.forEach(query => searchParams.append('query_override', query));
+    }
+    
+    const response = await apiRequest("GET", `/api/rank/plan?${searchParams.toString()}`);
+    return response.json();
+  },
+
+  // v7.12.2: Blog rank check (개별 실행)
+  blogCheck: async (params: { 
+    target_ids: string[]; 
+    query_override: string[]; 
+  }) => {
+    if (params.target_ids.length !== 1 || params.query_override.length !== 1) {
+      throw new Error('blogCheck는 단일 타겟과 키워드만 지원합니다');
+    }
+    
+    const response = await apiRequest("POST", "/api/rank/blog/check", {
+      targetId: params.target_ids[0],
+      query: params.query_override[0],
+      device: 'mobile',
+      maxPages: 3
+    });
+    return response.json();
+  },
+
+  // Start rank check for specific targets (legacy)
   startCheck: async (targetIds: string[]) => {
     return await apiRequest("POST", "/api/mock/rank/check", { targetIds });
   },
