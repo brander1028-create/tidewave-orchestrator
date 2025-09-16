@@ -1,0 +1,171 @@
+지금 폭주 원인은 두 가지가 겹침
+
+대시보드 설정 자동저장 로직이 렌더→mutate→invalidate→재렌더 무한루프.
+
+요청에 권한 헤더(x-role 등) 가 안 붙어 401이 나고, React Query가 자동 재시도까지 하면서 폭증.
+
+아래 핫픽스 지시문을 Replit에 그대로 붙여서 적용하세요. (UI/서버 모두 안전하게 막음)
+
+🔧 Replit 핫픽스 요청 v7.9 — “무한저장 루프 + 401 폭주” 종결
+0) 목표
+
+대시보드 설정 자동저장 루프 차단(디바운스+동일값 스킵+낙관적 업데이트, 재검증 금지).
+
+모든 API에 권한 헤더 자동 주입, 401 발생 시 재시도 금지.
+
+필요 시 임시 수동 저장 스위치로 즉시 안정화.
+
+1) 공통: API 클라이언트 인터셉터 추가 (client/src/lib/api.ts)
+
+모든 요청에 헤더 주입:
+
+x-role: localStorage.role || 'Admin'
+
+(우리가 owner도 헤더로 본다면) x-owner: localStorage.owner || 'owner-demo'
+
+401/403일 때 retry=0 (React Query 전역 옵션) + 에러 토스트만.
+
+예시(개념):
+
+export const http = (path: string, init: RequestInit = {}) => {
+  const h = new Headers(init.headers || {});
+  h.set('x-role', localStorage.getItem('role') ?? 'Admin');
+  const owner = localStorage.getItem('owner');
+  if (owner) h.set('x-owner', owner);
+  return fetch(path, { ...init, headers: h, credentials: 'include' });
+};
+
+// React Query 기본옵션
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: 0 },
+    mutations: { retry: 0 },
+  },
+});
+
+2) 대시보드 설정 저장 로직 교체 (client/src/pages/dashboard.tsx)
+
+문제 패턴: useEffect(() => mutate(settings), [settings]) + onSuccess → invalidateQueries(['dashboardSettings'])
+→ 새 설정이 들어오며 settings 변경 → 다시 mutate … 무한.
+
+새 패턴 (안전 4종 세트)
+
+디바운스 1초 후 저장.
+
+동일값 스킵(stable stringify/hash로 마지막 저장본과 비교).
+
+저장 후 invalidate 금지 → setQueryData로 낙관적 업데이트.
+
+수동 저장 스위치(AUTO_SAVE=false) 즉시 우회 가능.
+
+const { data: settings } = useQuery(['dashboardSettings', userId], fetchSettings, { keepPreviousData: true });
+
+const saveMutation = useMutation(saveSettings, {
+  onSuccess: (data) => {
+    const key = ['dashboardSettings', userId];
+    queryClient.setQueryData(key, data); // invalidate 금지
+    lastSavedRef.current = stableJSON(data);
+    setDirty(false);
+  },
+  retry: 0,
+});
+
+const lastSavedRef = useRef<string>('');
+const [cards, setCards] = useState<DashboardCards>(settings?.cards ?? []);
+const [dirty, setDirty] = useState(false);
+const AUTO_SAVE = true; // 필요시 false로 내려 안정화
+
+useEffect(() => { if (settings) {
+  setCards(settings.cards);
+  lastSavedRef.current = stableJSON({ cards: settings.cards });
+}}, [settings?.id]);
+
+useEffect(() => {
+  if (!AUTO_SAVE || !dirty) return;
+  const payload = { cards };
+  const snap = stableJSON(payload);
+  if (snap === lastSavedRef.current) return;       // 동일값 스킵
+
+  const t = setTimeout(() => saveMutation.mutate(payload), 1000); // 1s 디바운스
+  return () => clearTimeout(t);
+}, [cards, dirty]);
+
+// 사용자가 카드 배치를 바꿀 때만 dirty=true
+const onCardsChange = (next: DashboardCards) => { setCards(next); setDirty(true); };
+
+// 수동 저장 버튼(옵션)
+const onSaveClick = () => {
+  const payload = { cards };
+  const snap = stableJSON(payload);
+  if (snap !== lastSavedRef.current) saveMutation.mutate(payload);
+};
+
+
+stableJSON은 구조적 동등 비교용 안정화 stringify(키 정렬). Lodash isEqual 써도 됨.
+
+3) 서버: 설정 저장 API에 멱등성(동일값 무시) 추가 (server/routes.ts)
+
+요청 payload 해시(settings_hash)를 계산해 마지막 저장본과 같으면 204 반환(변경 없음).
+
+401 방지를 위해 헤더 검사 로깅:
+
+x-role 누락 시 401 + 명확한 에러 메시지(JSON: {code:'NO_ROLE'}).
+
+의사코드:
+
+app.post('/api/dashboard/settings', zod(validateSettings), async (req,res)=>{
+  const owner = req.headers['x-owner'] ?? 'default';
+  const role  = req.headers['x-role'];
+  if (!role) return res.status(401).json({ code:'NO_ROLE', message:'x-role header required' });
+
+  const hash = hashOf(req.body); // stable hash
+  const last = await db.getSettings(owner);
+  if (last?.hash === hash) return res.status(204).end(); // 멱등
+
+  const saved = await db.saveSettings(owner, { ...req.body, hash });
+  res.json(saved);
+});
+
+4) React Query 무한 재검증 차단
+
+대시보드 설정 관련 쿼리에서 refetchOnWindowFocus:false, refetchOnReconnect:false 지정.
+
+알림 롤링/대시보드 카드도 폴링 간격 최소(예: 30–60s) + staleTime 넉넉히.
+
+5) 임시 안전장치(즉시 안정화)
+
+.env 또는 상수:
+
+DASHBOARD_AUTOSAVE=false         # 급한 상황 시 끔
+DASHBOARD_SAVE_DEBOUNCE_MS=1000
+
+
+버튼 UX: 상단에 [변경사항 저장] 노출(autosave off일 때만 활성화).
+
+6) 수락 기준(DoD)
+
+카드 배치 변경 후 1회만 POST(/api/dashboard/settings) 발생(네트워크 탭 캡처).
+
+새로고침해도 배치 복원.
+
+헤더 누락 시 401이 나더라도 재시도/루프 없음(Retry=0).
+
+서버 로그에 저장 멱등 처리(204 No Content) 케이스가 보임.
+
+7) 원인 요약(왜 이런가?)
+
+자동저장 useEffect가 settings 변화를 직접 의존 → 저장 성공 후 invalidate → settings 변경 → 다시 저장의 고리.
+
+동시에 권한 헤더 미주입으로 401이 나고, React Query가 재시도하면서 호출이 기하급수적으로 늘어남.
+
+8) 빠른 체크리스트
+
+ client/src/lib/api.ts 헤더 주입/Retry=0 반영
+
+ 대시보드 저장 로직을 디바운스+동일값 스킵+낙관적 업데이트로 교체
+
+ 서버 저장 API 멱등 처리(동일 해시 204)
+
+ refetchOnWindowFocus:false 설정
+
+ 필요시 DASHBOARD_AUTOSAVE=false로 즉시 안정화
