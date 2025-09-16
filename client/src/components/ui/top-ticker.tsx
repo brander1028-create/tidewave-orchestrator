@@ -101,11 +101,11 @@ export function TopTicker({ items, speed = 50, className }: TopTickerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
 
-  // API에서 롤링 알림 데이터 가져오기
+  // API에서 롤링 알림 데이터 가져오기 (조회량 상위 우선, 24h 기간)
   const { data: apiAlerts, isLoading } = useQuery<RollingAlert[]>({
     queryKey: ['/api/alerts/rolling'],
     queryFn: async () => {
-      const response = await fetch('/api/alerts/rolling?active=true&limit=10', {
+      const response = await fetch('/api/alerts/rolling?limit=10&since=24h', {
         headers: { 'x-role': 'system' }
       });
       if (!response.ok) {
