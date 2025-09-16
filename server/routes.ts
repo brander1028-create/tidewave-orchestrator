@@ -965,7 +965,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Update algorithm configuration (Admin only)
   app.put('/api/settings/algo', async (req, res) => {
     try {
-      const { algoConfigSchema, UpdateSettingsRequest, updateSettingsSchema } = await import('@shared/config-schema');
+      const { algoConfigSchema, updateSettingsSchema } = await import('@shared/config-schema');
       
       // Validate request body
       const validatedRequest = updateSettingsSchema.parse(req.body);
@@ -998,8 +998,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       await metaSet(db, 'algo_config', newConfig);
       
+      // Invalidate hot-reload cache for immediate effect
+      const { invalidateAlgoConfigCache } = await import('./services/algo-config');
+      invalidateAlgoConfigCache();
+      
       console.log(`✅ [v17 Settings] Algorithm config updated by ${validatedRequest.updatedBy}`);
       console.log(`🔧 [v17 Settings] Engine: ${newConfig.phase2.engine}, Weights: vol=${newConfig.weights.volume}, content=${newConfig.weights.content}`);
+      console.log(`🔥 [v17 Settings] Hot-reload cache invalidated - changes will be live in <30s`);
       
       res.json({ success: true, config: newConfig });
       
@@ -1089,7 +1094,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       await metaSet(db, 'algo_config', restoredConfig);
       
+      // Invalidate hot-reload cache for immediate effect
+      const { invalidateAlgoConfigCache } = await import('./services/algo-config');
+      invalidateAlgoConfigCache();
+      
       console.log(`🔄 [v17 Settings] Algorithm config rolled back to version ${validatedRollback.version}`);
+      console.log(`🔥 [v17 Settings] Hot-reload cache invalidated after rollback`);
       
       res.json({ success: true, config: restoredConfig, rolledBackFrom: validatedRollback.version });
       
