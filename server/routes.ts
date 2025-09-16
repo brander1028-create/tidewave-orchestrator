@@ -1693,6 +1693,94 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // 토큰 사용량 통계 API
+  // v7.11: Operations Stats API for Cost Guard
+  app.get("/api/ops/stats", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      // 시뮬레이션된 운영 통계 (실제로는 Redis나 메트릭 시스템에서 조회)
+      const stats = {
+        api: {
+          totalCalls: Math.floor(Math.random() * 50000) + 10000,
+          successRate: 95.7 + Math.random() * 3,
+          cacheHitRate: 78.3 + Math.random() * 15,
+          errorRate: 2.1 + Math.random() * 2,
+          avgResponseTime: 145 + Math.floor(Math.random() * 100),
+        },
+        costGuard: {
+          autoSuspended: Math.floor(Math.random() * 15) + 3,
+          manuallyPaused: Math.floor(Math.random() * 8) + 1,
+          budgetUtilization: 67.8 + Math.random() * 20,
+          estimatedMonthlyCost: 1250 + Math.floor(Math.random() * 500),
+        },
+        timestamps: {
+          last_rank_agg_day_ts: new Date(Date.now() - Math.random() * 6 * 60 * 60 * 1000).toISOString(),
+          last_group_index_daily_ts: new Date(Date.now() - Math.random() * 12 * 60 * 60 * 1000).toISOString(),
+          last_cost_review_ts: new Date(Date.now() - Math.random() * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ 
+        message: "운영 통계 조회에 실패했습니다", 
+        error: String(error) 
+      });
+    }
+  });
+
+  // v7.11: Auto-Suspend Management API
+  app.post("/api/ops/auto-suspend", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const { targetIds, reason = "최근 30일 Top 미진입" } = req.body;
+      
+      if (!targetIds || !Array.isArray(targetIds)) {
+        return res.status(400).json({ message: "targetIds 배열이 필요합니다" });
+      }
+
+      // 30일 Top 미진입 항목들을 suspend 상태로 변경
+      const suspendResults = await Promise.all(
+        targetIds.map(async (targetId: string) => {
+          // 타겟 상태를 suspended로 변경하고 컬렉션 룰 추가
+          const rule = await storage.createCollectionRule({
+            owner,
+            name: `자동 중지: ${targetId}`,
+            conditions: { 
+              ruleType: "auto_suspend", 
+              targetId, 
+              reason: reason,
+              suspendedAt: new Date().toISOString(),
+            },
+            actions: { suspend: true, resumable: true },
+            priority: 1,
+            active: true,
+          });
+          
+          return { targetId, suspended: true, ruleId: rule.id };
+        })
+      );
+
+      res.json({
+        message: `${suspendResults.length}개 항목이 자동 중지되었습니다`,
+        results: suspendResults,
+      });
+
+    } catch (error) {
+      res.status(500).json({ 
+        message: "자동 중지 처리에 실패했습니다", 
+        error: String(error) 
+      });
+    }
+  });
+
   app.get("/api/db/token-usage", async (req, res) => {
     try {
       const owner = req.headers['x-role'] as string;

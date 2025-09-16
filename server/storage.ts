@@ -1326,7 +1326,7 @@ export class DatabaseStorage implements IStorage {
         eq(rollingAlerts.id, alertId),
         eq(rollingAlerts.owner, owner)
       ));
-    return result.rowCount > 0;
+    return (result.rowCount ?? 0) > 0;
   }
 
   async getDashboardSettings(owner: string): Promise<DashboardSettings[]> {
@@ -3120,6 +3120,10 @@ export class MemStorage implements IStorage {
       id: randomUUID(),
       createdAt: new Date(),
       ...data,
+      targetId: data.targetId ?? null,
+      isActive: data.isActive ?? true,
+      priority: data.priority ?? 5,
+      icon: data.icon ?? null,
     };
     return newAlert;
   }
