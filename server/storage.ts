@@ -135,6 +135,7 @@ export interface IStorage {
 
   // v7 Group Index and Analytics (그룹 인덱스 및 집계)
   getGroupIndexDaily(groupId: string, range?: string): Promise<GroupIndexDaily[]>;
+  insertGroupIndexDaily(data: InsertGroupIndexDaily): Promise<GroupIndexDaily>;
 
   // v7 Rank Aggregation Daily (일일 랭킹 집계)
   getRankAggDay(targetId: string, keyword: string, range?: string): Promise<RankAggDay[]>;
@@ -1066,6 +1067,13 @@ export class DatabaseStorage implements IStorage {
       .values(data)
       .returning();
     return aggDay;
+  }
+
+  async insertGroupIndexDaily(data: InsertGroupIndexDaily): Promise<GroupIndexDaily> {
+    const [groupIndex] = await db.insert(groupIndexDaily)
+      .values(data)
+      .returning();
+    return groupIndex;
   }
 
   // v7 Collection Rules and State Implementation - Owner-aware for security
@@ -2803,6 +2811,16 @@ export class MemStorage implements IStorage {
     };
     this.rankAggDay.set(id, aggDay);
     return aggDay;
+  }
+
+  async insertGroupIndexDaily(data: InsertGroupIndexDaily): Promise<GroupIndexDaily> {
+    const id = randomUUID();
+    const groupIndex: GroupIndexDaily = {
+      id,
+      ...data
+    };
+    this.groupIndexDaily.set(id, groupIndex);
+    return groupIndex;
   }
 
   // v7 Collection Rules and State Implementation - Owner-aware for security

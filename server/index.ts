@@ -1,6 +1,8 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import * as cron from "node-cron";
+import { startDailyAggregation } from "./aggregation-service.js";
 
 const app = express();
 app.use(express.json());
@@ -85,5 +87,15 @@ app.use((req, res, next) => {
     reusePort: true,
   }, () => {
     log(`serving on port ${port}`);
+    
+    // 자정 크론 작업 시작 (한국 시간 기준)
+    cron.schedule("0 0 * * *", () => {
+      log("[크론] 일일 집계 작업 시작");
+      startDailyAggregation().catch((error: Error) => {
+        log(`[크론] 일일 집계 실패: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, { timezone: "Asia/Seoul" });
+    
+    log("[크론] 자정 일일 집계 크론 작업이 등록되었습니다 (Asia/Seoul)");
   });
 })();

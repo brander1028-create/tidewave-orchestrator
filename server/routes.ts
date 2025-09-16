@@ -578,6 +578,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // YoY/MoM/WoW 주기적 인사이트 엔드포인트
+  app.get("/api/insights/periodic", async (req, res) => {
+    try {
+      const { calculateYoYMoMWoWForProduct } = await import('./aggregation-service.js');
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { productKey, range = "30d" } = req.query as { productKey?: string; range?: string };
+      if (!productKey) {
+        return res.status(400).json({ message: "productKey가 필요합니다" });
+      }
+      
+      const result = await calculateYoYMoMWoWForProduct(owner, productKey, range);
+      return res.json(result);
+    } catch (error) {
+      return res.status(500).json({ 
+        message: "주기 지표 계산에 실패했습니다",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
   // v6 Review State API
   app.get("/api/review-state/:productKey", async (req, res) => {
     try {
