@@ -83,6 +83,7 @@ export function RankTrendChart({ data, title = "순위 추이", showEvents = fal
               <ReferenceLine y={20} stroke="hsl(var(--chart-3))" strokeDasharray="2 2" />
               
               <Line
+                key="rank"
                 type="monotone"
                 dataKey="rank"
                 stroke="hsl(var(--primary))"
@@ -94,6 +95,7 @@ export function RankTrendChart({ data, title = "순위 추이", showEvents = fal
               {/* Events as dots */}
               {showEvents && (
                 <Line
+                  key="events"
                   type="monotone"
                   dataKey="events"
                   stroke="transparent"
