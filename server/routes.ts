@@ -906,6 +906,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // v7.10: Keywords Lookup API with Volume & Score (1h cache)
+  app.get("/api/keywords/lookup", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const texts = req.query.texts as string;
+      if (!texts) {
+        return res.status(400).json({ message: "texts 파라미터가 필요합니다" });
+      }
+
+      const keywords = texts.split(',').map(t => t.trim()).filter(Boolean);
+      if (keywords.length === 0) {
+        return res.status(400).json({ message: "최소 1개 키워드가 필요합니다" });
+      }
+
+      // 키워드별 조회량/점수 데이터 생성 (실제로는 외부 API 연동)
+      const keywordData = keywords.map(keyword => {
+        // 시뮬레이션: 키워드 길이와 종류에 따른 조회량/점수 계산
+        const baseVolume = keyword.includes('홍삼') ? 15000 : 5000;
+        const volume = baseVolume + Math.floor(Math.random() * 10000);
+        
+        let score = 70 + Math.floor(Math.random() * 25); // 70-95 범위
+        if (keyword.includes('추천') || keyword.includes('효능')) score += 5;
+        if (keyword.includes('부작용')) score -= 10;
+        
+        return {
+          keyword,
+          volume,
+          score: Math.min(100, Math.max(20, score)),
+          trend: Math.random() > 0.5 ? 'up' : Math.random() > 0.3 ? 'down' : 'stable',
+          competition: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)],
+          lastUpdated: new Date().toISOString()
+        };
+      });
+
+      // Cache-Control: 1시간 캐시
+      res.set('Cache-Control', 'public, max-age=3600');
+      res.json(keywordData);
+
+    } catch (error) {
+      res.status(500).json({ 
+        message: "키워드 조회에 실패했습니다", 
+        error: String(error) 
+      });
+    }
+  });
+
   // Mock API routes for rank monitoring (fallback)
   
   // Get rank series data
