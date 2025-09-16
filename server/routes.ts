@@ -25,6 +25,7 @@ import {
 import { naverBlogScraper } from "./blog-scraper";
 import { z } from "zod";
 import { scrapingService } from "./scraping-service";
+import { calculateYoYMoMWoWForProduct } from './aggregation-service';
 
 // Scraping validation schemas
 const scrapingConfigSchema = z.object({
@@ -542,7 +543,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
 
-      const validation = insertMetricSnapshotSchema.safeParse(req.body);
+      // req.body 변경 대신 새 페이로드 생성
+      const payload = { ...req.body, source: req.body?.source ?? "manual" };
+      
+      const validation = insertMetricSnapshotSchema.safeParse(payload);
       if (!validation.success) {
         return res.status(400).json({ 
           message: "잘못된 메트릭 스냅샷 데이터입니다",
@@ -550,10 +554,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const snapshot = await storage.insertMetricSnapshot(owner, validation.data);
-      res.status(201).json(snapshot);
+      try {
+        const snapshot = await storage.insertMetricSnapshot(owner, validation.data);
+        return res.status(201).json(snapshot);
+      } catch (e) {
+        // 강력한 에러 정규화 - 모든 가능한 에러 속성에서 텍스트 추출
+        const parts = [ 
+          (e as any)?.message, 
+          (e as any)?.cause?.message, 
+          (e as any)?.response?.data?.error, 
+          (e && typeof (e as any)?.toString === 'function') ? (e as any).toString() : String(e) 
+        ].filter(Boolean).map(String);
+        const text = parts.join(' | ');
+        const lower = text.toLowerCase();
+        
+        if (lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('does not belong to the specified owner')) {
+          return res.status(401).json({ message: text });
+        }
+        if (lower.includes('not found')) {
+          return res.status(404).json({ message: text });
+        }
+        
+        console.error('[metric-snapshots] insert failed:', e);
+        return res.status(500).json({ message: '메트릭 스냅샷 생성에 실패했습니다', error: text });
+      }
     } catch (error) {
-      res.status(500).json({ message: "메트릭 스냅샷 생성에 실패했습니다", error: String(error) });
+      return res.status(500).json({ message: "메트릭 스냅샷 생성에 실패했습니다", error: String(error) });
     }
   });
 
@@ -564,15 +590,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
       
-      const { productKey } = req.params;
+      const productKey = decodeURIComponent(req.params.productKey);
       const { range = "30d" } = req.query;
       
-      const history = await storage.getMetricHistory(
-        owner, // Owner-aware security fix
-        productKey,
-        range as string
-      );
-      res.json(history);
+      try {
+        const history = await storage.getMetricHistory(
+          owner, // Owner-aware security fix
+          productKey,
+          range as string
+        );
+        return res.json(history);
+      } catch (error) {
+        // 관대한 모드: 제품을 찾을 수 없어도 빈 데이터 반환
+        console.log(`[Warning] Product history fallback for ${productKey}:`, error);
+        return res.json([]);
+      }
     } catch (error) {
       res.status(500).json({ message: "메트릭 히스토리 조회에 실패했습니다", error: String(error) });
     }
@@ -581,20 +613,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // YoY/MoM/WoW 주기적 인사이트 엔드포인트
   app.get("/api/insights/periodic", async (req, res) => {
     try {
-      const { calculateYoYMoMWoWForProduct } = await import('./aggregation-service.js');
+      
       const owner = req.headers['x-role'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
       
-      const { productKey, range = "30d" } = req.query as { productKey?: string; range?: string };
-      if (!productKey) {
-        return res.status(400).json({ message: "productKey가 필요합니다" });
+      // Zod 스키마로 엄격한 검증
+      const schema = z.object({
+        productKey: z.string().min(1),
+        range: z.enum(["7d","14d","30d","90d"]).default("30d")
+      });
+      
+      const validation = schema.safeParse(req.query);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 쿼리 파라미터입니다", 
+          errors: validation.error.errors 
+        });
       }
       
+      const { productKey, range } = validation.data;
+      console.log(`[Info] Computing YoY/MoM/WoW for ${productKey}, range: ${range}`);
+      
       const result = await calculateYoYMoMWoWForProduct(owner, productKey, range);
-      return res.json(result);
+      
+      // 집계 타임스탬프 추가
+      const settings = await storage.getSettings();
+      const lastAggregatedAt = settings.find(s => s.key === "last_periodic_metrics_ts")?.value || null;
+      
+      return res.json({ 
+        ...result,
+        lastAggregatedAt,
+        productKey,
+        range 
+      });
     } catch (error) {
+      console.error("[Error] Insights periodic API failed:", error);
       return res.status(500).json({ 
         message: "주기 지표 계산에 실패했습니다",
         error: error instanceof Error ? error.message : String(error)
