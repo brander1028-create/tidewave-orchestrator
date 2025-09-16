@@ -238,6 +238,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         keywords, minRank, maxRank, postsPerBlog, titleExtract, enableLKMode, preferCompound, targetCategory
       }, null, 2));
       
+      // 🎯 PRE-ENRICH: AdScore Engine 호출 (아키텍트 지시)
+      console.log(`🚀 [PRE-ENRICH] Starting AdScore calculation for ${keywords.length} keywords`);
+      const kws = keywords.map(k => k.trim()).filter(Boolean);
+      await getVolumesWithHealth(db, kws);
+      console.log(`✅ [PRE-ENRICH] AdScore Engine completed for keywords: ${kws.join(', ')}`);
+      
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
       }

@@ -110,7 +110,8 @@ export async function getVolumesWithHealth(
             est_cpc_source = 'estimated';
           }
           
-          // 종합점수 계산
+          // 종합점수 계산 (AdScore Engine)
+          console.log(`↗️ calling calculateOverallScore for "${text}": vol=${raw_volume}, comp=${comp_score}, ad=${ad_depth}, cpc=${est_cpc_krw || 0}`);
           const score = await calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
           
           keywordsToUpsert.push({

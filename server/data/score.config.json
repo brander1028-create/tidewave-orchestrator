@@ -45,7 +45,7 @@
   "logging": {
     "enabled": true,
     "detail": false,
-    "traceScore": true
+    "log_calculations": true
   },
   "lastUpdated": "2025-09-16T04:38:16.572Z"
 }

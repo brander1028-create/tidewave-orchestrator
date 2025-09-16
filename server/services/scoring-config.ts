@@ -170,7 +170,7 @@ function getDefaultConfig(): ScoringConfig {
     logging: {
       enabled: true,
       detailed: false,
-      log_calculations: false
+      log_calculations: true
     },
     metadata: {
       last_modified: new Date().toISOString(),
@@ -232,7 +232,7 @@ export async function calculateOverallScore(
     );
 
     // 로깅 (Score-First Gate 스타일)
-    if (scoreConfig.logging.enabled && scoreConfig.logging.traceScore) {
+    if (scoreConfig.logging.enabled && scoreConfig.logging.log_calculations) {
       console.log(`🎯 [AdScore] ${getAdScoreTrace(adScoreResult)}`);
       
       if (!adScoreResult.eligible) {
