@@ -1,4 +1,4 @@
-import { Phase2Engine, Phase2Context, Candidate, Tier } from "../types";
+import { Phase2Engine, Phase2Context, Candidate, Tier, applyScoreFirstGate } from "../types";
 import { AlgoConfig } from "@shared/config-schema";
 import { lkEngine } from "./lk";
 import { ngramsEngine } from "./ngrams";
@@ -46,36 +46,22 @@ export class HybridEngine implements Phase2Engine {
   }
 
   async enrichAndScore(candidates: Candidate[], cfg: AlgoConfig): Promise<Candidate[]> {
-    // Use both engines' scoring approaches
-    const lkScored = await lkEngine.enrichAndScore(candidates, cfg);
-    const ngramScored = await ngramsEngine.enrichAndScore(candidates, cfg);
+    const enrichedCandidates: Candidate[] = [];
     
-    // Create score maps by candidate text to avoid index misalignment
-    const lkScoreMap = new Map<string, number>();
-    const ngramScoreMap = new Map<string, number>();
-    
-    lkScored.forEach(candidate => {
-      lkScoreMap.set(candidate.text, candidate.totalScore || 0);
-    });
-    
-    ngramScored.forEach(candidate => {
-      ngramScoreMap.set(candidate.text, candidate.totalScore || 0);
-    });
-    
-    // Combine scores with hybrid weighting using text-based lookup
-    return candidates.map(candidate => {
-      const lkScore = lkScoreMap.get(candidate.text) || 0;
-      const ngramScore = ngramScoreMap.get(candidate.text) || 0;
+    for (const candidate of candidates) {
+      // Apply Score-First Gate first
+      const gatedCandidate = await applyScoreFirstGate(candidate, cfg);
       
-      // Weighted combination: 60% LK, 40% N-grams
-      const hybridScore = lkScore * 0.6 + ngramScore * 0.4;
+      // Calculate hybrid score by combining base scoring approaches
+      const baseScore = this.calculateHybridRankScore(gatedCandidate, cfg);
       
-      return {
-        ...candidate,
-        volume: candidate.volume || null,
-        totalScore: hybridScore,
-      };
-    });
+      // Apply hybrid weighting
+      gatedCandidate.totalScore = baseScore;
+      
+      enrichedCandidates.push(gatedCandidate);
+    }
+    
+    return enrichedCandidates;
   }
 
   assignTiers(candidates: Candidate[], cfg: AlgoConfig): Tier[] {

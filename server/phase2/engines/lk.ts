@@ -1,4 +1,4 @@
-import { Phase2Engine, Phase2Context, Candidate, Tier } from "../types";
+import { Phase2Engine, Phase2Context, Candidate, Tier, applyScoreFirstGate } from "../types";
 import { AlgoConfig } from "@shared/config-schema";
 
 // LK (Local + Keyword) Engine - based on existing title extraction logic
@@ -76,13 +76,19 @@ export class LKEngine implements Phase2Engine {
   }
 
   async enrichAndScore(candidates: Candidate[], cfg: AlgoConfig): Promise<Candidate[]> {
-    // This would be implemented to call the existing volume enrichment logic
-    // For now, return candidates with mock scores
-    return candidates.map(candidate => ({
-      ...candidate,
-      volume: candidate.volume || null,
-      totalScore: this.calculateTotalScore(candidate, cfg),
-    }));
+    const enrichedCandidates: Candidate[] = [];
+    
+    for (const candidate of candidates) {
+      // Apply Score-First Gate
+      const gatedCandidate = await applyScoreFirstGate(candidate, cfg);
+      
+      // Calculate final score
+      gatedCandidate.totalScore = this.calculateTotalScore(gatedCandidate, cfg);
+      
+      enrichedCandidates.push(gatedCandidate);
+    }
+    
+    return enrichedCandidates;
   }
 
   assignTiers(candidates: Candidate[], cfg: AlgoConfig): Tier[] {

@@ -1,4 +1,4 @@
-import { Phase2Engine, Phase2Context, Candidate, Tier } from "../types";
+import { Phase2Engine, Phase2Context, Candidate, Tier, applyScoreFirstGate } from "../types";
 import { AlgoConfig } from "@shared/config-schema";
 
 // NGrams Engine - pure N-gram based keyword extraction
@@ -59,12 +59,19 @@ export class NgramsEngine implements Phase2Engine {
   }
 
   async enrichAndScore(candidates: Candidate[], cfg: AlgoConfig): Promise<Candidate[]> {
-    // Apply n-gram specific scoring
-    return candidates.map(candidate => ({
-      ...candidate,
-      volume: candidate.volume || null,
-      totalScore: this.calculateNgramScore(candidate, cfg),
-    }));
+    const enrichedCandidates: Candidate[] = [];
+    
+    for (const candidate of candidates) {
+      // Apply Score-First Gate
+      const gatedCandidate = await applyScoreFirstGate(candidate, cfg);
+      
+      // Calculate N-gram specific score
+      gatedCandidate.totalScore = this.calculateNgramScore(gatedCandidate, cfg);
+      
+      enrichedCandidates.push(gatedCandidate);
+    }
+    
+    return enrichedCandidates;
   }
 
   assignTiers(candidates: Candidate[], cfg: AlgoConfig): Tier[] {

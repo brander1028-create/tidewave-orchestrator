@@ -1,5 +1,74 @@
 import { AlgoConfig } from "@shared/config-schema";
 
+// Score-First Gate helper function
+export async function applyScoreFirstGate(
+  candidate: Candidate, 
+  cfg: AlgoConfig
+): Promise<Candidate> {
+  let enrichedCandidate = { ...candidate };
+  
+  if (cfg.features.scoreFirstGate) {
+    try {
+      // Import AdScore engine dynamically
+      const { calculateAdScore, checkGateEligibility } = await import('../services/adscore-engine');
+      
+      // Prepare keyword metrics - mock for now, would need actual data
+      const metrics = {
+        volume: candidate.volume || 0,
+        competition: 0.5, // Mock competition
+        adDepth: 2, // Mock ad depth 
+        cpc: 100 // Mock CPC
+      };
+      
+      // Configure AdScore from settings
+      const weights = {
+        volume: cfg.adscore.wVolume,
+        competition: cfg.adscore.wCompetition,
+        adDepth: cfg.adscore.wAdDepth,
+        cpc: cfg.adscore.wCpc
+      };
+      
+      const thresholds = {
+        scoreMin: cfg.adscore.SCORE_MIN,
+        volumeMin: cfg.adscore.VOL_MIN,
+        adDepthMin: cfg.adscore.AD_DEPTH_MIN,
+        cpcMin: cfg.adscore.CPC_MIN
+      };
+      
+      const gateConfig = {
+        mode: cfg.adscore.mode,
+        forceFill: cfg.adscore.forceFill
+      };
+      
+      // Calculate AdScore
+      const adScoreResult = calculateAdScore(metrics, weights);
+      
+      // Check gate eligibility  
+      const eligibilityResult = checkGateEligibility(metrics, adScoreResult.adScore, thresholds);
+      
+      // Apply gate results
+      enrichedCandidate.eligible = eligibilityResult.eligible;
+      enrichedCandidate.adScore = adScoreResult.adScore;
+      enrichedCandidate.skipReason = eligibilityResult.skipReason;
+      
+      if (cfg.features.log_calculations && !eligibilityResult.eligible) {
+        console.log(`🚫 [Score-First Gate] "${candidate.text}" filtered: ${eligibilityResult.skipReason}`);
+      }
+      
+    } catch (error) {
+      console.error(`❌ [Score-First Gate] Error evaluating "${candidate.text}":`, error);
+      // Fallback: allow candidate through
+      enrichedCandidate.eligible = true;
+      enrichedCandidate.skipReason = "AdScore evaluation failed";
+    }
+  } else {
+    // Gate disabled, all candidates pass
+    enrichedCandidate.eligible = true;
+  }
+  
+  return enrichedCandidate;
+}
+
 // Candidate keyword for Phase2 processing
 export interface Candidate {
   text: string;
