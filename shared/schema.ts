@@ -342,6 +342,104 @@ export type InsertMetricSnapshot = z.infer<typeof insertMetricSnapshotSchema>;
 export type ReviewState = typeof reviewState.$inferSelect;
 export type InsertReviewState = z.infer<typeof insertReviewStateSchema>;
 
+// v7 키워드 그룹 시스템
+
+// 키워드 그룹 (블로그 전용)
+export const groups = pgTable("groups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  owner: varchar("owner").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  color: varchar("color").default("#3b82f6"), // 그룹 표시 색상
+  active: boolean("active").default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// 그룹-키워드 관계
+export const groupKeywords = pgTable("group_keywords", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  groupId: varchar("group_id").notNull(),
+  keyword: text("keyword").notNull(),
+  addedAt: timestamp("added_at").notNull().defaultNow(),
+});
+
+// 그룹별 일일 집계 지수
+export const groupIndexDaily = pgTable("group_index_daily", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  groupId: varchar("group_id").notNull(),
+  date: timestamp("date").notNull(),
+  avgRank: decimal("avg_rank", { precision: 5, scale: 2 }),
+  keywordCount: integer("keyword_count"),
+  topRankCount: integer("top_rank_count"), // 상위 10위 내 키워드 수
+  improvementCount: integer("improvement_count"), // 순위 상승 키워드 수
+  alertCount: integer("alert_count"), // 해당일 알림 수
+  indexScore: decimal("index_score", { precision: 5, scale: 2 }), // 종합 점수 (0-100)
+});
+
+// 일일 랭킹 집계 (기존 rank_aggregated 대체)
+export const rankAggDay = pgTable("rank_agg_day", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  targetId: varchar("target_id").notNull(),
+  keyword: text("keyword").notNull(),
+  date: timestamp("date").notNull(),
+  avgRank: decimal("avg_rank", { precision: 5, scale: 2 }),
+  minRank: integer("min_rank"),
+  maxRank: integer("max_rank"),
+  deltaDaily: integer("delta_daily"),
+  deltaWeekly: integer("delta_weekly"),
+  checkCount: integer("check_count"), // 해당일 체크 횟수
+  volatility: decimal("volatility", { precision: 5, scale: 2 }),
+});
+
+// 수집 규칙 (자동 수집 최적화)
+export const collectionRules = pgTable("collection_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  owner: varchar("owner").notNull(),
+  name: text("name").notNull(),
+  conditions: json("conditions").notNull(), // 조건: 키워드, 순위범위, 시간대 등
+  actions: json("actions").notNull(), // 액션: 수집빈도, 알림설정 등
+  priority: integer("priority").default(5), // 1-10, 높을수록 우선
+  active: boolean("active").default(true),
+  lastTriggered: timestamp("last_triggered"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// 수집 상태 추적 (비용 가드)
+export const collectionState = pgTable("collection_state", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  owner: varchar("owner").notNull(),
+  targetId: varchar("target_id").notNull(),
+  keyword: text("keyword").notNull(),
+  lastCheckAt: timestamp("last_check_at").notNull().defaultNow(),
+  lastRank: integer("last_rank"),
+  consecutiveFailures: integer("consecutive_failures").default(0),
+  checkInterval: varchar("check_interval").default("1h"), // '10m'|'30m'|'1h'|'6h'|'24h'
+  nextCheckAt: timestamp("next_check_at"),
+  costScore: decimal("cost_score", { precision: 5, scale: 2 }).default(sql`50.0`), // 비용 효율성 점수
+  autoStopped: boolean("auto_stopped").default(false), // 30일 미진입시 자동 중지
+  autoStoppedAt: timestamp("auto_stopped_at"),
+});
+
+// v7 타입 정의들
+export type Group = typeof groups.$inferSelect;
+export type InsertGroup = z.infer<typeof insertGroupSchema>;
+
+export type GroupKeyword = typeof groupKeywords.$inferSelect;
+export type InsertGroupKeyword = z.infer<typeof insertGroupKeywordSchema>;
+
+export type GroupIndexDaily = typeof groupIndexDaily.$inferSelect;
+export type InsertGroupIndexDaily = z.infer<typeof insertGroupIndexDailySchema>;
+
+export type RankAggDay = typeof rankAggDay.$inferSelect;
+export type InsertRankAggDay = z.infer<typeof insertRankAggDaySchema>;
+
+export type CollectionRule = typeof collectionRules.$inferSelect;
+export type InsertCollectionRule = z.infer<typeof insertCollectionRuleSchema>;
+
+export type CollectionState = typeof collectionState.$inferSelect;
+export type InsertCollectionState = z.infer<typeof insertCollectionStateSchema>;
+
 // v6 Insert 스키마들
 export const insertBlogTargetSchema = createInsertSchema(blogTargets).omit({
   id: true,
@@ -378,4 +476,36 @@ export const blogCheckSchema = z.object({
   query: z.string().min(1, "검색 키워드는 필수입니다"),
   device: z.enum(['pc', 'mobile']).default('pc'),
   maxPages: z.number().min(1).max(5).default(3),
+});
+
+// v7 Insert 스키마들
+export const insertGroupSchema = createInsertSchema(groups).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertGroupKeywordSchema = createInsertSchema(groupKeywords).omit({
+  id: true,
+  addedAt: true,
+});
+
+export const insertGroupIndexDailySchema = createInsertSchema(groupIndexDaily).omit({
+  id: true,
+});
+
+export const insertRankAggDaySchema = createInsertSchema(rankAggDay).omit({
+  id: true,
+});
+
+export const insertCollectionRuleSchema = createInsertSchema(collectionRules).omit({
+  id: true,
+  lastTriggered: true,
+  createdAt: true,
+});
+
+export const insertCollectionStateSchema = createInsertSchema(collectionState).omit({
+  id: true,
+  lastCheckAt: true,
+  autoStoppedAt: true,
 });
