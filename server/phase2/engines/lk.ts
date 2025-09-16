@@ -151,6 +151,12 @@ export class LKEngine implements Phase2Engine {
   }
 
   private calculateTotalScore(candidate: Candidate, cfg: AlgoConfig): number {
+    // In Score-First Gate system, use AdScore as primary score if available
+    if (candidate.adScore !== undefined && candidate.adScore > 0) {
+      return candidate.adScore;
+    }
+    
+    // Fallback to legacy content-based scoring
     const volumeScore = (candidate.volume || 0) / 100000; // Normalize volume
     const positionScore = 1 - (candidate.position / 10); // Earlier position = higher score
     const lengthScore = Math.min(candidate.length / 10, 1); // Longer text = higher score
