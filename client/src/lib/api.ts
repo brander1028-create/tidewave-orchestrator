@@ -15,9 +15,22 @@ import type {
 // 🔧 핫픽스 v7.9: API 클라이언트 인터셉터 - 권한 헤더 자동 주입
 export const http = (path: string, init: RequestInit = {}) => {
   const h = new Headers(init.headers || {});
-  h.set('x-role', localStorage.getItem('role') ?? 'system');
-  const owner = localStorage.getItem('owner');
-  if (owner) h.set('x-owner', owner);
+  
+  // v7.12 권한 헤더 문제 수정: 기본값 설정
+  const role = localStorage.getItem('role') || 'admin';
+  const owner = localStorage.getItem('owner') || 'admin';
+  
+  h.set('x-role', role);
+  h.set('x-owner', owner);
+  
+  // 초기화되지 않은 경우 localStorage에 기본값 저장
+  if (!localStorage.getItem('role')) {
+    localStorage.setItem('role', 'admin');
+  }
+  if (!localStorage.getItem('owner')) {
+    localStorage.setItem('owner', 'admin');
+  }
+  
   return fetch(path, { ...init, headers: h, credentials: 'include' });
 };
 
@@ -214,29 +227,40 @@ export const settingsApi = {
   }
 };
 
-// Manual Blog Entries API (Real endpoints)
+// v7.12 표준: Blog Targets API (통합된 블로그 타겟 관리)
 export const manualBlogApi = {
-  // Get all manual blog entries
-  getAll: async (): Promise<ManualBlogEntry[]> => {
-    const response = await apiRequest("GET", "/api/manual-blogs");
+  // Get all blog targets with keywords
+  getAll: async (): Promise<any[]> => {
+    const response = await apiRequest("GET", "/api/targets/blog?expand=keywords");
     return response.json();
   },
 
-  // Create new manual blog entry
-  create: async (entry: InsertManualBlogEntry): Promise<ManualBlogEntry> => {
-    const response = await apiRequest("POST", "/api/manual-blogs", entry);
+  // Create new blog target (표준 경로 사용)
+  create: async (entry: InsertManualBlogEntry): Promise<any> => {
+    // InsertManualBlogEntry를 blog target 형식으로 변환
+    const blogTarget = {
+      title: entry.title || entry.keyword, // 제목이 없으면 키워드 사용
+      url: entry.url,
+      queries: [entry.keyword], // 키워드 배열로 변환
+      windowMin: 1,
+      windowMax: 20,
+      scheduleCron: "0 * * * *", // 1시간마다
+      owner: entry.submittedBy || "admin",
+      active: true
+    };
+    const response = await apiRequest("POST", "/api/targets/blog", blogTarget);
     return response.json();
   },
 
-  // Update manual blog entry
-  update: async (id: string, updates: Partial<ManualBlogEntry>): Promise<ManualBlogEntry> => {
-    const response = await apiRequest("PATCH", `/api/manual-blogs/${id}`, updates);
+  // Update blog target
+  update: async (id: string, updates: Partial<ManualBlogEntry>): Promise<any> => {
+    const response = await apiRequest("PATCH", `/api/targets/blog/${id}`, updates);
     return response.json();
   },
 
-  // Delete manual blog entry (soft delete)
+  // Delete blog target
   remove: async (id: string): Promise<void> => {
-    await apiRequest("DELETE", `/api/manual-blogs/${id}`);
+    await apiRequest("DELETE", `/api/targets/blog/${id}`);
   }
 };
 

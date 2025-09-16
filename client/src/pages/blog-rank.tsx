@@ -95,9 +95,10 @@ export default function BlogRank() {
   
   const queryClient = useQueryClient();
   
-  // Fetch tracked targets from API (블로그만 필터링)
-  const { data: trackedTargets = [], isLoading: targetsLoading } = useQuery<TrackedTarget[]>({
-    queryKey: ['/api/tracked-targets'],
+  // v7.12 표준: Blog targets with keywords
+  const { data: trackedTargets = [], isLoading: targetsLoading } = useQuery<any[]>({
+    queryKey: ['/api/targets/blog'],
+    queryFn: () => manualBlogApi.getAll(),
     staleTime: 5 * 60 * 1000,
   });
   
@@ -131,7 +132,7 @@ export default function BlogRank() {
         title: "블로그 입력 완료",
         description: "수동 블로그 입력이 성공적으로 저장되었습니다.",
       });
-      queryClient.invalidateQueries({ queryKey: ['/api/manual-blogs'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
       setIsAddBlogOpen(false);
       form.reset();
     },
@@ -150,7 +151,7 @@ export default function BlogRank() {
       return await targetsApi.remove(id);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
       toast({
         title: "키워드 삭제 완료",
         description: "키워드 추적이 중단되었습니다.",
@@ -165,28 +166,31 @@ export default function BlogRank() {
     },
   });
 
-  // Convert tracked targets to ranking data (블로그만)
-  const convertTargetsToRankingData = (targets: TrackedTarget[]): RankingData[] => {
-    return targets
-      .filter(target => target.kind === "blog") // 블로그만
-      .map((target, index) => {
-        const idNum = parseInt(target.id?.slice(-1) || '0') || index;
-        const baseRank = [8, 15, 12, 20, 7, 25, 11][idNum % 7] || (idNum % 30) + 1;
-        const baseChange = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
-        
-        return {
-          id: target.id || (index + 1).toString(),
-          keyword: target.query || `키워드 ${index + 1}`,
-          rank: baseRank,
-          change: baseChange,
-          url: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
-          trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
-          status: target.enabled ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
-          lastCheck: "5분 전",
-          exposed: baseRank <= 15,
-          streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3
-        };
-      });
+  // v7.12: Convert blog targets to ranking data (새 API 형식 지원)
+  const convertTargetsToRankingData = (targets: any[]): RankingData[] => {
+    console.log('[DEBUG] convertTargetsToRankingData called with:', targets);
+    
+    return targets.map((target, index) => {
+      const idNum = parseInt(target.id?.slice(-1) || '0') || index;
+      const baseRank = [8, 15, 12, 20, 7, 25, 11][idNum % 7] || (idNum % 30) + 1;
+      const baseChange = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
+      
+      // v7.12 API 형식 처리: keywords 배열에서 첫 번째 키워드 사용
+      const keyword = target.keywords?.[0] || target.queries?.[0] || target.query || target.title || `키워드 ${index + 1}`;
+      
+      return {
+        id: target.id || (index + 1).toString(),
+        keyword: keyword,
+        rank: baseRank,
+        change: baseChange,
+        url: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
+        trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
+        status: target.active !== false ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
+        lastCheck: "5분 전",
+        exposed: baseRank <= 15,
+        streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3
+      };
+    });
   };
 
   // Current ranking data (블로그만)

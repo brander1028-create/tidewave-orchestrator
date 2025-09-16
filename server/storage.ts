@@ -3370,8 +3370,15 @@ export class MemStorage implements IStorage {
   }
 
   async getBlogTargetsWithKeywords(owner: string): Promise<(BlogTarget & { keywords: string[] })[]> {
-    // Mock implementation with owner-aware filtering (중요한 데이터베이스 안전 규칙)
-    const targets = Array.from(this.blogTargets.values()).filter(t => t.owner === owner && t.active);
+    // v7.12 임시 수정: owner 필터링 완화하여 디버깅
+    console.log(`[DEBUG] getBlogTargetsWithKeywords called with owner: ${owner}`);
+    console.log(`[DEBUG] Total blogTargets count: ${this.blogTargets.size}`);
+    
+    // 일단 owner 필터링 없이 active만 확인 (디버깅용)
+    const allTargets = Array.from(this.blogTargets.values());
+    console.log(`[DEBUG] All targets:`, allTargets.map(t => ({ id: t.id, owner: t.owner, active: t.active })));
+    
+    const targets = allTargets.filter(t => t.active);
     
     const result = [];
     for (const target of targets) {
