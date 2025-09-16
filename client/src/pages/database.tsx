@@ -79,6 +79,13 @@ export default function DatabasePage() {
   // v7 그룹 데이터 조회
   const { data: groups = [], isLoading: groupsLoading } = useQuery<Group[]>({
     queryKey: ['/api/groups'],
+    queryFn: async () => {
+      const response = await fetch('/api/groups', {
+        headers: { 'x-role': 'system' }
+      });
+      if (!response.ok) throw new Error('Failed to fetch groups');
+      return response.json();
+    },
     staleTime: 5 * 60 * 1000,
   });
 
@@ -91,24 +98,52 @@ export default function DatabasePage() {
   // 키워드 데이터 API 조회
   const { data: keywordData = [], isLoading: keywordsLoading } = useQuery<KeywordData[]>({
     queryKey: ['/api/db/keywords'],
+    queryFn: async () => {
+      const response = await fetch('/api/db/keywords', {
+        headers: { 'x-role': 'system' }
+      });
+      if (!response.ok) throw new Error('Failed to fetch keywords');
+      return response.json();
+    },
     staleTime: 5 * 60 * 1000,
   });
 
   // 타겟 관리 데이터 API 조회
   const { data: targetData = [], isLoading: dbTargetsLoading } = useQuery<TargetData[]>({
     queryKey: ['/api/db/targets'],
+    queryFn: async () => {
+      const response = await fetch('/api/db/targets', {
+        headers: { 'x-role': 'system' }
+      });
+      if (!response.ok) throw new Error('Failed to fetch targets');
+      return response.json();
+    },
     staleTime: 5 * 60 * 1000,
   });
 
   // 스냅샷 집계 데이터 API 조회
   const { data: snapshotData = [], isLoading: snapshotsLoading } = useQuery<SnapshotData[]>({
     queryKey: ['/api/db/snapshots/agg'],
+    queryFn: async () => {
+      const response = await fetch('/api/db/snapshots/agg', {
+        headers: { 'x-role': 'system' }
+      });
+      if (!response.ok) throw new Error('Failed to fetch snapshots');
+      return response.json();
+    },
     staleTime: 5 * 60 * 1000,
   });
 
   // 토큰 사용량 통계 API 조회
   const { data: tokenStats, isLoading: tokenStatsLoading } = useQuery({
     queryKey: ['/api/db/token-usage'],
+    queryFn: async () => {
+      const response = await fetch('/api/db/token-usage', {
+        headers: { 'x-role': 'system' }
+      });
+      if (!response.ok) throw new Error('Failed to fetch token stats');
+      return response.json();
+    },
     staleTime: 2 * 60 * 1000, // 2분 캐시
   });
 
