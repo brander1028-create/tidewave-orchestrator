@@ -12,6 +12,28 @@ import type {
   InsertManualBlogEntry
 } from "@shared/schema";
 
+// 🔧 핫픽스 v7.9: API 클라이언트 인터셉터 - 권한 헤더 자동 주입
+export const http = (path: string, init: RequestInit = {}) => {
+  const h = new Headers(init.headers || {});
+  h.set('x-role', localStorage.getItem('role') ?? 'system');
+  const owner = localStorage.getItem('owner');
+  if (owner) h.set('x-owner', owner);
+  return fetch(path, { ...init, headers: h, credentials: 'include' });
+};
+
+// React Query용 래퍼 (안전한 헤더 주입)
+export const apiGet = (url: string) => http(url);
+export const apiPost = (url: string, data?: any) => http(url, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: data ? JSON.stringify(data) : undefined
+});
+export const apiPatch = (url: string, data?: any) => http(url, {
+  method: 'PATCH', 
+  headers: { 'Content-Type': 'application/json' },
+  body: data ? JSON.stringify(data) : undefined
+});
+
 // Real-time scraping API
 export const scrapingApi = {
   // Health check for scraping service

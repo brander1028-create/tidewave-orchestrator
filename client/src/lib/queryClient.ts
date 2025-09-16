@@ -7,14 +7,24 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+// 🔧 핫픽스 v7.9: 권한 헤더 자동 주입을 위한 apiRequest 수정
 export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  const headers = new Headers();
+  if (data) {
+    headers.set("Content-Type", "application/json");
+  }
+  // 모든 요청에 권한 헤더 자동 주입
+  headers.set('x-role', localStorage.getItem('role') ?? 'system');
+  const owner = localStorage.getItem('owner');
+  if (owner) headers.set('x-owner', owner);
+  
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });

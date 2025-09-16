@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { KPICard } from "@/components/ui/kpi-card";
 import { RankTrendChart } from "@/components/charts/rank-trend-chart";
@@ -22,6 +22,17 @@ import {
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
+// 🔧 핫픽스 v7.9: stableJSON - 구조적 동등 비교용 안정화 stringify
+const stableJSON = (obj: any): string => {
+  if (obj === null || obj === undefined) return 'null';
+  if (typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return `[${obj.map(stableJSON).join(',')}]`;
+  
+  const keys = Object.keys(obj).sort();
+  const pairs = keys.map(key => `"${key}":${stableJSON(obj[key])}`);
+  return `{${pairs.join(',')}}`;
+};
+
 // 대시보드 설정 타입 정의
 interface DashboardSettings {
   id: string;
@@ -37,6 +48,11 @@ export default function Dashboard() {
   const [editMode, setEditMode] = useState(false);
   const [activeTab, setActiveTab] = useState("blog");
 
+  // 🔧 핫픽스 v7.9: 안전한 저장 패턴을 위한 상태들
+  const AUTO_SAVE = true; // 수동 저장 스위치 (개발시 false로 설정 가능)
+  const lastSavedHash = useRef<string>('');
+  const saveTimeout = useRef<NodeJS.Timeout | null>(null);
+
   // 대시보드 설정 로드
   const { data: dashboardSettings } = useQuery<DashboardSettings[]>({
     queryKey: ['/api/dashboard/settings'],
@@ -51,26 +67,63 @@ export default function Dashboard() {
     },
   });
 
-  // 대시보드 설정 저장
-  const saveDashboardSettings = useMutation({
+  // 🔧 핫픽스 v7.9: 안전한 대시보드 설정 저장 (디바운스 + 중복방지 + 낙관적 업데이트)
+  const safeSaveDashboardSettings = useMutation({
     mutationFn: async (cardSettings: { cardId: string; [key: string]: any }) => {
-      const response = await fetch('/api/dashboard/settings', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-role': 'system'
-        },
-        body: JSON.stringify(cardSettings)
-      });
-      if (!response.ok) {
-        throw new Error('Failed to save dashboard settings');
-      }
-      return await response.json();
+      return await apiRequest('POST', '/api/dashboard/settings', cardSettings);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/dashboard/settings'] });
+    onSuccess: (response, variables) => {
+      // 🚫 invalidate 금지! 낙관적 업데이트로 교체
+      queryClient.setQueryData(['/api/dashboard/settings'], (old: DashboardSettings[] | undefined) => {
+        if (!old) return [variables as DashboardSettings];
+        const existingIndex = old.findIndex(s => s.cardId === variables.cardId);
+        if (existingIndex >= 0) {
+          const newSettings = [...old];
+          newSettings[existingIndex] = { ...newSettings[existingIndex], ...variables };
+          return newSettings;
+        }
+        return [...old, variables as DashboardSettings];
+      });
+      
+      // 저장 완료시 해시 업데이트
+      lastSavedHash.current = stableJSON(variables);
+      console.log('✅ 대시보드 설정 저장 완료:', variables.cardId);
     },
   });
+
+  // 🔧 핫픽스 v7.9: 디바운스된 안전 저장 함수
+  const debouncedSave = useCallback((cardSettings: { cardId: string; [key: string]: any }) => {
+    if (!AUTO_SAVE) {
+      console.log('🔒 AUTO_SAVE=false, 저장 생략');
+      return;
+    }
+
+    const currentHash = stableJSON(cardSettings);
+    if (currentHash === lastSavedHash.current) {
+      console.log('⏭️ 동일값 스킵:', cardSettings.cardId);
+      return;
+    }
+
+    // 기존 타이머 취소
+    if (saveTimeout.current) {
+      clearTimeout(saveTimeout.current);
+    }
+
+    // 1초 후 저장
+    saveTimeout.current = setTimeout(() => {
+      console.log('💾 디바운스된 저장 실행:', cardSettings.cardId);
+      safeSaveDashboardSettings.mutate(cardSettings);
+    }, 1000);
+  }, [AUTO_SAVE, safeSaveDashboardSettings]);
+
+  // 컴포넌트 언마운트시 타이머 정리
+  useEffect(() => {
+    return () => {
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current);
+      }
+    };
+  }, []);
 
   // Mock data for demonstration
   const kpiData = [
@@ -164,27 +217,23 @@ export default function Dashboard() {
     { keyword: "홍삼 복용법", rank: 32, change: -7, trend: "down" },
   ];
 
-  // 카드 설정 변경 핸들러 - useCallback로 무한 루프 방지
+  // 🔧 핫픽스 v7.9: 카드 설정 변경 핸들러 - 안전한 저장 패턴 적용
   const handleCardsChange = useCallback((cards: DashboardCardConfig[]) => {
     // 편집 모드일 때만 실행하여 불필요한 API 호출 방지
     if (!editMode) return;
     
-    // 디바운스를 위해 setTimeout 사용
-    const timeoutId = setTimeout(() => {
-      cards.forEach(card => {
-        saveDashboardSettings.mutate({
-          cardId: card.id,
-          visible: card.visible,
-          order: card.order,
-          size: card.size,
-          position: { x: 0, y: 0 }, // 기본값
-          config: {}
-        });
+    // 각 카드별로 디바운스된 안전 저장 실행
+    cards.forEach(card => {
+      debouncedSave({
+        cardId: card.id,
+        visible: card.visible,
+        order: card.order,
+        size: card.size,
+        position: { x: 0, y: 0 }, // 기본값
+        config: {}
       });
-    }, 500);
-
-    return () => clearTimeout(timeoutId);
-  }, [editMode, saveDashboardSettings]);
+    });
+  }, [editMode, debouncedSave]);
 
   // 대시보드 카드 구성 (useMemo로 최적화 및 API 설정 결합)
   const dashboardCards = useMemo((): DashboardCardConfig[] => {
