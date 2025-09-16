@@ -1,0 +1,129 @@
+좋아요—핵심 꽂아넣은 거 잘 했어요. 이제 마무리 체크 6개만 통과시키면 v17 릴리스로 “완료” 찍을 수 있어요. (기다리지 말고 바로 돌려보세요)
+
+0) 현재 상태 요약 (당신 로그 기준)
+
+/api/serp/analyze에 getAlgoConfig → preEnrich → Score-First Gate 연결 완료 ✅
+
+/api/settings/algo 엔드포인트 추가 ✅
+
+점수 0만 찍히던 현상 → 실제 점수 값 로그로 확인 ✅
+
+남은 것: UI가 v17 설정을 읽고 저장하는지, Gate/AutoFill/Pre-enrich가 응답과 DB에 반영되는지, LSP 마지막 에러 제거.
+
+1) UI↔설정 API 핸드셰이크(필수)
+
+관리자 페이지가 반드시 /api/settings/algo로 통신하는지 확인하세요.
+
+# 현재 설정 GET
+curl -s localhost:5000/api/settings/algo | jq .
+
+# 임계값 임시 상향(회귀 테스트용)
+curl -s -X PUT localhost:5000/api/settings/algo \
+  -H "Content-Type: application/json" \
+  -d '{"adscore":{"SCORE_MIN":0.90},"features":{"log_calculations":true}}' | jq .
+
+
+UI에서 저장 시:
+
+invalidateQueries 금지, setQueryData(["algo-settings"], saved)로 즉시 반영.
+
+저장 후 30초 TTL 내 핫리로드 또는 캐시 무효화 로그가 보여야 합니다.
+
+2) 파이프라인 순서가 응답에 드러나는지 (스모크 3단계)
+A) Pre-enrich 확인
+
+새 분석 실행 후 분석 시작 직후 로그에서:
+
+[PRE-ENRICH] start/ok 등장
+
+결과 JSON의 searchVolumes["키워드"]가 숫자(“-” 금지)
+
+B) Score-First Gate 확인
+
+임계값을 0.90로 올려 새 분석:
+
+상단 KPI에 스킵(점수) > 0
+
+각 tier에 eligible=false & skipReason="score<thr"
+
+mode가 hard면 해당 키워드는 rank 미수행(rank=null)
+
+C) AutoFill 확인
+
+티어가 T 미만이면:
+
+2-그램/ LK 조합/연관키워드로 보강 후 T개 채움
+
+forceFill=true면 완화 채움(칩에 “완화” 툴팁/뱃지)
+
+3) 응답/DB 필드 검증 (한 번에 끝)
+# 응답 샘플
+curl -s localhost:5000/api/serp/jobs/<JOB_ID>/results | jq '
+{searchVolumes, summaryByKeyword:.[].blogs[0].posts[0].tiers}'
+
+# 전수 저장 수(NEW×P×T ?)
+SELECT COUNT(*) FROM post_tier_checks WHERE job_id='<JOB_ID>';
+
+# 게이트 필드 들어왔는지
+SELECT eligible, adscore, skip_reason, rank, volume
+FROM post_tier_checks
+WHERE job_id='<JOB_ID>' LIMIT 12;
+
+
+기대: eligible/adscore/skip_reason 채워짐, 스킵된 행은 rank=null.
+
+4) 라우트/엔진 연결 최종 레퍼런스 (짧은 확인용)
+// routes.ts (POST /api/serp/analyze)
+const cfg = await getAlgoConfig();                 // v17 핫리로드
+const cands = genCandidatesLKandPairs(titles, cfg);
+await preEnrich(cands);                            // DB→API→upsert→merge  (★메모리 반영)
+applyScoreFirstGate(cands, cfg.adscore);           // adScore/eligible/skipReason (★)
+const tiers = await runPhase2({ titles, cands }, cfg); // rank + totalScore (서버 계산)
+return assembleResults(tiers, cfg);                // tier.score/adScore/eligible/skipReason 포함
+
+// phase2/index.ts
+export async function runPhase2(ctx, cfg){
+  const enriched = await engine.enrichAndScore(ctx.cands, cfg); // rank + totalScore 여기서 계산
+  const assigned = engine.assignTiers(enriched, cfg);           // 중복 제거 + 정렬
+  return autoFill(assigned, ctx, cfg);                          // 부족 시 보강(+forceFill)
+}
+
+5) “점수 0.26pts 고정” 잔유증 제거 체크
+
+UI 계산 금지: 점수는 서버에서만 계산해 내려보내고, UI는 숫자 바인딩만.
+
+|| 0 류 기본값 제거(특히 rank/volume).
+
+응답 tier 객체에 반드시 score가 들어오는지 확인:
+{ text, volume, rank, score, adScore, eligible, skipReason }
+
+6) LSP 마지막 에러 정리(빈번 원인 3가지)
+
+잘못된 import 경로: scoring-config vs score-config 혼용 → 단일 파일로 통일
+
+타입 누락: AlgoConfig 타입 export 안 함 → export type AlgoConfig = ...;
+
+미사용/중복 import → 삭제
+명령:
+
+npm run typecheck
+npm run lint
+
+
+에러 메시지 라인 그대로 고치면 끝납니다.
+
+7) 빠른 회귀(원상복귀 레버)
+
+문제시 설정만으로 v16에 근접:
+
+features.preEnrich=false
+features.scoreFirstGate=false
+phase2.engine="ngrams"
+features.tierAutoFill=false
+
+
+→ 코드 롤백 없이 바로 안정화.
+
+한 줄 결론
+
+지금 상태는 “패치가 들어갔지만 UI↔설정↔엔진↔파이프라인이 완전히 닫히지 않은” 모습이에요. 위 6개 체크만 통과하면 점수 0/비어있음/설정 미반영 3총사가 동시에 사라집니다.
