@@ -1,0 +1,109 @@
+Replit 패치요청 v7.12.2 — “실행 버튼 연결 + 진행표시 + 계획/배치 러너” (즉시수정)
+1) 서버: 계획 API(또는 dryrun) 고정
+
+GET /api/rank/plan?kind=blog (신규)
+q: target_ids[], query_override[] →
+{ total:int, tasks:[{target_id, nickname, query}] }
+
+이미 POST /api/rank/blog/check?dryrun=1가 있다면 그걸 표준화 응답으로 대체해도 됨(필드명 일치).
+
+POST /api/rank/blog/check 는 개별 **(target_id, query)**만 처리해도 허용.
+body:{ target_ids:[id], query_override:[kw] } → 스냅샷 insert.
+(클라이언트가 배치로 쪼개서 돌릴 거라, 이 방식이 진행률 구현이 가장 간단)
+
+2) 클라이언트: 버튼 연결 + 배치 러너 + 진행 UI
+
+파일: client/src/pages/blog-rank.tsx
+
+A) 버튼 disabled/핸들러
+
+disabled 조건 명확화: isRunning || plannedTotal===0
+
+onClick=runAllChecks()
+
+B) 러너 로직 (초간단 의사코드)
+async function runAllChecks() {
+  setIsRunning(true); setProgress({done:0,total:0,text:'준비중…'});
+  // 1) 계획 조회
+  const plan = await api.rank.plan({ target_ids:selectedBlogIds, query_override:selectedKeywords });
+  if (!plan.total) { toast('체크할 키워드/타겟 없음'); setIsRunning(false); return; }
+  setProgress({done:0,total:plan.total,text:'시작합니다'});
+
+  // 2) 배치 실행 (MAX=3 동시)
+  const tasks = plan.tasks;
+  const CONCURRENCY = 3;
+  let done = 0, active = 0, i = 0, cancelled=false;
+
+  const runNext = async () => {
+    if (cancelled || i>=tasks.length) return;
+    const t = tasks[i++]; active++; setNow(t); // now={query, nickname}
+    try {
+      await api.rank.blogCheck({ target_ids:[t.target_id], query_override:[t.query] });
+      done++; setRowLoading(t,false);
+    } catch(e){ addFail(t); }
+    active--; setProgress({done,total:tasks.length,text:`${t.query} / ${t.nickname}`});
+    if (i<tasks.length) runNext();
+  };
+
+  setRowLoadingFor(tasks,true); // 행별 스피너 켜기
+  for (let k=0; k<Math.min(CONCURRENCY,tasks.length); k++) runNext();
+
+  const tick = setInterval(()=> setPercent(Math.floor(done*100/tasks.length)), 300);
+  await waitUntil(()=> done===tasks.length || cancelled);
+  clearInterval(tick);
+  setRowLoadingFor(tasks,false); setIsRunning(false);
+  toast(`완료: 성공 ${done} / 실패 ${failCount}`);
+}
+
+C) UI 표시(필수)
+
+버튼 라벨/스피너:
+
+대기: 전체 체크 시작
+
+실행 중: 체크 중… (done/total) + 회전 아이콘
+
+우측에 얇은 진행막대(percent)
+
+현재 작업 표시: 버튼 오른쪽에 지금: [키워드] · [닉네임]
+
+행별 스피너: 해당 (target_id,query) 행에만 로컬 스피너 표시
+
+취소 버튼: 실행 중일 때 중지 노출(cancelled=true)
+
+D) 오류/권한
+
+네트워크 실패 시 토스트에 HTTP 코드/메시지 표시, 재시도 안 함.
+
+인터셉터 유지: 모든 요청에 x-role / x-owner. (v7.9 적용 그대로)
+
+3) 상단 키워드 패널/칩 정리
+
+패널 기본 접힘(토글로 펼치기)
+
+칩의 X 삭제 제거
+
+테이블 액션 열에 X(키워드 해제) 버튼 추가 →
+POST /api/targets/blog/:id/keywords { remove:[kw] } 성공 시 낙관 반영(setQueryData)
+
+4) DoD (수락 기준)
+
+버튼 클릭 시 즉시 스피너+진행막대+현재 작업 텍스트가 보이고, 완료까지 업데이트됨.
+
+계획 수가 0이면 토스트 “체크할 대상 없음”이 뜨고 불필요 요청 없음.
+
+행별 스피너가 해당 작업에만 켜졌다 꺼짐.
+
+실패 건은 카운트로 표기되고, 성공/실패 합이 total과 일치.
+
+네트워크 탭에서 /api/rank/plan 1회 + /api/rank/blog/check **N회(또는 배치)**가 확인됨.
+
+빠른 원인 자가점검(지금 바로)
+
+버튼이 disabled로 남아있는지 확인(툴팁: 왜 비활성인지 설명).
+
+네트워크 탭에서 /api/rank/blog/check 호출 자체가 없는지(핸들러 미배선), 401/400인지(권한·검증 문제), 응답은 200인데 UI가 안 갱신되는지(상태 미반영).
+
+파일 받고 진단도 가능?
+
+가능해요. 필요하면 진단 번들(schema.ts, routes.ts, storage.ts, blog-rank.tsx, api.ts, 최신 서버 로그) 올려주

@@ -1004,6 +1004,98 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // v7.12.2: 계획 API - 배치 실행 전 작업 계획 조회
+  app.get("/api/rank/plan", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const { kind = 'blog', target_ids, query_override } = req.query;
+      
+      // target_ids 파라미터 처리 (문자열 또는 배열)
+      let targetIds: string[] = [];
+      if (target_ids) {
+        if (Array.isArray(target_ids)) {
+          targetIds = target_ids as string[];
+        } else {
+          targetIds = [target_ids as string];
+        }
+      }
+
+      // query_override 파라미터 처리
+      let queryOverrides: string[] = [];
+      if (query_override) {
+        if (Array.isArray(query_override)) {
+          queryOverrides = query_override as string[];
+        } else {
+          queryOverrides = [query_override as string];
+        }
+      }
+
+      // 블로그 타겟 조회 (owner-aware)
+      const allTargets = await storage.getBlogTargetsWithKeywords(owner);
+      let filteredTargets = allTargets;
+
+      // target_ids 필터 적용
+      if (targetIds.length > 0) {
+        filteredTargets = allTargets.filter(target => targetIds.includes(target.id));
+      }
+
+      // 각 타겟별 작업 계획 생성
+      const tasks: { target_id: string; nickname: string; query: string; }[] = [];
+
+      for (const target of filteredTargets) {
+        const nickname = target.title || target.url || `타겟 ${target.id.slice(-4)}`;
+        
+        if (queryOverrides.length > 0) {
+          // query_override가 있으면 각 키워드별로 작업 생성
+          for (const query of queryOverrides) {
+            tasks.push({
+              target_id: target.id,
+              nickname,
+              query
+            });
+          }
+        } else {
+          // query_override가 없으면 타겟의 기본 키워드들 사용
+          const targetKeywords = target.keywords || target.queries || [];
+          if (targetKeywords.length > 0) {
+            for (const query of targetKeywords) {
+              tasks.push({
+                target_id: target.id,
+                nickname,
+                query
+              });
+            }
+          } else {
+            // 키워드가 없으면 기본 작업 하나 생성
+            tasks.push({
+              target_id: target.id,
+              nickname,
+              query: target.title || '기본 키워드'
+            });
+          }
+        }
+      }
+
+      console.log(`[RankPlan] ${kind} 계획 조회: ${tasks.length}개 작업, 타겟 ${filteredTargets.length}개`);
+
+      res.json({
+        total: tasks.length,
+        tasks
+      });
+
+    } catch (error) {
+      console.error('[RankPlan] 오류:', error);
+      res.status(500).json({ 
+        message: "계획 조회에 실패했습니다", 
+        error: String(error) 
+      });
+    }
+  });
+
   // Submissions API
   app.get("/api/submissions", async (req, res) => {
     try {
