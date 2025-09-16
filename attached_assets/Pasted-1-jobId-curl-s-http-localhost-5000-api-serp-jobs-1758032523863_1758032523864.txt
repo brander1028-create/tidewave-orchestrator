@@ -1,0 +1,142 @@
+1) 즉시 진단 — 서버가 결과를 정말 썼는지 확인
+# ① 마지막 jobId로 결과 실제 내용 확인
+curl -s "http://localhost:5000/api/serp/jobs/<JOB_ID>/results" | jq '.params,.searchVolumes, .summaryByKeyword[0]?.blogs[0]?.posts[0]?.tiers'
+
+
+보이면 UI 바인딩 문제.
+
+null/빈값이면 저장이 안 된 것 → 2번으로.
+
+2) 긴급 복구(살리기) — v16 레거시로 강제 폴백
+A) 설정으로 잠깐 v16로 내리기
+curl -s -X PUT http://localhost:5000/api/settings/algo \
+ -H "Content-Type: application/json" \
+ -d '{"features":{"preEnrich":false,"scoreFirstGate":false,"tierAutoFill":false},
+      "phase2":{"engine":"ngrams","postsPerBlog":10,"tiersPerPost":4},
+      "adscore":{"SCORE_MIN":0.0}}' > /dev/null
+
+B) analyze 핸들러에 “안전 폴백” 3줄 추가 (오류/비정상 시 자동 v16)
+
+server/routes.ts (POST /api/serp/analyze)
+
+ const cfg = await getAlgoConfig();
+-const useV17 = !!cfg?.features?.preEnrich || !!cfg?.features?.scoreFirstGate || cfg?.phase2?.engine !== "ngrams" || !!cfg?.features?.tierAutoFill;
++const override = (req.query.pipeline ?? "").toString();
++const forceLegacy = override === "legacy";
++const useV17 = !forceLegacy && ( !!cfg?.features?.preEnrich || !!cfg?.features?.scoreFirstGate
++                 || cfg?.phase2?.engine !== "ngrams" || !!cfg?.features?.tierAutoFill );
+
+
+그리고 v17 실행 블록을 try/catch로 감싸고 catch에서 레거시 호출:
+
+- if (useV17) {
+-   // ... v17 경로 ...
+- } else {
++ if (useV17) {
++   try {
++     // ... v17 경로 ...
++   } catch (e) {
++     console.error("[SAFE-FALLBACK] v17 failed → legacy", e);
++     processSerpAnalysisJob(/* 기존 파라미터 그대로 */);
++   }
++ } else {
+    processSerpAnalysisJob(/* 기존 파라미터 그대로 */);
+ }
+
+
+👉 이렇게 하면 깨져도 바로 v16로 떨어져서 빈화면은 사라집니다.
+(디버깅 중엔 ?pipeline=legacy 붙여서 강제 레거시로도 실행 가능)
+
+3) 근본 고치기 — “v17 결과가 저장/표시”되게 체결
+A) v17에서 finishSerpJob이 실제로 호출되는지 보장
+
+v17 fast-path/워커 경로에서:
+
+const tiers = await runPhase2(ctx, cfg);
+const payload = await assembleResults(jobId, tiers, cfg);
+await storage.finishSerpJob(jobId, payload);   // ★ 이게 안 되면 화면에 영원히 안뜸
+
+
+로그에 finishSerpJob OK 같은 한 줄 꼭 찍어.
+
+B) preEnrich가 ‘같은 요청 메모리’에 merge 되는지 확인
+
+API upsert만 하고 현재 후보에 merge 안 하면 volume: null 그대로 나옴.
+
+const apiRes = await searchAds.bulk(variants);
+await keywordsRepo.upsert(apiRes);
+mergeIntoCurrent(candidates, apiRes); // ★ 반드시
+
+C) Gate를 랭크 전에 적용
+
+위치: preEnrich 직후
+
+applyScoreFirstGate(candidates, cfg.adscore); // eligible/adScore/skipReason 세팅
+if (cfg.adscore.mode === "hard") {
+  candidates = candidates.filter(c => c.eligible);
+}
+
+D) 서버에서 점수 계산 후 응답에 포함 (UI 계산 금지)
+k.totalScore = totalScore(k.volume, k.meta, cfg.weights); // 0.26pts 고정 제거
+
+
+응답 tier 객체에 반드시:
+
+{ "text": "...", "volume": 24310, "rank": 2, "score": 45, "adScore": 0.61, "eligible": true, "skipReason": null }
+
+E) UI가 v17 설정을 진짜 읽는지
+
+관리자 페이지가 /api/dashboard/settings(v10)를 읽으면 아무 효과 없음.
+반드시 /api/settings/algo로 교체 + 저장 후
+
+queryClient.setQueryData(["algo-settings"], saved);  // invalidate 금지(무한루프 방지)
+
+4) 아주 짧은 회귀 테스트(2분)
+
+설정 확인
+
+curl -s localhost:5000/api/settings/algo | jq '.phase2.engine,.features,.adscore.SCORE_MIN'
+
+
+v17 재시작(점진)
+
+# preEnrich만 켜고 테스트
+curl -s -X PUT localhost:5000/api/settings/algo -H "Content-Type: application/json" \
+ -d '{"features":{"preEnrich":true,"scoreFirstGate":false,"tierAutoFill":false}}' > /dev/null
+# 새 분석
+curl -s -X POST localhost:5000/api/serp/analyze \
+ -H "Content-Type: application/json" \
+ -d '{"keywords":["잠실 맛집"],"mode":"phase2","postsPerBlog":10,"tiersPerPost":4}' \
+ | jq -r '.jobId'
+# 로그: [PRE-ENRICH] / 결과 JSON: searchVolumes 숫자여야 OK
+
+
+Gate 켜기
+
+curl -s -X PUT localhost:5000/api/settings/algo \
+ -H "Content-Type: application/json" \
+ -d '{"features":{"preEnrich":true,"scoreFirstGate":true},"adscore":{"SCORE_MIN":0.55}}' > /dev/null
+
+
+→ KPI에 스킵(점수) > 0, tier에 eligible/skipReason 보이면 정상.
+
+부족 티어 자동 보강 켜기
+
+curl -s -X PUT localhost:5000/api/settings/algo \
+ -H "Content-Type: application/json" \
+ -d '{"features":{"tierAutoFill":true}}' > /dev/null
+
+
+→ “비어있음” 사라져야 정상.
+
+5) 만약 그래도 “그대로”면?
+
+결과 JSON에서 위 필드들이 채워졌는지 먼저 보여줘.
+→ 채워졌는데 화면이 비면 UI 바인딩 문제.
+→ JSON도 비면 finishSerpJob 미호출 또는 preEnrich merge 누락이야.
+
+마지막으로
+
+지금은 내가 준 패치가 일부만 들어가서 “v17 시작 → 저장은 v16 쓰레드” 상태였고, 그 결과가 빈 화면이었어.
+위 안전 폴백 + 저장 체결 + 설정/엔진/파이프라인 3점 일치만 잡으면 바로 살아난다.
+혹시 원하면 routes.ts analyze 핸들러 최종본이랑 finishSerpJob 호출부를 다시 올려줘. 거기서 라인 단위로 마저 맞춰줄게.
