@@ -13,6 +13,14 @@ import { Sparkline } from "@/components/ui/sparkline";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
 import { RankTrendChart } from "@/components/charts/rank-trend-chart";
+import { 
+  KeywordChip, 
+  StreakBadge, 
+  GoToLinkButton, 
+  ExposureFilter, 
+  StartAllChecksButton,
+  RankChangeBadge
+} from "@/components/ui/ranking-badges";
 import { toast } from "@/hooks/use-toast";
 import { 
   Search, 
@@ -26,10 +34,7 @@ import {
   X,
   Eye,
   RefreshCw,
-  Bell,
-  TrendingUp,
-  TrendingDown,
-  Minus
+  Bell
 } from "lucide-react";
 import { ColumnDef } from "@tanstack/react-table";
 import { targetsApi, scrapingApi, rankApi, manualBlogApi } from "@/lib/api";
@@ -49,6 +54,8 @@ interface RankingData {
   trend: number[];
   status: "active" | "warning" | "error";
   lastCheck: string;
+  exposed: boolean;
+  streakDays: number;
 }
 
 // Form schema for manual blog entry
@@ -159,7 +166,9 @@ export default function Rank() {
           url: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
           trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
           status: target.enabled ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
-          lastCheck: "5분 전"
+          lastCheck: "5분 전",
+          exposed: baseRank <= 15, // 15위까지만 노출
+          streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3
         };
       });
   };
@@ -184,21 +193,18 @@ export default function Rank() {
       accessorKey: "keyword",
       header: "키워드",
       cell: ({ row }) => {
-        const status = row.original.status;
-        const statusColor = status === "active" ? "bg-green-500" : 
-                          status === "warning" ? "bg-yellow-500" : "bg-red-500";
-        const statusText = status === "active" ? "정상" :
-                         status === "warning" ? "주의" : "오류";
-        const statusTextColor = status === "active" ? "text-green-400" :
-                               status === "warning" ? "text-yellow-400" : "text-red-400";
+        const idNum = parseInt(row.original.id?.slice(-1) || '0');
+        // Mock data: 키워드별 조회량과 점수
+        const volume = [1200, 850, 2400, 560, 1800, 920, 1500][idNum % 7] || 1000;
+        const score = [85, 72, 91, 68, 88, 74, 82][idNum % 7] || 75;
         
         return (
-          <div className="flex items-center gap-3">
-            <div className={`w-2 h-2 ${statusColor} rounded-full`}></div>
-            <span className="text-sm font-medium text-foreground">{row.original.keyword}</span>
-            <Badge variant="outline" className={statusTextColor}>
-              {statusText}
-            </Badge>
+          <div className="space-y-2">
+            <KeywordChip 
+              keyword={row.original.keyword}
+              volume={volume}
+              score={score}
+            />
           </div>
         );
       },
@@ -206,54 +212,35 @@ export default function Rank() {
     {
       accessorKey: "rank",
       header: "현재 순위",
-      cell: ({ row }) => (
-        <div className="text-sm">
-          <span className="text-2xl font-bold text-foreground">{row.original.rank}</span>
-          <span className="text-muted-foreground text-sm ml-1">위</span>
-        </div>
-      ),
-    },
-    {
-      accessorKey: "change",
-      header: "변동",
       cell: ({ row }) => {
-        const change = row.original.change;
-        const isPositive = change > 0;
-        const isNegative = change < 0;
-        
         return (
-          <div className="flex items-center gap-2">
-            {isPositive && <TrendingUp className="w-4 h-4 text-green-500" />}
-            {isNegative && <TrendingDown className="w-4 h-4 text-red-500" />}
-            {change === 0 && <Minus className="w-4 h-4 text-gray-500" />}
-            <span className={`font-medium ${
-              isPositive ? "text-green-500" : 
-              isNegative ? "text-red-500" : "text-gray-500"
-            }`}>
-              {change > 0 ? "+" : ""}{change}
-            </span>
+          <div className="space-y-2">
+            <div className="text-sm">
+              <span className="text-2xl font-bold text-foreground">{row.original.rank}</span>
+              <span className="text-muted-foreground text-sm ml-1">위</span>
+            </div>
+            <StreakBadge days={row.original.streakDays} exposed={row.original.exposed} />
           </div>
         );
       },
     },
     {
-      accessorKey: "page",
-      header: "페이지",
-      cell: ({ row }) => (
-        <span className="text-sm text-muted-foreground">{row.original.page}페이지</span>
-      ),
+      accessorKey: "change",
+      header: "변동",
+      cell: ({ row }) => {
+        return (
+          <RankChangeBadge change={row.original.change} />
+        );
+      },
     },
     {
       accessorKey: "url",
-      header: "블로그 URL",
+      header: "바로가기",
       cell: ({ row }) => (
-        <a 
-          href="#" 
-          className="text-primary hover:text-primary/80 text-sm truncate max-w-xs block"
-          onClick={(e) => e.preventDefault()}
-        >
-          {row.original.url}
-        </a>
+        <GoToLinkButton 
+          url={`https://${row.original.url}`}
+          title={`${row.original.keyword} 블로그로 이동`}
+        />
       ),
     },
     {
@@ -460,36 +447,34 @@ export default function Rank() {
           </div>
 
           {/* Quick Actions */}
-          <div className="flex flex-wrap gap-3 items-center justify-between">
+          <div className="flex flex-wrap gap-4 items-center justify-between">
             <div className="flex flex-wrap gap-3">
-              <Button className="flex items-center gap-2" data-testid="button-start-check">
-                <Play className="w-4 h-4" />
-                전체 체크 시작
-              </Button>
-              <Button variant="secondary" className="flex items-center gap-2">
+              <StartAllChecksButton
+                onClick={() => {
+                  toast({
+                    title: "순위 체크 시작",
+                    description: "블로그 → 쇼핑 순으로 체크를 진행합니다.",
+                  });
+                }}
+              />
+              <Button variant="outline" className="flex items-center gap-2">
                 <Download className="w-4 h-4" />
                 결과 내보내기
               </Button>
-              <Button variant="secondary" className="flex items-center gap-2">
+              <Button variant="outline" className="flex items-center gap-2">
                 <History className="w-4 h-4" />
                 히스토리 보기
               </Button>
             </div>
-            <div className="flex gap-3 items-center">
-              <div className="flex items-center gap-2">
-                <Label className="text-sm text-muted-foreground">필터:</Label>
-                <Select defaultValue="all">
-                  <SelectTrigger className="w-24">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">전체</SelectItem>
-                    <SelectItem value="up">상승</SelectItem>
-                    <SelectItem value="down">하락</SelectItem>
-                    <SelectItem value="new">신규</SelectItem>
-                    <SelectItem value="stable">변동없음</SelectItem>
-                  </SelectContent>
-                </Select>
+            <div className="flex gap-4 items-center">
+              <div className="flex items-center gap-3">
+                <Label className="text-sm text-muted-foreground">노출 필터:</Label>
+                <ExposureFilter
+                  value="all"
+                  onChange={(value) => {
+                    console.log("Filter changed:", value);
+                  }}
+                />
               </div>
               <div className="flex items-center gap-2">
                 <Label className="text-sm text-muted-foreground">정렬:</Label>
@@ -499,6 +484,8 @@ export default function Rank() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="recent">최근 업데이트순</SelectItem>
+                    <SelectItem value="volume">조회량순</SelectItem>
+                    <SelectItem value="score">점수순</SelectItem>
                     <SelectItem value="rank-asc">순위 높은순</SelectItem>
                     <SelectItem value="rank-desc">순위 낮은순</SelectItem>
                     <SelectItem value="change">변동 큰순</SelectItem>
@@ -554,9 +541,7 @@ export default function Rank() {
                       </div>
                       <div className="text-sm text-muted-foreground mb-3">현재 순위</div>
                       <div className="flex items-center justify-center gap-2">
-                        {selectedRankingDetail.change > 0 && <TrendingUp className="w-4 h-4 text-green-500" />}
-                        {selectedRankingDetail.change < 0 && <TrendingDown className="w-4 h-4 text-red-500" />}
-                        {selectedRankingDetail.change === 0 && <Minus className="w-4 h-4 text-gray-500" />}
+                        <RankChangeBadge change={selectedRankingDetail.change} />
                         <span className={`font-medium ${
                           selectedRankingDetail.change > 0 ? "text-green-500" :
                           selectedRankingDetail.change < 0 ? "text-red-500" : "text-gray-500"
