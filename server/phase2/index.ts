@@ -45,7 +45,7 @@ export async function runPhase2(
     const tiers = engine.assignTiers(enrichedCandidates, cfg);
     
     if (cfg.features.log_calculations) {
-      console.log(`🎯 [Phase2] Assigned ${tiers.length} tiers: ${tiers.map(t => `T${t.tier}:${t.text}`).join(", ")}`);
+      console.log(`🎯 [Phase2] Assigned ${tiers.length} tiers: ${tiers.map(t => `T${t.tier}:${t.candidate?.text || 'empty'}`).join(", ")}`);
     }
     
     return tiers;

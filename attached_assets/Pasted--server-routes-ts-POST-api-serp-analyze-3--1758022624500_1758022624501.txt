@@ -1,0 +1,86 @@
+지금 필요한 파일/구간 (정확히 이 함수들)
+
+분석 진입부 – server/routes.ts
+
+POST /api/serp/analyze 핸들러 전체
+
+여기서 아래 3개가 호출되는지 확인해야 합니다:
+getAlgoConfig(), preEnrich(candidates), applyScoreFirstGate(candidates,cfg.adscore)
+
+그리고 runPhase2(...) 후 결과 조립에서 tier.score(서버 계산) 넣는 부분
+
+설정 로더(핫리로드) – server/services/algo-config.ts
+
+getAlgoConfig(), 캐시 TTL, invalidateAlgoConfigCache() 구현
+
+실제로 읽는 엔드포인트가 /api/settings/algo 저장값과 일치하는지
+
+Phase2 엔진 러너 – server/phase2/index.ts (또는 엔진 레지스트리)
+
+runPhase2(ctx,cfg)에서
+generateCandidates → enrichAndScore(DB→API→upsert→merge + rank + totalScore) → assignTiers → autoFill 순서가 보장되는지
+
+applyScoreFirstGate 호출이 enrich 이전/이후 어느 시점인지 (권장: preEnrich 후 즉시 Gate)
+
+설정 페이지(UI) – client/src/pages/admin-settings.tsx (또는 dashboard.tsx)
+
+현재 불러오는 엔드포인트: /api/dashboard/settings(v10?) → /api/settings/algo(v17) 로 교체 필요
+
+폼에 Gate/Generator/Features 필드가 실제로 바인딩되어 있는지
+
+저장 시 PUT /api/settings/algo + setQueryData 사용(무한 invalidate 금지)
+
+추가로 짧게: server/services/score.ts(총점 계산), server/phase2/engines/lk.ts의 assignTiers/autoFill 함수 부분도 있으면 정확히 집도 가능합니다.
+
+왜 이 네 군데가 핵심인지 (증상 매칭)
+
+관리자 설정에 Gate/cats/banSingles 없음 → UI가 v10 설정을 계속 읽음.
+
+tier가 0.26pts 같은 상수 → 서버 계산 미반영(UI 기본값 렌더).
+
+비어있음 → autoFill 미호출 or 임계 완화 미적용.
+
+조회량 ‘–’ → preEnrich의 merge 누락(업서트 했어도 메모리에 반영 안 됨).
+
+내가 적용할 빠른 패치(파일 받으면 즉시 넣을 로직)
+
+routes.ts
+
+const cfg = await getAlgoConfig();
+const cands = genCandidates(title, cfg);        // LK + 2-그램
+await preEnrich(cands);                         // DB→API→upsert→merge  (★)
+applyScoreFirstGate(cands, cfg.adscore);        // eligible/adScore/skipReason (★)
+const tiers = await runPhase2({title,cands}, cfg); // rank+totalScore 서버에서
+// 결과 조립 시 tiers[*].score/adScore/eligible/skipReason 포함
+
+
+algo-config.ts
+getAlgoConfig() 핫리로드(30초 TTL) + invalidateAlgoConfigCache() (PUT/rollback에서 호출)
+
+index.ts(엔진)
+enrichAndScore에서 rank와 totalScore를 서버에서 계산해 반환.
+autoFill은 부족 시 보강 + forceFill 완화 적용.
+
+admin-settings.tsx
+GET/PUT를 /api/settings/algo로 바꾸고 Gate/Generator/Features 필드 추가. 저장 시 qc.setQueryData(["algo-settings"], saved)로 반영.
+
+확인 루틴(붙여넣고 돌려볼 테스트)
+
+SCORE_MIN을 0.9로 올리고 저장 → 새 분석 → 결과 JSON에 skippedByScore>0, tier에 eligible=false/skipReason="score<thr".
+
+새 분석 시작 직후 로그에 [PRE-ENRICH] start/ok + [AdScore] ...가 떠야 함.
+
+어떤 포스트든 2~4티어 score가 0이 아님(서버 계산).
+
+전수 저장:
+
+SELECT COUNT(*) FROM post_tier_checks WHERE job_id='<JOB>';
+SELECT eligible,adscore,skip_reason FROM post_tier_checks WHERE job_id='<JOB>' LIMIT 10;
+
+요약
+
+지금은 경로 미연결 문제입니다(코드가 틀렸다기보다 “안 물렸다”).
+
+위 4개 파일만 주시면 preEnrich→Gate→rank/score→autoFill을 한 번에 묶어 드릴게요.
+
+그 다음 관리자 설정 UI를 v17 엔드포인트로 전환하면, 패널에서 조정한 값이 즉시 반

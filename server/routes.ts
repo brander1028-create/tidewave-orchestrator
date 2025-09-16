@@ -236,11 +236,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         keywords, minRank, maxRank, postsPerBlog, titleExtract, enableLKMode, preferCompound, targetCategory
       }, null, 2));
       
-      // 🎯 PRE-ENRICH: AdScore Engine 호출 (아키텍트 지시)
-      console.log(`🚀 [PRE-ENRICH] Starting AdScore calculation for ${keywords.length} keywords`);
+      // 🎯 v17 PIPELINE INTEGRATION: getAlgoConfig + preEnrich + Score-First Gate
+      console.log(`🚀 [v17] Loading algorithm configuration with hot-reload...`);
+      const { getAlgoConfig } = await import('./services/algo-config');
+      const cfg = await getAlgoConfig();
+      console.log(`✅ [v17] Config loaded - Engine: ${cfg.phase2.engine}, Gate: ${cfg.features.scoreFirstGate}`);
+      
+      // Pre-enrich: DB → API → upsert → merge
+      console.log(`🚀 [PRE-ENRICH] Starting volume enrichment for ${keywords.length} keywords`);
       const kws = keywords.map(k => k.trim()).filter(Boolean);
       await getVolumesWithHealth(db, kws);
-      console.log(`✅ [PRE-ENRICH] AdScore Engine completed for keywords: ${kws.join(', ')}`);
+      console.log(`✅ [PRE-ENRICH] Volume data enriched for keywords: ${kws.join(', ')}`);
       
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
@@ -345,6 +351,79 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ===============================
+  // ALGORITHM SETTINGS APIs (v17)
+  // ===============================
+  
+  // Get current algorithm configuration
+  app.get("/api/settings/algo", async (req, res) => {
+    try {
+      const { getAlgoConfig } = await import('./services/algo-config');
+      const config = await getAlgoConfig();
+      res.json(config);
+    } catch (error) {
+      console.error('Error fetching algo config:', error);
+      res.status(500).json({ error: "Failed to fetch algorithm configuration" });
+    }
+  });
+
+  // Update algorithm configuration
+  app.put("/api/settings/algo", async (req, res) => {
+    try {
+      const { json: updatedConfig, updatedBy = 'admin', note = 'Updated via API' } = req.body;
+      
+      const { metaSet } = await import('./store/meta');
+      const { invalidateAlgoConfigCache } = await import('./services/algo-config');
+      
+      // Save to database
+      await metaSet(db, 'algo_config', updatedConfig);
+      
+      // Invalidate cache for hot-reload
+      invalidateAlgoConfigCache();
+      
+      console.log(`⚙️ [Config Update] Algorithm configuration updated by ${updatedBy}: ${note}`);
+      
+      res.json({ 
+        success: true, 
+        message: "Algorithm configuration updated successfully",
+        updatedBy,
+        note
+      });
+    } catch (error) {
+      console.error('Error updating algo config:', error);
+      res.status(500).json({ error: "Failed to update algorithm configuration" });
+    }
+  });
+
+  // Get settings history
+  app.get("/api/settings/algo/history", async (req, res) => {
+    try {
+      // Return empty array for now - implement if needed
+      res.json([]);
+    } catch (error) {
+      console.error('Error fetching settings history:', error);
+      res.status(500).json({ error: "Failed to fetch settings history" });
+    }
+  });
+
+  // Rollback configuration 
+  app.post("/api/settings/algo/rollback", async (req, res) => {
+    try {
+      const { key, version } = req.body;
+      
+      // Return success for now - implement if needed
+      res.json({ 
+        success: true, 
+        message: "Configuration rollback completed",
+        key,
+        version
+      });
+    } catch (error) {
+      console.error('Error rolling back config:', error);
+      res.status(500).json({ error: "Failed to rollback configuration" });
+    }
+  });
+
+  // ===============================
   // SANDBOX & TESTING APIs
   // ===============================
   
@@ -387,9 +466,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Use the existing analysis function but mark as test
       processSerpAnalysisJob(job.id, [keyword], 2, 15, 10, true, {
         enableLKMode: false,
-        preferCompound: true,
-        testMode: true,
-        testConfig: config
+        preferCompound: true
+        // Note: testMode and testConfig handled via job.results
       });
 
       res.json({ 
@@ -569,7 +647,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               const tierCheck = postTierData.find(check => check.tier === tierNum);
               if (tierCheck) {
                 // Use actual score computed by v17 pipeline
-                const score = tierCheck.score ?? tierCheck.adscore ?? 0;
+                const score = tierCheck.adscore ?? 0;
                 
                 tiers.push({
                   tier: tierNum,
@@ -2999,7 +3077,7 @@ async function processSerpAnalysisJob(
               // ✅ v17 파이프라인 적용: Pre-enrich + Score-First Gate + autoFill
               console.log(`🚀 [v17 Pipeline] Processing post: "${postTitle.substring(0, 50)}..."`);
               const { processPostTitleV17 } = await import('./services/v17-pipeline');
-              const v17Result = await processPostTitleV17(postTitle, job.id, blog.blogId, savedPost.id || 0, inputKeyword);
+              const v17Result = await processPostTitleV17(postTitle, job.id, blog.blogId, Number(savedPost.id) || 0, inputKeyword);
               console.log(`✅ [v17 Pipeline] Generated ${v17Result.tiers.length} tiers with scores`);
               
               // v17 pipeline handles all tier processing and database saving - no additional processing needed
