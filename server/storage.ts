@@ -517,6 +517,68 @@ export class DatabaseStorage implements IStorage {
         await this.updateSetting(setting.key, setting.value);
       }
     }
+
+    // Initialize default blog targets if none exist
+    const existingBlogTargets = await this.getBlogTargets('system');
+    if (existingBlogTargets.length === 0) {
+      const defaultBlogTargets = [
+        {
+          title: '홍삼 건강 블로그',
+          url: 'https://blog.naver.com/ginseng_health',
+          queries: ['홍삼', '홍삼 효능', '홍삼 추천'],
+          windowMin: 1,
+          windowMax: 10,
+          scheduleCron: '0 * * * *',
+          owner: 'system',
+          active: true
+        },
+        {
+          title: '프리미엄 건강식품 리뷰',
+          url: 'https://blog.naver.com/premium_health',
+          queries: ['홍삼스틱', '홍삼 가격', '홍삼 제품'],
+          windowMin: 1,
+          windowMax: 15,
+          scheduleCron: '0 */2 * * *',
+          owner: 'system',
+          active: true
+        },
+        {
+          title: '자연의 힘 웰니스',
+          url: 'https://blog.naver.com/nature_wellness',
+          queries: ['정관장 홍삼', '홍삼 복용법', '홍삼 부작용'],
+          windowMin: 1,
+          windowMax: 20,
+          scheduleCron: '0 */3 * * *',
+          owner: 'system',
+          active: true
+        },
+        {
+          title: '건강한 라이프스타일',
+          url: 'https://blog.naver.com/healthy_lifestyle',
+          queries: ['고려홍삼', '홍삼 선택법'],
+          windowMin: 1,
+          windowMax: 12,
+          scheduleCron: '0 */4 * * *',
+          owner: 'system',
+          active: true
+        }
+      ];
+
+      for (const blogTargetData of defaultBlogTargets) {
+        const blogTarget = await this.createBlogTarget(blogTargetData);
+        
+        // Add keywords for this blog target
+        const keywords = blogTargetData.queries;
+        for (const keyword of keywords) {
+          await db.insert(targetKeywords).values({
+            targetId: blogTarget.id,
+            keywordText: keyword,
+            active: true,
+            addedBy: 'system'
+          });
+        }
+      }
+    }
   }
 
   // Manual Blog Entries Implementation
@@ -1573,6 +1635,9 @@ export class MemStorage implements IStorage {
     
     // Initialize mock review metrics
     this.initializeReviewMetrics();
+    
+    // Initialize mock blog targets
+    this.initializeBlogTargets();
   }
 
   private initializeTrackedTargets() {
@@ -1631,6 +1696,75 @@ export class MemStorage implements IStorage {
         enabled: true,
         tags: ['홍삼', '쇼핑', 'E-commerce'],
         createdAt: new Date(Date.now() - Math.random() * 15 * 24 * 60 * 60 * 1000)
+      });
+    });
+  }
+
+  private initializeBlogTargets() {
+    const defaultBlogTargets = [
+      {
+        id: 'blog-target-1',
+        title: '홍삼 건강 블로그',
+        url: 'https://blog.naver.com/ginseng_health',
+        queries: ['홍삼', '홍삼 효능', '홍삼 추천'],
+        windowMin: 1,
+        windowMax: 10,
+        scheduleCron: '0 * * * *',
+        owner: 'system',
+        active: true,
+        createdAt: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000)
+      },
+      {
+        id: 'blog-target-2',
+        title: '프리미엄 건강식품 리뷰',
+        url: 'https://blog.naver.com/premium_health',
+        queries: ['홍삼스틱', '홍삼 가격', '홍삼 제품'],
+        windowMin: 1,
+        windowMax: 15,
+        scheduleCron: '0 */2 * * *',
+        owner: 'system',
+        active: true,
+        createdAt: new Date(Date.now() - Math.random() * 14 * 24 * 60 * 60 * 1000)
+      },
+      {
+        id: 'blog-target-3',
+        title: '자연의 힘 웰니스',
+        url: 'https://blog.naver.com/nature_wellness',
+        queries: ['정관장 홍삼', '홍삼 복용법', '홍삼 부작용'],
+        windowMin: 1,
+        windowMax: 20,
+        scheduleCron: '0 */3 * * *',
+        owner: 'system',
+        active: true,
+        createdAt: new Date(Date.now() - Math.random() * 21 * 24 * 60 * 60 * 1000)
+      },
+      {
+        id: 'blog-target-4',
+        title: '건강한 라이프스타일',
+        url: 'https://blog.naver.com/healthy_lifestyle',
+        queries: ['고려홍삼', '홍삼 선택법'],
+        windowMin: 1,
+        windowMax: 12,
+        scheduleCron: '0 */4 * * *',
+        owner: 'system',
+        active: true,
+        createdAt: new Date(Date.now() - Math.random() * 28 * 24 * 60 * 60 * 1000)
+      }
+    ];
+
+    defaultBlogTargets.forEach(target => {
+      this.blogTargets.set(target.id, target);
+      
+      // Add keywords for each blog target
+      target.queries.forEach(keyword => {
+        const keywordKey = `${target.id}-${keyword}`;
+        this.targetKeywords.set(keywordKey, {
+          targetId: target.id,
+          keywordText: keyword,
+          active: true,
+          addedBy: 'system',
+          ts: new Date()
+        });
       });
     });
   }

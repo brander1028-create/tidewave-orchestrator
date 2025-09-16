@@ -12,6 +12,7 @@ export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
+  abortController?: AbortController,
 ): Promise<Response> {
   const headers = new Headers();
   if (data) {
@@ -27,6 +28,7 @@ export async function apiRequest(
     headers,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
+    signal: abortController?.signal,
   });
 
   await throwIfResNotOk(res);

@@ -76,8 +76,8 @@ export const scrapingApi = {
     device: 'mobile' | 'pc';
     sort?: string;
     target?: string;
-  }>) => {
-    const response = await apiRequest("POST", "/api/scraping/batch-rank-check", { targets });
+  }>, abortController?: AbortController) => {
+    const response = await apiRequest("POST", "/api/scraping/batch-rank-check", { targets }, abortController);
     return response.json();
   }
 };
@@ -107,7 +107,7 @@ export const rankApi = {
     return response.json();
   },
 
-  // v7.12.2: Get rank check plan (계획 조회)
+  // v7.12.2: Get rank check plan (계획 조회) - 배열 직렬화 수정
   plan: async (params: { 
     kind?: string; 
     target_ids?: string[]; 
@@ -115,15 +115,23 @@ export const rankApi = {
   }) => {
     const searchParams = new URLSearchParams();
     if (params.kind) searchParams.append('kind', params.kind);
-    if (params.target_ids) {
-      params.target_ids.forEach(id => searchParams.append('target_ids', id));
+    if (params.target_ids && params.target_ids.length > 0) {
+      // 배열을 JSON 문자열로 직렬화하거나 쉼표로 구분된 문자열로 전송
+      searchParams.append('target_ids', params.target_ids.join(','));
     }
-    if (params.query_override) {
-      params.query_override.forEach(query => searchParams.append('query_override', query));
+    if (params.query_override && params.query_override.length > 0) {
+      // 배열을 JSON 문자열로 직렬화하거나 쉼표로 구분된 문자열로 전송
+      searchParams.append('query_override', params.query_override.join(','));
     }
     
+    console.log('[DEBUG] rankApi.plan sending params:', searchParams.toString());
+    
     const response = await apiRequest("GET", `/api/rank/plan?${searchParams.toString()}`);
-    return response.json();
+    const result = await response.json();
+    
+    console.log('[DEBUG] rankApi.plan received result:', result);
+    
+    return result;
   },
 
   // v7.12.2: Blog rank check (개별 실행)
@@ -141,6 +149,24 @@ export const rankApi = {
       device: 'mobile',
       maxPages: 3
     });
+    return response.json();
+  },
+
+  // v7.12.2: Blog batch check (배치 실행) - 올바른 스키마 사용
+  batchBlogCheck: async (tasks: Array<{ target_id: string; query: string; nickname: string }>, abortController?: AbortController) => {
+    // 배치 스크래핑 API 형식으로 변환
+    const targets = tasks.map(task => ({
+      targetId: task.target_id,
+      query: task.query,
+      kind: 'blog' as const,
+      device: 'mobile' as const,
+      sort: undefined,
+      target: undefined
+    }));
+
+    const response = await apiRequest("POST", "/api/scraping/batch-rank-check", {
+      targets
+    }, abortController);
     return response.json();
   },
 

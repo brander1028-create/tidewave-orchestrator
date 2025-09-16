@@ -1014,23 +1014,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { kind = 'blog', target_ids, query_override } = req.query;
       
-      // target_ids 파라미터 처리 (문자열 또는 배열)
+      // target_ids 파라미터 처리 (문자열 또는 배열, 쉼표 구분 지원)
       let targetIds: string[] = [];
       if (target_ids) {
         if (Array.isArray(target_ids)) {
           targetIds = target_ids as string[];
         } else {
-          targetIds = [target_ids as string];
+          // 쉼표로 구분된 문자열 지원
+          targetIds = (target_ids as string).split(',').map(id => id.trim()).filter(Boolean);
         }
       }
+      
+      console.log('[DEBUG] Parsed targetIds:', targetIds);
 
-      // query_override 파라미터 처리
+      // query_override 파라미터 처리 (쉼표 구분 지원)
       let queryOverrides: string[] = [];
       if (query_override) {
         if (Array.isArray(query_override)) {
           queryOverrides = query_override as string[];
         } else {
-          queryOverrides = [query_override as string];
+          // 쉼표로 구분된 문자열 지원
+          queryOverrides = (query_override as string).split(',').map(q => q.trim()).filter(Boolean);
         }
       }
 
@@ -1040,7 +1044,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // target_ids 필터 적용
       if (targetIds.length > 0) {
+        console.log('[DEBUG] Filtering targets. Available target IDs:', allTargets.map(t => t.id));
+        console.log('[DEBUG] Looking for target IDs:', targetIds);
         filteredTargets = allTargets.filter(target => targetIds.includes(target.id));
+        console.log('[DEBUG] Filtered targets count:', filteredTargets.length);
       }
 
       // 각 타겟별 작업 계획 생성
@@ -1237,44 +1244,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const results = [];
       
       for (const targetConfig of targets) {
-        const { targetId, query, kind, device, sort, target } = targetConfig;
-        
-        const config = {
-          target: target || '',
-          query,
-          device: device as 'mobile' | 'pc',
-          kind: kind as 'blog' | 'shop',
-          sort,
-          maxRetries: 3,
-          backoffMs: 1000
-        };
-
-        const result = await scrapingService.scrapeRanking(config);
-        
-        if (result.success && result.data) {
-          // Save to database
-          const rankData = {
-            targetId,
-            kind,
+        // Per-target try/catch for partial failure isolation
+        try {
+          const { targetId, query, kind, device, sort, target } = targetConfig;
+          
+          const config = {
+            target: target || '',
             query,
-            sort: sort || null,
-            device,
-            rank: result.data.rank || null,
-            page: result.data.page || null,
-            position: result.data.position || null,
-            source: 'playwright_scraping',
-            metadata: result.data.metadata
+            device: device as 'mobile' | 'pc',
+            kind: kind as 'blog' | 'shop',
+            sort,
+            maxRetries: 3,
+            backoffMs: 1000
           };
 
-          await storage.insertRankData(rankData);
+          const result = await scrapingService.scrapeRanking(config);
+          
+          if (result.success && result.data) {
+            // Save to database
+            const rankData = {
+              targetId,
+              kind,
+              query,
+              sort: sort || null,
+              device,
+              rank: result.data.rank || null,
+              page: result.data.page || null,
+              position: result.data.position || null,
+              source: 'playwright_scraping',
+              metadata: result.data.metadata
+            };
+
+            await storage.insertRankData(rankData);
+          }
+          
+          results.push({
+            targetId,
+            success: result.success,
+            data: result.data,
+            error: result.error
+          });
+        } catch (error) {
+          // Per-target error isolation - continue processing other targets
+          results.push({
+            targetId: targetConfig.targetId,
+            success: false,
+            data: null,
+            error: `Target processing failed: ${String(error)}`
+          });
         }
-        
-        results.push({
-          targetId,
-          success: result.success,
-          data: result.data,
-          error: result.error
-        });
         
         // Small delay between requests to be respectful
         await new Promise(resolve => setTimeout(resolve, 2000));

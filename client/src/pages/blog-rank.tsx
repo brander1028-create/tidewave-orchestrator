@@ -109,7 +109,7 @@ export default function BlogRank() {
   const [isRunning, setIsRunning] = React.useState(false);
   const [progress, setProgress] = React.useState({ done: 0, total: 0, text: '준비 중...' });
   const [currentTask, setCurrentTask] = React.useState<{ query: string; nickname: string } | null>(null);
-  const [cancelled, setCancelled] = React.useState(false);
+  const cancelledRef = React.useRef(false);
   const [failures, setFailures] = React.useState<Array<{ task: any; error: string }>>([]);
   const [rowLoadingState, setRowLoadingState] = React.useState<Set<string>>(new Set());
   
@@ -299,10 +299,16 @@ export default function BlogRank() {
     }
   };
 
-  // v7.12.2: 배치 실행 로직
+  // v7.12.2: 배치 실행 로직 - AbortController와 청킹 지원
+  const [abortController, setAbortController] = React.useState<AbortController | null>(null);
+
   const runAllChecks = React.useCallback(async () => {
+    // AbortController 생성
+    const controller = new AbortController();
+    setAbortController(controller);
+    
     setIsRunning(true);
-    setCancelled(false);
+    cancelledRef.current = false;
     setFailures([]);
     setProgress({ done: 0, total: 0, text: '준비중...' });
     setCurrentTask(null);
@@ -325,118 +331,181 @@ export default function BlogRank() {
           variant: "destructive"
         });
         setIsRunning(false);
+        setAbortController(null);
         return;
       }
 
-      setProgress({ done: 0, total: plan.total, text: '시작합니다' });
-
-      // 2) 배치 실행 (동시성 3개)
       const tasks = plan.tasks;
-      const CONCURRENCY = 3;
-      let done = 0;
-      let active = 0;
-      let i = 0;
-      let completedCount = 0; // 완료 추적 카운터
+      setProgress({ done: 0, total: tasks.length, text: '배치 청킹 시작...' });
 
-      // 행별 로딩 상태 설정
+      // 2) 태스크를 10개씩 청킹
+      const CHUNK_SIZE = 10;
+      const chunks: Task[][] = [];
+      for (let i = 0; i < tasks.length; i += CHUNK_SIZE) {
+        chunks.push(tasks.slice(i, i + CHUNK_SIZE));
+      }
+
+      // 행별 로딩 상태 설정 (전체 태스크)
       const taskKeys = tasks.map((t: Task) => `${t.target_id}-${t.query}`);
       setRowLoadingState(new Set(taskKeys));
 
-      const runNext = async () => {
-        if (cancelled || i >= tasks.length) return;
-        
-        const task = tasks[i++];
-        active++;
-        setCurrentTask({ query: task.query, nickname: task.nickname });
+      let totalSuccessCount = 0;
+      let totalFailureCount = 0;
+      let processedCount = 0;
 
-        try {
-          await rankApi.blogCheck({ 
-            target_ids: [task.target_id], 
-            query_override: [task.query] 
-          });
-          
-          done++;
-          setRowLoadingState(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(`${task.target_id}-${task.query}`);
-            return newSet;
-          });
-        } catch (error) {
-          setFailures(prev => [...prev, { task, error: String(error) }]);
-          setRowLoadingState(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(`${task.target_id}-${task.query}`);
-            return newSet;
-          });
+      // 3) 각 청크를 순차적으로 처리
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+        // 취소 확인
+        if (cancelledRef.current || controller.signal.aborted) {
+          break;
         }
-        
-        // 완료 카운터 증가 (성공/실패 무관)
-        completedCount++;
 
-        active--;
-        setProgress({ 
-          done, 
-          total: tasks.length, 
-          text: `${task.query} / ${task.nickname}` 
+        const chunk = chunks[chunkIndex];
+        setCurrentTask({ 
+          query: `배치 ${chunkIndex + 1}/${chunks.length}`, 
+          nickname: `${chunk.length}개 태스크` 
         });
 
-        if (i < tasks.length && !cancelled) {
-          runNext();
-        }
-      };
+        setProgress({ 
+          done: processedCount, 
+          total: tasks.length, 
+          text: `청크 ${chunkIndex + 1}/${chunks.length} 처리 중...` 
+        });
 
-      // 완료 대기 함수 정의
-      const checkCompletion = () => {
-        if (completedCount >= tasks.length || cancelled) {
-          setRowLoadingState(new Set());
-          setIsRunning(false);
-          setCurrentTask(null);
+        try {
+          // 청크 단위로 배치 실행
+          const chunkResult = await rankApi.batchBlogCheck(chunk, controller);
           
-          const successCount = done;
-          const failCount = completedCount - done;
+          // 청크 결과 처리
+          let chunkSuccessCount = 0;
+          let chunkFailureCount = 0;
           
-          toast({
-            title: "체크 완료",
-            description: `성공: ${successCount}개, 실패: ${failCount}개`,
-            variant: failCount > 0 ? "destructive" : "default"
+          if (chunkResult.results) {
+            chunkResult.results.forEach((r: any, index: number) => {
+              const task = chunk[index];
+              if (r.success) {
+                chunkSuccessCount++;
+              } else {
+                chunkFailureCount++;
+                setFailures(prev => [...prev, { task, error: r.error || '알 수 없는 오류' }]);
+              }
+              
+              // 개별 작업 로딩 상태 해제
+              setRowLoadingState(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(`${task.target_id}-${task.query}`);
+                return newSet;
+              });
+            });
+          } else {
+            // 결과가 없는 경우 전체 청크를 실패로 처리
+            chunkFailureCount = chunk.length;
+            chunk.forEach(task => {
+              setFailures(prev => [...prev, { task, error: '응답 없음' }]);
+              setRowLoadingState(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(`${task.target_id}-${task.query}`);
+                return newSet;
+              });
+            });
+          }
+
+          totalSuccessCount += chunkSuccessCount;
+          totalFailureCount += chunkFailureCount;
+          processedCount += chunk.length;
+
+          // 청크 완료 후 진행률 업데이트
+          setProgress({ 
+            done: processedCount, 
+            total: tasks.length, 
+            text: `청크 ${chunkIndex + 1} 완료: 성공 ${chunkSuccessCount}, 실패 ${chunkFailureCount}` 
           });
-          
-          // 데이터 새로고침
-          queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
-          return;
-        }
-        setTimeout(checkCompletion, 500);
-      };
 
-      // 동시 실행 시작
-      for (let k = 0; k < Math.min(CONCURRENCY, tasks.length); k++) {
-        runNext();
+          // 청크 간 짧은 대기 (부하 분산)
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+        } catch (error) {
+          // 청크 전체 실패
+          if (error.name === 'AbortError') {
+            // 취소된 경우
+            break;
+          }
+          
+          totalFailureCount += chunk.length;
+          processedCount += chunk.length;
+          
+          chunk.forEach(task => {
+            setFailures(prev => [...prev, { task, error: String(error) }]);
+            setRowLoadingState(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(`${task.target_id}-${task.query}`);
+              return newSet;
+            });
+          });
+
+          setProgress({ 
+            done: processedCount, 
+            total: tasks.length, 
+            text: `청크 ${chunkIndex + 1} 실패: ${String(error)}` 
+          });
+        }
       }
+
+      // 배치 실행 완료 처리
+      setRowLoadingState(new Set());
+      setIsRunning(false);
+      setCurrentTask(null);
+      setAbortController(null);
       
-      // 완료 대기 시작
-      checkCompletion();
+      const finalText = cancelledRef.current || controller.signal.aborted 
+        ? `취소됨: ${totalSuccessCount}개 완료, ${totalFailureCount}개 실패`
+        : `완료: ${totalSuccessCount}개 성공, ${totalFailureCount}개 실패`;
+      
+      setProgress({ 
+        done: processedCount, 
+        total: tasks.length, 
+        text: finalText 
+      });
+
+      toast({
+        title: cancelledRef.current || controller.signal.aborted ? "체크 취소됨" : "체크 완료",
+        description: finalText,
+        variant: totalFailureCount > 0 ? "destructive" : "default"
+      });
+      
+      // 데이터 새로고침
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
 
     } catch (error) {
       setIsRunning(false);
       setRowLoadingState(new Set());
       setCurrentTask(null);
+      setAbortController(null);
       toast({
         title: "체크 실패",
         description: `오류: ${String(error)}`,
         variant: "destructive"
       });
     }
-  }, [trackedTargets, cancelled, queryClient]);
+  }, [trackedTargets, queryClient]);
 
-  // 취소 처리
+  // 취소 처리 - AbortController를 사용하여 실제로 요청 중단
   const handleCancel = () => {
-    setCancelled(true);
+    cancelledRef.current = true;
+    
+    // 진행 중인 요청 중단
+    if (abortController) {
+      abortController.abort();
+    }
+    
     setIsRunning(false);
     setRowLoadingState(new Set());
     setCurrentTask(null);
+    setAbortController(null);
+    
     toast({
       title: "체크 취소됨",
-      description: "사용자가 체크를 중단했습니다."
+      description: "진행 중인 요청이 중단되었습니다."
     });
   };
 
