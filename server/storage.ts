@@ -660,8 +660,7 @@ export class DatabaseStorage implements IStorage {
       rank: rankSnapshots.rank,
       page: rankSnapshots.page,
       position: rankSnapshots.position,
-      url: rankSnapshots.url,
-      title: rankSnapshots.title,
+      source: rankSnapshots.source,
       metadata: rankSnapshots.metadata
     })
     .from(rankSnapshots)
@@ -709,8 +708,7 @@ export class DatabaseStorage implements IStorage {
       rank: rankSnapshots.rank,
       page: rankSnapshots.page,
       position: rankSnapshots.position,
-      url: rankSnapshots.url,
-      title: rankSnapshots.title,
+      source: rankSnapshots.source,
       metadata: rankSnapshots.metadata
     })
     .from(rankSnapshots)
@@ -759,8 +757,7 @@ export class DatabaseStorage implements IStorage {
         rank: rankSnapshots.rank,
         page: rankSnapshots.page,
         position: rankSnapshots.position,
-        url: rankSnapshots.url,
-        title: rankSnapshots.title,
+        source: rankSnapshots.source,
         metadata: rankSnapshots.metadata
       })
       .from(rankSnapshots)
@@ -838,7 +835,6 @@ export class DatabaseStorage implements IStorage {
   // v6 Review State Implementation - Owner-aware for security
   async getReviewState(owner: string, productKey: string): Promise<ReviewState | null> {
     const [state] = await db.select({
-      id: reviewState.id,
       productKey: reviewState.productKey,
       lastReviewId: reviewState.lastReviewId,
       lastCheckedAt: reviewState.lastCheckedAt
@@ -1809,6 +1805,7 @@ export class MemStorage implements IStorage {
     const entry: ManualBlogEntry = {
       id,
       ...data,
+      notes: data.notes ?? null,
       rank: data.rank ?? null,
       submittedAt: now,
       updatedAt: now,
@@ -1853,6 +1850,10 @@ export class MemStorage implements IStorage {
     const target: BlogTarget = {
       id,
       ...data,
+      windowMin: data.windowMin ?? null,
+      windowMax: data.windowMax ?? null,
+      scheduleCron: data.scheduleCron ?? null,
+      active: data.active ?? null,
       createdAt: now,
     };
     this.blogTargets.set(id, target);
@@ -1884,6 +1885,36 @@ export class MemStorage implements IStorage {
     return (target && target.active) ? target : null;
   }
 
+  // Owner-aware methods for security
+  async getBlogTargetById(owner: string, id: string): Promise<BlogTarget | null> {
+    const target = this.blogTargets.get(id);
+    if (!target || target.owner !== owner || !target.active) {
+      return null;
+    }
+    return target;
+  }
+
+  async updateBlogTargetByOwner(owner: string, id: string, updates: Partial<BlogTarget>): Promise<BlogTarget | null> {
+    const target = this.blogTargets.get(id);
+    if (!target || target.owner !== owner || !target.active) {
+      return null;
+    }
+    const updated = { ...target, ...updates };
+    this.blogTargets.set(id, updated);
+    return updated;
+  }
+
+  async deleteBlogTargetByOwner(owner: string, id: string): Promise<boolean> {
+    const target = this.blogTargets.get(id);
+    if (!target || target.owner !== owner || !target.active) {
+      return false;
+    }
+    // Soft delete by setting active to false
+    const updated = { ...target, active: false };
+    this.blogTargets.set(id, updated);
+    return true;
+  }
+
   // v6 Product Targets Implementation
   async getProductTargets(owner?: string): Promise<ProductTarget[]> {
     const targets = Array.from(this.productTargets.values())
@@ -1899,6 +1930,12 @@ export class MemStorage implements IStorage {
     const target: ProductTarget = {
       id,
       ...data,
+      windowMin: data.windowMin ?? null,
+      windowMax: data.windowMax ?? null,
+      scheduleCron: data.scheduleCron ?? null,
+      sortDefault: data.sortDefault ?? null,
+      deviceDefault: data.deviceDefault ?? null,
+      active: data.active ?? null,
       createdAt: now,
     };
     this.productTargets.set(id, target);
@@ -1928,6 +1965,36 @@ export class MemStorage implements IStorage {
   async getProductTarget(id: string): Promise<ProductTarget | null> {
     const target = this.productTargets.get(id);
     return (target && target.active) ? target : null;
+  }
+
+  // Owner-aware methods for security  
+  async getProductTargetById(owner: string, id: string): Promise<ProductTarget | null> {
+    const target = this.productTargets.get(id);
+    if (!target || target.owner !== owner || !target.active) {
+      return null;
+    }
+    return target;
+  }
+
+  async updateProductTargetByOwner(owner: string, id: string, updates: Partial<ProductTarget>): Promise<ProductTarget | null> {
+    const target = this.productTargets.get(id);
+    if (!target || target.owner !== owner || !target.active) {
+      return null;
+    }
+    const updated = { ...target, ...updates };
+    this.productTargets.set(id, updated);
+    return updated;
+  }
+
+  async deleteProductTargetByOwner(owner: string, id: string): Promise<boolean> {
+    const target = this.productTargets.get(id);
+    if (!target || target.owner !== owner || !target.active) {
+      return false;
+    }
+    // Soft delete by setting active to false
+    const updated = { ...target, active: false };
+    this.productTargets.set(id, updated);
+    return true;
   }
 
   // v6 Rank Snapshots Implementation
@@ -1964,6 +2031,11 @@ export class MemStorage implements IStorage {
     const snapshot: RankSnapshot = {
       id,
       ...data,
+      sort: data.sort ?? null,
+      rank: data.rank ?? null,
+      page: data.page ?? null,
+      position: data.position ?? null,
+      metadata: data.metadata ?? null,
       timestamp: new Date(),
     };
     this.rankSnapshots.set(id, snapshot);
@@ -2028,13 +2100,29 @@ export class MemStorage implements IStorage {
     const snapshot: MetricSnapshot = {
       id,
       ...data,
+      source: 'system',
+      metadata: data.metadata ?? null,
+      starAvg: data.starAvg ?? null,
+      reviewCount: data.reviewCount ?? null,
+      photoRatio: data.photoRatio ?? null,
+      newReviews7d: data.newReviews7d ?? null,
+      newReviews30d: data.newReviews30d ?? null,
+      qaCount: data.qaCount ?? null,
+      price: data.price ?? null,
+      stockFlag: data.stockFlag ?? null,
       timestamp: new Date(),
     };
     this.metricSnapshots.set(id, snapshot);
     return snapshot;
   }
 
-  async getMetricHistory(productKey: string, range = "30d"): Promise<MetricSnapshot[]> {
+  async getMetricHistory(owner: string, productKey: string, range = "30d"): Promise<MetricSnapshot[]> {
+    // Validate product ownership
+    const product = this.productTargets.get(productKey);
+    if (!product || product.owner !== owner || !product.active) {
+      throw new Error('Product not found or access denied');
+    }
+
     const days = parseInt(range.replace('d', ''));
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
@@ -2069,6 +2157,7 @@ export class MemStorage implements IStorage {
     
     const state: ReviewState = {
       ...data,
+      lastReviewId: data.lastReviewId ?? null,
       lastCheckedAt: new Date()
     };
     this.reviewStates.set(data.productKey, state);
