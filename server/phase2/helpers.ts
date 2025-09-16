@@ -22,6 +22,25 @@ export function assembleResults(jobId: string, tiers: any[], cfg: any) {
     tiers  // ★ 중요: 레거시 표시용
   };
 
+  // ★ Legacy UI 호환성: attemptsByKeyword, exposureStatsByKeyword 추가
+  const attemptsByKeyword: Record<string, number> = {};
+  const exposureStatsByKeyword: Record<string, {page1: number, zero: number, unknown: number}> = {};
+  
+  for (const kwData of summaryByKeyword) {
+    const keyword = kwData.keyword;
+    // 시도 횟수 계산: 각 블로그의 posts 수 × tiersPerPost
+    attemptsByKeyword[keyword] = kwData.blogs.reduce((sum: number, blog: any) => 
+      sum + (blog.posts?.length || 0) * (cfg.phase2?.tiersPerPost || 4), 0
+    );
+    
+    // 노출 통계 (기본값으로 설정, 실제 구현에서는 더 정교한 계산 가능)
+    exposureStatsByKeyword[keyword] = {
+      page1: kwData.phase2ExposedNew || 0,
+      zero: Math.max(0, (kwData.newBlogs || 0) - (kwData.phase2ExposedNew || 0)),
+      unknown: 0
+    };
+  }
+
   return {
     jobId,
     params: { 
@@ -30,7 +49,9 @@ export function assembleResults(jobId: string, tiers: any[], cfg: any) {
     },
     searchVolumes,
     summaryByKeyword,           // ★ v17 UI가 읽는 필드
-    finalStats                  // ★ 레거시 대비
+    finalStats,                 // ★ 레거시 대비
+    attemptsByKeyword,          // ★ Legacy UI 호환성
+    exposureStatsByKeyword      // ★ Legacy UI 호환성
   };
 }
 

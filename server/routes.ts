@@ -548,6 +548,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get SERP job results in v8 contract format (comprehensive tier recording)
   app.get("/api/serp/jobs/:jobId/results", async (req, res) => {
     try {
+      // ★ Disable caching during development to avoid 304 responses masking updates
+      if (process.env.NODE_ENV === 'development') {
+        res.set('Cache-Control', 'no-store');
+      }
+      
       const job = await storage.getSerpJob(req.params.jobId);
       if (!job) {
         return res.status(404).json({ error: "Job not found" });
@@ -556,6 +561,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (job.status !== "completed") {
         return res.status(400).json({ error: "Job not completed yet" });
       }
+      
+      // ★ V17-FIRST: Check if we have v17 data in postTierChecks
+      const { db } = await import("./db");
+      const { postTierChecks } = await import("../shared/schema");
+      const { eq } = await import("drizzle-orm");
+      
+      const v17TierData = await db.select().from(postTierChecks).where(eq(postTierChecks.jobId, req.params.jobId));
+      
+      if (v17TierData.length > 0) {
+        console.log(`🔧 [v17 Assembly] Using postTierChecks for job ${req.params.jobId} - found ${v17TierData.length} tier records`);
+        
+        // Use v17 assembly path
+        const { processSerpAnalysisJobWithV17Assembly } = await import("./services/v17-pipeline");
+        const { getAlgoConfig } = await import("./services/algo-config");
+        const cfg = await getAlgoConfig();
+        
+        // Extract keywords from job data
+        const keywords = Array.isArray(job.keywords) ? job.keywords : [job.keywords].filter(Boolean);
+        
+        // ★ Use assembleResults directly with existing DB data (don't reprocess)
+        const { discoveredBlogs } = await import("../shared/schema");
+        const blogData = await db.select().from(discoveredBlogs).where(eq(discoveredBlogs.jobId, req.params.jobId));
+        
+        // Transform DB data to assembleResults format
+        const tiers = v17TierData.map(tier => ({
+          tier: tier.tier,
+          keywords: [{
+            inputKeyword: tier.inputKeyword,
+            text: tier.textSurface,
+            volume: tier.volume
+          }],
+          blog: {
+            blogId: tier.blogId,
+            blogName: blogData.find(b => b.blogId === tier.blogId)?.blogName || tier.blogId,
+            blogUrl: blogData.find(b => b.blogId === tier.blogId)?.blogUrl || ''
+          },
+          post: {
+            title: tier.postTitle
+          },
+          candidate: {
+            text: tier.textSurface,
+            volume: tier.volume,
+            rank: tier.rank,
+            totalScore: tier.score || 0, // ★ Use actual DB score
+            adScore: tier.adscore,
+            eligible: tier.eligible,
+            skipReason: tier.skipReason
+          },
+          score: tier.score || 0
+        }));
+        
+        const { assembleResults } = await import("./phase2/helpers");
+        
+        const v17Results = assembleResults(req.params.jobId, tiers, cfg);
+        return res.json(v17Results);
+      }
+      
+      console.log(`🔧 [Legacy Assembly] No v17 data found for job ${req.params.jobId}, using legacy assembly`);
 
       // Get job parameters (P = postsPerBlog, T = tiersPerPost)
       const P = job.postsPerBlog || 10;
