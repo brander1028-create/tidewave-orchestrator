@@ -144,9 +144,10 @@ export const postTierChecks = pgTable("post_tier_checks", {
   textNrm: text("text_nrm").notNull(), // Normalized text for deduplication
   volume: integer("volume"), // Search volume (null allowed)
   rank: integer("rank"), // SERP rank: 0 | 1..N | null
-  device: text("device").default("mobile"), // 'mobile' | 'pc'
+  device: text("device").default("mobile"), // 'mobile' | 'pc'  
   related: boolean("related").notNull().default(false), // Keyword relatedness to input
-  // v10 Score-First Gate extensions (3 new columns)
+  // ★ v17 Score + v10 Gate extensions
+  score: real("score"), // v17 실제 계산 점수 (totalScore from v17 pipeline)
   eligible: boolean("eligible").notNull().default(true), // AdScore gate passed
   adscore: real("adscore"), // Calculated AdScore (Volume+Competition+AdDepth+CPC)
   skipReason: text("skip_reason"), // "score<thr", "vol<thr", "addepth<thr", "cpc<thr"

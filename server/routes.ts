@@ -241,9 +241,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const cfg = await getAlgoConfig();
       const override = (req.query.pipeline ?? "").toString();
       const forceLegacy = override === "legacy";
-      const useV17 = !forceLegacy && ( !!cfg?.features?.preEnrich || !!cfg?.features?.scoreFirstGate
-                       || cfg?.phase2?.engine !== "ngrams" || !!cfg?.features?.tierAutoFill );
-      console.log(`🔧 pipeline= ${useV17 ? "v17" : "v16"} | engine=${cfg.phase2.engine} | override=${override}`);
+      // ★ Force-enable v17 with ?pipeline=v17 parameter for testing  
+      const useV17 = override === 'v17' || (!forceLegacy && ( !!cfg?.features?.preEnrich || !!cfg?.features?.scoreFirstGate
+                       || cfg?.phase2?.engine !== "ngrams" || !!cfg?.features?.tierAutoFill ));
+      console.log(`🔧 pipeline= ${useV17 ? "v17" : "v16"} | engine=${cfg.phase2.engine} | override=${override} | forced=${override === 'v17'}`);
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
       }
@@ -282,13 +283,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await getVolumesWithHealth(db, kws);
             console.log(`✅ [PRE-ENRICH] Volume data enriched for keywords: ${kws.join(', ')}`);
           }
-          // 1') v17 빠른 경로(폴백): 즉시 처리 후 결과 조립
-          console.log(`🚀 [v17] Starting fast-path pipeline...`);
-          // 기본 processSerpAnalysisJob 호출하되, v17 설정으로
-          processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+          // ★ v17 진짜 빠른 경로: 결과 조립 후 DB 저장  
+          console.log(`🚀 [v17] Starting REAL fast-path pipeline...`);
+          
+          // ★ v17 assembly를 사용한 robust 비동기 처리 (catch + fallback)
+          const { processSerpAnalysisJobWithV17Assembly } = await import("./services/v17-pipeline");
+          const v17Promise = processSerpAnalysisJobWithV17Assembly(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
             enableLKMode,
             preferCompound,
-            targetCategory
+            targetCategory,
+            v17Mode: true,
+            useV17Assembly: true
+          });
+          
+          // ★ Robust error handling with fallback
+          v17Promise.then(() => {
+            console.log('✅ [v17] fast-path finished successfully');
+          }).catch(error => {
+            console.error('[SAFE-FALLBACK] v17 failed → legacy', error);
+            // Fallback to legacy processing
+            processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+              enableLKMode,
+              preferCompound,
+              targetCategory
+            });
           });
         } catch (e) {
           console.error("[SAFE-FALLBACK] v17 failed → legacy", e);

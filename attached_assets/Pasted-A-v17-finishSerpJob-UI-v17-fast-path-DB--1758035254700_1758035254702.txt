@@ -1,0 +1,113 @@
+A) v17 결과를 정상 저장 (finishSerpJob 호출 + 호환 페이로드)
+
+증상: 점수/텍스트 계산은 됐는데 UI에 비어 보임 → v17 fast-path가 결과를 DB에 맞는 스키마로 안 넣음.
+
+1) server/phase2/helpers.ts (없으면 새로)
+// 결과 조립 — v17/레거시 UI 둘 다 읽을 수 있게 '이중'으로 채움
+export async function assembleResults(jobId: string, tiers: any[], cfg: any) {
+  const searchVolumes: Record<string, number|null> = {};
+  for (const t of tiers) {
+    for (const kw of (t.keywords ?? [])) {
+      const k = kw.text?.trim?.() || "";
+      if (k) searchVolumes[k] = kw.volume ?? null;
+    }
+  }
+
+  const summaryByKeyword = buildSummaryByKeywordFromTiers(tiers, cfg); // (아래 유틸)
+
+  // ★ 레거시 UI가 finalStats만 읽는 경우를 대비해 tiers를 finalStats에도 넣어줌
+  const finalStats = {
+    blogs: summaryByKeyword.reduce((a,k)=>a+(k.blogs?.length||0),0),
+    posts: summaryByKeyword.flatMap(k=>k.blogs||[]).reduce((a,b)=>a+((b.posts||[]).length),0),
+    keywords: summaryByKeyword.length,
+    tiers                       // ★ 중요: 레거시 표시용
+  };
+
+  return {
+    jobId,
+    params: { postsPerBlog: cfg.phase2.postsPerBlog, tiersPerPost: cfg.phase2.tiersPerPost },
+    searchVolumes,
+    summaryByKeyword,           // ★ v17 UI가 읽는 필드
+    finalStats                  // ★ 레거시 대비
+  };
+}
+
+// 최소 유틸(이미 있으면 그거 쓰세요)
+function buildSummaryByKeywordFromTiers(tiers:any[], cfg:any){
+  // 키워드별 → 블로그/포스트/티어 모아주는 간단 버전
+  // (프로젝트 기존 shape에 맞춰 map만 바꾸면 됨)
+  const byKw: Record<string, any> = {};
+  for (const t of tiers){
+    for (const kw of (t.keywords ?? [])){
+      const key = kw.inputKeyword || kw.text;
+      if (!byKw[key]) byKw[key] = { keyword:key, blogs:[] };
+      // ... 블로그/포스트/티어 푸시 (프로젝트 기존 assembler 참고)
+    }
+  }
+  return Object.values(byKw);
+}
+
+2) v17 fast-path에서 반드시 저장 호출
+
+server/routes.ts (v17 경로 try 블록)
+
+const tiers = await runPhase2(ctx, cfg); // 여기서 rank + totalScore까지 계산
+const { assembleResults } = await import("./phase2/helpers");
+const payload = await assembleResults(job.id, tiers, cfg);
+await storage.finishSerpJob(job.id, payload);     // ★ 이 줄이 없거나 다른 스키마로 넣으면 화면이 비어요
+
+B) “점수 0” 제거 (필드 매칭 고정)
+
+증상: 로그엔 0.56점인데 UI는 0pts → 응답이 adscore만 넣거나, 클라이언트가 score가 아닌 필드를 봄.
+
+3) 응답 조립 시 tier.score를 채움
+
+(조립부/엔진 어느 쪽이든 서버에서 계산 값을 넣어 내려주세요)
+
+tier.score = tier.totalScore ?? tier.score ?? 0;  // 서버 계산 우선
+tier.adScore = tier.adScore ?? tier.gateScore ?? null;
+
+4) 클라이언트 매핑 고정
+
+client/* 결과 매퍼(칩/표시 만들던 곳)
+
+// before: const pts = tier.adscore ?? 0;
+const pts = tier.score ?? tier.adScore ?? 0;   // ★ 서버 계산 값 우선
+
+C) “매트리스 [관련X] · – · 0pts / 비어있음” 제거 (후보/보강 체결)
+
+원인: preEnrich merge 누락 + Gate를 랭크 전이 아닌 후에 돌림 + AutoFill 미적용.
+
+5) preEnrich 결과를 같은 요청 메모리에 머지
+const apiRes = await searchAds.bulk(variants);
+await keywordsRepo.upsert(apiRes);
+mergeIntoCurrent(candidates, apiRes);     // ★ 이것 빠지면 volume이 계속 null
+
+6) Gate를 랭크 전에 적용 (하드모드면 아예 랭크 미수행)
+applyScoreFirstGate(candidates, cfg.adscore);     // eligible/adScore/skipReason 세팅
+if (cfg.adscore.mode === "hard") {
+  candidates = candidates.filter(c => c.eligible);
+}
+
+7) AutoFill로 '비어있음' 금지
+const assigned = engine.assignTiers(enriched, cfg);
+const filled   = await autoFill(assigned, ctx, cfg); // 2그램/LK/연관키워드로 보강 → T개 채움
+
+D) 즉시 확인(2분)
+# 1) 최신 job 결과에 tiers가 정말 들어왔는지
+curl -s localhost:5000/api/serp/jobs/<JOB_ID>/results \
+ | jq '.summaryByKeyword?[0]?.blogs?[0]?.posts?[0]?.tiers, .finalStats?.tiers | .[0]'
+# 2) 점수 필드가 보이는지
+curl -s localhost:5000/api/serp/jobs/<JOB_ID>/results \
+ | jq '.. | objects | select(has("score") and has("rank")) | {text,volume,score,rank,eligible,skipReason} | .'
+
+
+기대: text/volume/score/rank/eligible/skipReason가 값으로 채워져 있고, 화면에도 동일 반영.
+
+E) 왜 ‘매트리스 [관련X]’가 떴나 (원인/대응)
+
+LK/2그램 후보가 실패 → 일반 명사 추출 fallback에서 관련도 체크 실패로 올라온 케이스.
+
+applyScoreFirstGate 앞에 related=false 패널티(예: combined×0.7) 한 줄만 추가하면 상단에서 자동 탈락합니다.
+
+관리자 설정에 banSingles에 ‘매트리스’를 일시 등록하면 즉시 사라집니다.
