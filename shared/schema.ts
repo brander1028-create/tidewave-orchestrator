@@ -111,7 +111,7 @@ export const appMeta = pgTable("app_meta", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// Post tier checks table for comprehensive tier recording (v8 requirements)
+// Post tier checks table for comprehensive tier recording (v10 Score-First Gate requirements)
 export const postTierChecks = pgTable("post_tier_checks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   jobId: varchar("job_id").references(() => serpJobs.id).notNull(),
@@ -126,6 +126,10 @@ export const postTierChecks = pgTable("post_tier_checks", {
   rank: integer("rank"), // SERP rank: 0 | 1..N | null
   device: text("device").default("mobile"), // 'mobile' | 'pc'
   related: boolean("related").notNull().default(false), // Keyword relatedness to input
+  // v10 Score-First Gate extensions (3 new columns)
+  eligible: boolean("eligible").notNull().default(true), // AdScore gate passed
+  adscore: real("adscore"), // Calculated AdScore (Volume+Competition+AdDepth+CPC)
+  skipReason: text("skip_reason"), // "score<thr", "vol<thr", "addepth<thr", "cpc<thr"
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => ({
   // Unique constraint to prevent duplicates

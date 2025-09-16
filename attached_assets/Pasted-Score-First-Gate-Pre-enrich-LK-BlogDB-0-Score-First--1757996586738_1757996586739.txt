@@ -1,0 +1,180 @@
+Score-First Gate + Pre-enrich + LK 조합 + 티어 자동보강 + 관리자 설정 + BlogDB + 전수저장]
+0) 핵심 변화(신규)
+
+Score-First Gate(가장 우선): 후보 키워드는 **점수(AdScore)**가 기준(threshold) 미달이면
+랭크/검색을 아예 수행하지 않고 “스킵(광고부적합)”으로 처리한다.
+
+Pre-enrich(사전 확장): Phase2 계산 전에 DB→API 폴백→업서트로 키워드DB를 먼저 채우고,
+그 값(검색량/경쟁도/AD 깊이/CPC 등)으로 AdScore를 계산해 Gate에 사용한다.
+
+1) 파이프라인(실행 순서)
+
+Phase1 + BlogDB(유지): blog_registry로 NEW/중복 판정, blacklist/outreach 제외.
+
+후보 생성
+
+LK 모드(Location+Keyword 2~3어 조합) + 2-그램 생성기(핵심명사×cats) 동시 사용.
+
+banSingles(단독 금지어)는 단독 후보에서 제외(조합에 포함될 때만 허용).
+
+Pre-enrich(사전 확장) 패스
+
+모든 후보에 대해 KEYWORD_DB 조회(TTL 30d) → miss/만료만 SearchAds 호출
+(variants: surface/nospace/hyphen, 429 Retry-After) → upsert → 이번 응답 메모리에 merge.
+
+입력 키워드 K의 searchVolumes[K]도 같은 응답에서 숫자 표기 보장.
+
+AdScore 계산 → Score-First Gate
+
+(아래 §2의 가중치/임계치로) 후보마다 AdScore 산출 →
+eligible = (AdScore ≥ SCORE_MIN) ∧ (volume ≥ VOL_MIN) ∧ (adDepth ≥ AD_DEPTH_MIN) ∧ (CPC ≥ CPC_MIN)
+
+eligible=false면 랭크/추가 검색을 수행하지 않음(비용∙오류 차단).
+
+UI에는 “광고부적합(스킵)”으로 라벨만 표기(이유 툴팁).
+
+랭크/점수/티어(서버 계산 고정)
+
+랭크(eligible=true만): 모바일 기준 1..10=노출, 0=1p 밖, null=미확인.
+
+콘텐츠 점수와 TotalScore는 서버에서 계산 후 응답에 포함(0 고정 금지).
+
+티어 자동보강: 1~T 미만이면 2-그램/ LK 조합/연관키워드로 보강 → DB upsert → 재배치.
+
+전수 저장(post_tier_checks): NEW×P×T 행 저장(0/미확인 포함).
+
+결과 조립/표시: LK 배지, 포맷 규칙(null/0/1..10/>10) 적용.
+
+히스토리/로그: attempts/page1/zero/unknown, scoreTrace, gateTrace 남김.
+
+2) AdScore 정의(관리자 설정 가능)
+
+가중치(합=1.0): 예) Volume 0.35, Competition 0.35, AD Depth 0.20, CPC 0.10
+
+AdScore = wV*V_norm + wC*Comp_norm + wD*ADDepth_norm + wP*CPC_norm
+
+정규화 예시:
+
+V_norm = min(1, log10(max(1,volume))/5)
+
+Comp_norm = competition(0..1)(API/DB 값 사용)
+
+ADDepth_norm = min(1, adDepth/5)
+
+CPC_norm = min(1, CPC / CPC_MAX)(관리자 설정)
+
+Gate 임계치(관리자 설정):
+
+SCORE_MIN(기본 0.55), VOL_MIN(기본 600), AD_DEPTH_MIN(기본 1), CPC_MIN(기본 0)
+
+gate.mode: "hard"(스킵) / "soft"(표시는 하되 랭크는 생략)
+
+gate.forceFill: true면 T개 미만일 때 임계 완화(순차 10% 하향)로 채움(표시에 “완화” 칩).
+
+3) 후보 생성(요약)
+
+LK 모드: 로컬 토큰(사전+접미사 휴리스틱) × 카테고리(cats) → 2~3어 조합
+예) 제주 맛집, 흑돼지 맛집, 제주 오마카세, 제주도 애월 맛집
+
+2-그램 생성기: 핵심 명사 × cats → 콘드로이친 성분/비교/…, 철갑상어 콘드로이친
+
+복합어 우대: 공백 포함 2~3어 + 지역 선행 보너스(+δ).
+
+banSingles: 단독(‘맛집/추천/방법/여자/남자/바르’ 등) 후보 제외, 조합에선 허용.
+
+4) 서버 계산(랭크/점수) — UI는 바인딩만
+
+volumeScale = min(100, log10(max(1,volume))*25)
+
+contentScore = 0.5*freq율 + 0.3*제목내 위치점수 + 0.2*길이보너스
+
+totalScore = 0.7*volumeScale + 0.3*contentScore(가중치는 관리자 설정 연동)
+
+랭크 포맷: null="미확인", 0="0", 1..10="모바일 1p #N", >10="미노출"
+
+trace: scoreTrace(vol→scale, content, total), gateTrace(AdScore, 실패항목, mode)
+
+5) DB/마이그(소규모 추가)
+
+blog_registry(기존) 유지.
+
+post_tier_checks(전수 저장, 기존) 컬럼 3개 추가(가벼운 마이그):
+
+eligible BOOLEAN DEFAULT true
+
+adscore REAL NULL
+
+skip_reason TEXT NULL // ex) "score<thr", "vol<thr", "addepth<thr", "cpc<thr"
+
+6) API 응답 계약(필드 추가)
+
+GET /api/serp/jobs/:id/results 내부(기존 v13 계약 + 아래 필드):
+
+각 tier 항목에 score(totalScore), adScore, eligible, skipReason 포함.
+
+상단 요약에 attemptsByKeyword(NEW×P×T), exposureStatsByKeyword, skippedByScore 추가.
+
+searchVolumes[k]는 항상 숫자/–(미스→폴백→동일응답 반영).
+
+7) UI/표시(변경점)
+
+키워드 카드 KPI: NEW a/b · Phase2(신규) x/y · 검사 N · 스킵(점수) S
+
+“포스트별 1~T티어”
+
+eligible=false는 랭크 미수행, 칩에 광고부적합·이유(툴팁) 표시.
+
+eligible=true만 랭크 값 표기 및 노출 집계.
+
+“비어있음” 라벨 삭제(값 없으면 –), T 미만은 자동보강으로 채움.
+
+8) 관리자 설정(현재 페이지 확장)
+
+가중치 카드(Volume/Competition/AD Depth/CPC — 합=1.0)
+
+Gate/Threshold: SCORE_MIN, VOL_MIN, AD_DEPTH_MIN, CPC_MIN, gate.mode, gate.forceFill
+
+키워드 제너레이션: cats(태그), banSingles(태그), preferCompound, allowThreeGram
+
+로깅: logging.enabled, logging.detail, logging.traceScore
+
+API: GET /api/settings/algo / PUT /api/settings/algo (유효성 검사: 합=1.0, 리스트 중복 제거)
+
+백엔드는 analyze 시 최신 설정 로드(캐시 + hot-reload).
+
+9) 수용 기준(DoD)
+
+ Pre-enrich 후 같은 응답에서 searchVolumes[K]와 티어 volume 숫자 보임.
+
+ Score-First Gate가 동작: 스킵 수 S가 KPI·로그에 반영, 스킵된 키워드는 랭크 미수행.
+
+ 제목 “철갑상어 콘드로이친 …” → 티어에 콘드로이친 성분/비교/철갑상어 콘드로이친 최소 2개 포함, 각각 score≠0.
+
+ “바르는 미녹시딜 여자 부작용 …” → ‘여자/바르’ 단독 제외, 미녹시딜 부작용 등 조합만 티어 후보.
+
+ post_tier_checks 행수 = NEW×P×T, 각 행에 eligible/adscore/skip_reason 저장.
+
+ BlogDB 상태 토글/필터 정상, 결과/DB 화면에서 상태가 유지된다.
+
+10) 금지/주의
+
+rank/volume에 기본값(|| 1/0) 금지.
+
+Gate가 hard일 때 스킵된 키워드에 대해 랭크·추가 검색 호출 금지.
+
+내부 배지(“DB전용/미적용”) 화면 노출 금지(로그 전용).
+
+대공사/스키마 남발 금지(여기 명시된 마이그만).
+
+참고: 간단 의사코드
+const combos = genLK(title,cfg).concat(genPairs(title,cfg));
+await preEnrich(combos);                        // DB→API→upsert→merge
+for (const k of combos) {
+  k.adScore = calcAdScore(k, cfg);
+  k.eligible = isEligible(k, cfg);             // SCORE_MIN/VOL_MIN/AD_DEPTH_MIN/CPC_MIN
+  if (!k.eligible && cfg.gate.mode==='hard') { k.skipReason = why(k,cfg); continue; }
+  k.rank = await getRank(k);                   // 1..10 | 0 | null  (eligible=true만)
+  k.score = totalScore(k.volume, k.meta, cfg); // 서버 계산
+}
+const tiers = autoFill(assignTiers(compbos,cfg), cfg); // T개 채울 때까지 보강
+saveChecks(tiers, {eligible,adscore,skip_reason});     // post_tier_checks

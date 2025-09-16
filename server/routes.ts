@@ -8,11 +8,13 @@ import { titleKeywordExtractor } from "./services/title-keyword-extractor";
 import { serpScraper } from "./services/serp-scraper";
 import { expandAllKeywords } from "./services/bfs-crawler";
 import { expandLKBatch, detectCategory, getLKModeStats } from "./services/lk-mode";
+import { getScoreConfig, updateScoreConfig, normalizeWeights, resetToDefaults } from "./services/score-config";
 import { z } from "zod";
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
 import { shouldPreflight, probeHealth, getOptimisticHealth, markHealthFail, markHealthGood } from './services/health-cache';
 import { getVolumesWithHealth } from './services/externals-health';
-import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore, getKeywordsCounts } from './store/keywords';
+import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, getKeywordsCounts } from './store/keywords';
+import { compIdxToScore, calculateOverallScore } from './services/scoring-config';
 // BFS Crawler imports
 import { loadSeedsFromCSV, loadOptimizedSeeds, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword, isStale, getCallBudgetStatus, expandAllKeywords } from './services/bfs-crawler.js';
 // LK Mode imports
@@ -2271,6 +2273,92 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('❌ [LK Mode] Category detection failed:', error);
       res.status(500).json({ error: 'Category detection failed', details: String(error) });
+    }
+  });
+
+  // ========================================
+  // Score-First Gate 관리자 설정 API (v10)
+  // ========================================
+
+  // GET /api/settings/algo - 현재 설정 조회
+  app.get('/api/settings/algo', async (req, res) => {
+    try {
+      const config = getScoreConfig();
+      console.log(`⚙️ [Settings] Current algo config requested`);
+      res.json(config);
+    } catch (error) {
+      console.error(`❌ [Settings] Failed to get algo config:`, error);
+      res.status(500).json({ error: 'Failed to get algorithm configuration', details: String(error) });
+    }
+  });
+
+  // PUT /api/settings/algo - 설정 업데이트
+  app.put('/api/settings/algo', async (req, res) => {
+    try {
+      const updates = req.body;
+      console.log(`⚙️ [Settings] Updating algo config:`, JSON.stringify(updates, null, 2));
+
+      // 가중치 정규화 (합=1.0 보장)
+      if (updates.weights) {
+        updates.weights = normalizeWeights(updates.weights);
+        console.log(`⚖️ [Settings] Normalized weights:`, updates.weights);
+      }
+
+      const updatedConfig = updateScoreConfig(updates);
+      console.log(`✅ [Settings] Successfully updated to version ${updatedConfig.version}`);
+      
+      res.json({
+        success: true,
+        config: updatedConfig,
+        message: 'Algorithm configuration updated successfully'
+      });
+    } catch (error) {
+      console.error(`❌ [Settings] Failed to update algo config:`, error);
+      res.status(400).json({ error: 'Failed to update configuration', details: String(error) });
+    }
+  });
+
+  // POST /api/settings/algo/reset - 기본값으로 초기화
+  app.post('/api/settings/algo/reset', async (req, res) => {
+    try {
+      console.log(`🔄 [Settings] Resetting algo config to defaults`);
+      const defaultConfig = resetToDefaults();
+      
+      res.json({
+        success: true,
+        config: defaultConfig,
+        message: 'Algorithm configuration reset to defaults'
+      });
+    } catch (error) {
+      console.error(`❌ [Settings] Failed to reset algo config:`, error);
+      res.status(500).json({ error: 'Failed to reset configuration', details: String(error) });
+    }
+  });
+
+  // POST /api/settings/algo/weights/validate - 가중치 합계 검증
+  app.post('/api/settings/algo/weights/validate', async (req, res) => {
+    try {
+      const { weights } = req.body;
+      
+      if (!weights || typeof weights !== 'object') {
+        return res.status(400).json({ error: 'Weights object required' });
+      }
+
+      const sum = (weights.volume || 0) + (weights.competition || 0) + 
+                  (weights.adDepth || 0) + (weights.cpc || 0);
+      
+      const isValid = Math.abs(sum - 1.0) <= 0.001;
+      const normalized = isValid ? weights : normalizeWeights(weights);
+      
+      res.json({
+        isValid,
+        sum: parseFloat(sum.toFixed(3)),
+        weights: normalized,
+        normalized: !isValid
+      });
+    } catch (error) {
+      console.error(`❌ [Settings] Weight validation failed:`, error);
+      res.status(400).json({ error: 'Weight validation failed', details: String(error) });
     }
   });
 

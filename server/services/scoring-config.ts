@@ -2,6 +2,10 @@ import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 
+// v10 Score-First Gate 통합
+import { evaluateKeyword, type KeywordMetrics, getAdScoreTrace } from './adscore-engine';
+import { getScoreConfig } from './score-config';
+
 // 점수 계산 설정 타입 정의
 export interface ScoringConfig {
   version: string;
@@ -198,7 +202,8 @@ export async function compIdxToScore(idx?: string | null): Promise<number> {
 }
 
 /**
- * v10 B번: 설정 기반 종합점수 계산 (로그 적용)
+ * v10 Score-First Gate 통합 종합점수 계산 
+ * AdScore Engine을 사용한 정확한 점수 계산
  */
 export async function calculateOverallScore(
   raw_volume: number,
@@ -206,57 +211,56 @@ export async function calculateOverallScore(
   ad_depth: number,
   est_cpc: number
 ): Promise<number> {
-  const config = await loadScoringConfig();
-  const { weights, normalization } = config.scoring;
-  const { logging } = config;
-  
-  // 안전 범위 클램핑 함수
-  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-  
-  // 1. 볼륨 정규화 (로그 또는 선형)
-  let volume_norm = 0;
-  if (normalization.volume.type === 'logarithmic') {
-    const base = normalization.volume.base || 10;
-    const scale_factor = normalization.volume.scale_factor || 5;
-    volume_norm = clamp01(Math.log10(Math.max(1, raw_volume)) / scale_factor);
-  } else {
-    volume_norm = clamp01(raw_volume / normalization.volume.max_raw);
+  try {
+    // Score-First Gate 설정 로드
+    const scoreConfig = getScoreConfig();
+    
+    // KeywordMetrics 객체 생성 (AdScore Engine 형식)
+    const metrics: KeywordMetrics = {
+      volume: raw_volume || 0,
+      competition: comp_score / 100, // 0-100 → 0-1 정규화
+      adDepth: ad_depth || 0,
+      cpc: est_cpc || 0
+    };
+
+    // AdScore Engine으로 평가
+    const adScoreResult = evaluateKeyword(
+      metrics,
+      scoreConfig.weights,
+      scoreConfig.thresholds,
+      scoreConfig.cpcMax
+    );
+
+    // 로깅 (Score-First Gate 스타일)
+    if (scoreConfig.logging.enabled && scoreConfig.logging.traceScore) {
+      console.log(`🎯 [AdScore] ${getAdScoreTrace(adScoreResult)}`);
+      
+      if (!adScoreResult.eligible) {
+        console.log(`❌ [Gate] Keyword rejected: ${adScoreResult.skipReason}`);
+      } else {
+        console.log(`✅ [Gate] Keyword passed: Score ${(adScoreResult.adScore * 100).toFixed(1)}/100`);
+      }
+    }
+
+    // 점수를 0-100 범위로 스케일링하여 반환
+    const finalScore = Math.round(adScoreResult.adScore * 100);
+    
+    return Math.max(0, Math.min(100, finalScore));
+    
+  } catch (error) {
+    console.error(`❌ [AdScore] Score calculation failed:`, error);
+    
+    // Fallback: 기존 로직의 간단한 버전
+    const fallbackScore = Math.min(100, Math.round(
+      (Math.log10(Math.max(1, raw_volume)) / 5) * 35 +    // Volume 35%
+      (comp_score / 100) * 35 +                            // Competition 35%
+      Math.min(1, (ad_depth || 0) / 5) * 20 +             // AdDepth 20%
+      Math.min(1, (est_cpc || 0) / 2000) * 10             // CPC 10%
+    ) * 100);
+    
+    console.log(`⚠️ [AdScore] Using fallback score: ${fallbackScore}/100`);
+    return fallbackScore;
   }
-  
-  // 2. 경쟁도 정규화 (직접 또는 스케일링)
-  let comp_norm = 0;
-  if (normalization.competition.type === 'direct') {
-    comp_norm = clamp01(comp_score / normalization.competition.scale);
-  } else {
-    comp_norm = clamp01(comp_score / normalization.competition.scale);
-  }
-  
-  // 3. 광고깊이 정규화
-  const depth_norm = clamp01((ad_depth || 0) / normalization.ad_depth.max);
-  
-  // 4. CPC 정규화
-  const cpc_norm = est_cpc ? clamp01(est_cpc / normalization.cpc.max) : 0;
-  
-  // 5. 가중 평균 계산
-  const score = 
-    weights.volume * (volume_norm * 100) +
-    weights.competition * (comp_norm * 100) +
-    weights.ad_depth * (depth_norm * 100) +
-    weights.cpc * (cpc_norm * 100);
-  
-  const finalScore = Math.round(clamp01(score / 100) * 100);
-  
-  // 6. 로깅 (설정에 따라)
-  if (logging.enabled && logging.log_calculations) {
-    console.log(`🧮 [Score Calc] 키워드 점수 계산:`);
-    console.log(`   📊 Volume: ${raw_volume} → ${volume_norm.toFixed(3)} (${(weights.volume * volume_norm * 100).toFixed(1)}점)`);
-    console.log(`   🏆 Competition: ${comp_score} → ${comp_norm.toFixed(3)} (${(weights.competition * comp_norm * 100).toFixed(1)}점)`);
-    console.log(`   📈 Ad Depth: ${ad_depth} → ${depth_norm.toFixed(3)} (${(weights.ad_depth * depth_norm * 100).toFixed(1)}점)`);
-    console.log(`   💰 CPC: ${est_cpc} → ${cpc_norm.toFixed(3)} (${(weights.cpc * cpc_norm * 100).toFixed(1)}점)`);
-    console.log(`   ⚡ Final Score: ${finalScore}/100`);
-  }
-  
-  return finalScore;
 }
 
 /**
