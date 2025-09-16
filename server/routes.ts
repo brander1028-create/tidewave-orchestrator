@@ -6,8 +6,6 @@ import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
 import { titleKeywordExtractor } from "./services/title-keyword-extractor";
 import { serpScraper } from "./services/serp-scraper";
-import { expandAllKeywords } from "./services/bfs-crawler";
-import { expandLKBatch, detectCategory, getLKModeStats } from "./services/lk-mode";
 import { getScoreConfig, updateScoreConfig, normalizeWeights, resetToDefaults } from "./services/score-config";
 import { z } from "zod";
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
@@ -27,7 +25,7 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
 import { nanoid } from 'nanoid';
-import { blogRegistry, discoveredBlogs, postTierChecks, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
+import { blogRegistry, discoveredBlogs, postTierChecks, appMeta, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 
 // Helper function for tier distribution analysis and augmentation
@@ -938,6 +936,174 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error updating blog note:', error);
       res.status(500).json({ error: "Failed to update blog note" });
+    }
+  });
+
+  // =============================================
+  // v17 ALGORITHM SETTINGS MANAGEMENT (Admin Panel API)
+  // =============================================
+
+  // Get current algorithm configuration
+  app.get('/api/settings/algo', async (req, res) => {
+    try {
+      const currentSettings = await metaGet(db, 'algo_config');
+      
+      if (!currentSettings) {
+        // Return default config
+        const { defaultAlgoConfig } = await import('@shared/config-schema');
+        res.json(defaultAlgoConfig);
+      } else {
+        res.json(currentSettings);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching algo config:', error);
+      res.status(500).json({ error: 'Failed to fetch algorithm configuration' });
+    }
+  });
+
+  // Update algorithm configuration (Admin only)
+  app.put('/api/settings/algo', async (req, res) => {
+    try {
+      const { algoConfigSchema, UpdateSettingsRequest, updateSettingsSchema } = await import('@shared/config-schema');
+      
+      // Validate request body
+      const validatedRequest = updateSettingsSchema.parse(req.body);
+      const validatedConfig = algoConfigSchema.parse(validatedRequest.json);
+      
+      // Save current config to history before updating
+      const currentConfig = await metaGet(db, 'algo_config');
+      if (currentConfig) {
+        const historyEntry = {
+          key: 'algo_config',
+          version: Date.now(),
+          config: currentConfig,
+          updatedBy: validatedRequest.updatedBy,
+          updatedAt: new Date().toISOString(),
+          note: `Backup before update: ${validatedRequest.note || 'No note provided'}`
+        };
+        
+        await metaSet(db, `algo_config_history_${historyEntry.version}`, historyEntry);
+      }
+      
+      // Update current config
+      const newConfig = {
+        ...validatedConfig,
+        metadata: {
+          lastUpdated: new Date().toISOString(),
+          updatedBy: validatedRequest.updatedBy,
+          version: Date.now()
+        }
+      };
+      
+      await metaSet(db, 'algo_config', newConfig);
+      
+      console.log(`✅ [v17 Settings] Algorithm config updated by ${validatedRequest.updatedBy}`);
+      console.log(`🔧 [v17 Settings] Engine: ${newConfig.phase2.engine}, Weights: vol=${newConfig.weights.volume}, content=${newConfig.weights.content}`);
+      
+      res.json({ success: true, config: newConfig });
+      
+    } catch (error) {
+      console.error('Error updating algo config:', error);
+      
+      if (error instanceof Error && error.name === 'ZodError') {
+        res.status(400).json({ 
+          error: 'Invalid configuration format',
+          details: (error as any).errors
+        });
+      } else {
+        res.status(500).json({ error: 'Failed to update algorithm configuration' });
+      }
+    }
+  });
+
+  // Get algorithm configuration history
+  app.get('/api/settings/algo/history', async (req, res) => {
+    try {
+      // Get all history entries (simplified approach)
+      const history = [];
+      
+      // This is a simplified implementation - in practice you'd want proper pagination
+      // and more efficient history retrieval
+      const keys = await db.selectDistinct({ key: appMeta.key }).from(appMeta);
+      
+      for (const keyRow of keys) {
+        if (keyRow.key.startsWith('algo_config_history_')) {
+          const entry = await metaGet(db, keyRow.key);
+          if (entry) {
+            history.push(entry);
+          }
+        }
+      }
+      
+      // Sort by version (timestamp) descending
+      history.sort((a, b) => b.version - a.version);
+      
+      res.json(history.slice(0, 20)); // Last 20 entries
+      
+    } catch (error) {
+      console.error('Error fetching algo config history:', error);
+      res.status(500).json({ error: 'Failed to fetch configuration history' });
+    }
+  });
+
+  // Rollback to previous algorithm configuration
+  app.post('/api/settings/algo/rollback', async (req, res) => {
+    try {
+      const { rollbackSettingsSchema } = await import('@shared/config-schema');
+      const validatedRollback = rollbackSettingsSchema.parse(req.body);
+      
+      // Get the historical config
+      const historyKey = `algo_config_history_${validatedRollback.version}`;
+      const historicalConfig = await metaGet(db, historyKey);
+      
+      if (!historicalConfig) {
+        return res.status(404).json({ error: 'Historical configuration not found' });
+      }
+      
+      // Save current config as backup before rollback
+      const currentConfig = await metaGet(db, 'algo_config');
+      if (currentConfig) {
+        const backupEntry = {
+          key: 'algo_config',
+          version: Date.now(),
+          config: currentConfig,
+          updatedBy: 'system',
+          updatedAt: new Date().toISOString(),
+          note: `Pre-rollback backup to version ${validatedRollback.version}`
+        };
+        
+        await metaSet(db, `algo_config_history_${backupEntry.version}`, backupEntry);
+      }
+      
+      // Restore historical config
+      const restoredConfig = {
+        ...historicalConfig.config,
+        metadata: {
+          lastUpdated: new Date().toISOString(),
+          updatedBy: 'admin',
+          version: Date.now(),
+          rolledBackFrom: validatedRollback.version
+        }
+      };
+      
+      await metaSet(db, 'algo_config', restoredConfig);
+      
+      console.log(`🔄 [v17 Settings] Algorithm config rolled back to version ${validatedRollback.version}`);
+      
+      res.json({ success: true, config: restoredConfig, rolledBackFrom: validatedRollback.version });
+      
+    } catch (error) {
+      console.error('Error rolling back algo config:', error);
+      
+      if (error instanceof Error && error.name === 'ZodError') {
+        res.status(400).json({ 
+          error: 'Invalid rollback request format',
+          details: (error as any).errors
+        });
+      } else {
+        res.status(500).json({ error: 'Failed to rollback algorithm configuration' });
+      }
     }
   });
 
