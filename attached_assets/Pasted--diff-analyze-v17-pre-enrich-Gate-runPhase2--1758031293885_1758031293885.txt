@@ -1,0 +1,177 @@
+✅ 수습 패치 (바로 적용)
+
+아래 diff를 그대로 반영하면, analyze 진입부에서 v17 스냅샷을 건네고, pre-enrich → Gate → runPhase2 경로가 반드시 사용됩니다. 실패하면 자동으로 레거시(v16)로 폴백합니다.
+
+1) server/routes.ts — POST /api/serp/analyze 수술
+@@
+-app.post("/api/serp/analyze", async (req, res) => {
++app.post("/api/serp/analyze", async (req, res) => {
+   try {
+@@
+-    // 🎯 v17 PIPELINE INTEGRATION: getAlgoConfig + preEnrich + Score-First Gate
+-    console.log(`🚀 [v17] Loading algorithm configuration with hot-reload...`);
+-    const { getAlgoConfig } = await import('./services/algo-config');
+-    const cfg = await getAlgoConfig();
+-    console.log(`✅ [v17] Config loaded - Engine: ${cfg.phase2.engine}, Gate: ${cfg.features.scoreFirstGate}`);
+-    
+-    // Pre-enrich: DB → API → upsert → merge
+-    console.log(`🚀 [PRE-ENRICH] Starting volume enrichment for ${keywords.length} keywords`);
+-    const kws = keywords.map(k => k.trim()).filter(Boolean);
+-    await getVolumesWithHealth(db, kws);
+-    console.log(`✅ [PRE-ENRICH] Volume data enriched for keywords: ${kws.join(', ')}`);
++    // === v17 설정 로드 (핫리로드) ===
++    const { getAlgoConfig } = await import("./services/algo-config");
++    const cfg = await getAlgoConfig();
++    const useV17 =
++      !!cfg?.features?.preEnrich ||
++      !!cfg?.features?.scoreFirstGate ||
++      cfg?.phase2?.engine !== "ngrams" ||
++      !!cfg?.features?.tierAutoFill;
++    console.log(`🔧 pipeline= ${useV17 ? "v17" : "v16"} | engine=${cfg.phase2.engine}`);
+@@
+-    // Create SERP analysis job
+-    const job = await storage.createSerpJob({
++    // Create SERP analysis job (cfg 스냅샷 포함)
++    const job = await storage.createSerpJob({
+       keywords,
+       minRank,
+       maxRank,
+       status: "pending",
+       currentStep: "discovering_blogs",
+       totalSteps: 3,
+       completedSteps: 0,
+-      progress: 0
++      progress: 0,
++      // v17 스냅샷을 잡에 저장(워커에서 동일 설정 사용)
++      cfgSnapshot: cfg,
++      pipeline: useV17 ? "v17" : "v16"
+     });
+-    // Start analysis in background with LK Mode options
+-    processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+-      enableLKMode,
+-      preferCompound,
+-      targetCategory
+-    });
++
++    // === 파이프라인 시작 ===
++    if (useV17) {
++      // 0) (선택) 키워드 레벨 사전 확장: DB→API→upsert→메모리 merge
++      if (cfg.features.preEnrich) {
++        const { preEnrichKeywordsOnly } = await import("./phase2/helpers"); // 없으면 아래 주석 구현 참조
++        await preEnrichKeywordsOnly(keywords, cfg); // surface/nospace/hyphen 변형으로 bulk 조회+upsert
++      }
++      // 1) v17 워커 호출 (추천) — 워커 내부에서 preEnrich→Gate→runPhase2 수행
++      if (typeof processSerpAnalysisJobV17 === "function") {
++        processSerpAnalysisJobV17(
++          job.id,
++          { keywords, minRank, maxRank, postsPerBlog, titleExtract },
++          cfg
++        );
++      } else {
++        // 1’) v17 빠른 경로(폴백): 즉시 처리 후 결과 조립 (필요 시 그대로 두고, 워커 구현되면 제거)
++        const { runPhase2 } = await import("./phase2");
++        const { buildPhase2Context } = await import("./phase2/helpers"); // 블로그/포스트 수집→컨텍스트 생성
++        try {
++          const ctx = await buildPhase2Context(keywords, postsPerBlog, titleExtract, cfg);
++          const tiers = await runPhase2(ctx, cfg); // 내부에서 rank + totalScore 계산
++          const { assembleResults } = await import("./phase2/helpers");
++          const payload = await assembleResults(job.id, tiers, cfg);
++          await storage.finishSerpJob(job.id, payload);
++        } catch (e) {
++          console.error("v17 fast-path failed → fallback legacy", e);
++          processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
++            enableLKMode,
++            preferCompound,
++            targetCategory
++          });
++        }
++      }
++    } else {
++      // v16 레거시 파이프라인
++      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
++        enableLKMode,
++        preferCompound,
++        targetCategory
++      });
++    }
+@@
+   } catch (error) {
+
+
+주석: preEnrichKeywordsOnly, buildPhase2Context, assembleResults, processSerpAnalysisJobV17가 없다면 helpers/워커에 얇게 추가하면 됩니다. (아래 스텁 참고)
+
+helpers 스텁(없는 경우만)
+// server/phase2/helpers.ts (스텁/간단 구현)
+import { keywordsRepo, searchAds } from "../store/keywords";
+export async function preEnrichKeywordsOnly(kws: string[], cfg: any) {
+  const uniq = Array.from(new Set(kws.map(k => k.trim()).filter(Boolean)));
+  const variants = uniq.flatMap(s => [s, s.replace(/\s+/g,""), s.replace(/\s+/g,"-")]);
+  for (let i=0;i<variants.length;i+=200) {
+    const batch = variants.slice(i, i+200);
+    const res = await searchAds.bulk(batch);      // 429 Retry-After 준수(기존 구현 사용)
+    await keywordsRepo.upsert(res);
+  }
+}
+export async function assembleResults(jobId: string, tiers: any[], cfg: any) {
+  // 기존 결과 조립 함수가 있으면 그것 사용
+  return { jobId, tiers, params: { postsPerBlog: cfg.phase2.postsPerBlog, tiersPerPost: cfg.phase2.tiersPerPost } };
+}
+
+2) server/services/algo-config.ts — 이미 OK
+
+핫리로드 캐시가 30초 TTL로 작동. PUT 저장 시 반드시 invalidateAlgoConfigCache()를 호출하도록 /api/settings/algo의 핸들러에서 캐시 무효화만 추가해 주세요.
+
+// routes.ts 어딘가의 /api/settings/algo PUT 끝부분
+const { invalidateAlgoConfigCache } = await import("./services/algo-config");
+invalidateAlgoConfigCache();
+
+3) server/phase2/index.ts — OK, 다만 “Gate 적용 시점” 확인
+
+지금 코드는 엔진 내부 enrichAndScore에서 점수 계산 → assignTiers.
+Gate는 preEnrich 이후 즉시 적용해야 합니다(랭크 호출 전에).
+만약 엔진 내부에서 Gate를 안 쓰고 있다면, routes.ts에서 워커가 시작할 때 **applyScoreFirstGate()**를 호출해 주세요.
+
+호출부 예시(워커/fast-path 직전):
+
+import { applyScoreFirstGate } from "./phase2/types";
+// candidates: buildPhase2Context()에서 생성된 후보
+applyScoreFirstGate(candidates, cfg.adscore); // eligible/adScore/skipReason 부여
+
+🔍 스모크 테스트 (5분)
+
+v17 경로가 실제로 사용되는지
+
+curl -s -X POST localhost:5000/api/serp/analyze \
+ -H "Content-Type: application/json" \
+ -d '{"keywords":["잠실 맛집"],"mode":"phase2","postsPerBlog":10,"tiersPerPost":4}' | jq .
+# 서버 로그에:
+# [Hot-Reload] ...  / 🔧 pipeline=v17 / [PRE-ENRICH] ... / (워커) [AdScore] ...
+
+
+Gate 작동 확인
+
+curl -s -X PUT localhost:5000/api/settings/algo \
+ -H "Content-Type: application/json" \
+ -d '{"adscore":{"SCORE_MIN":0.90},"features":{"scoreFirstGate":true,"preEnrich":true}}'
+# 새 분석 후 결과 JSON:
+# - KPI에 "스킵(점수)>0"
+# - tier들에 { eligible:false, skipReason:"score<thr" } 포함
+
+
+조회량/점수/랭크가 전부 채워지는지
+
+응답 tiers[*]에 { text, volume, rank, score, adScore, eligible, skipReason }가 모두 존재
+
+post_tier_checks에도 eligible/adscore/skip_reason이 저장
+
+레거시 폴백 확인(안전망)
+
+v17에서 오류를 일으키면 로그에 [v17 fast-path failed → fallback legacy]가 뜨고 화면이 비지 않음
+
+❗지금 보이는 증상과 딱 맞는 원인/해결
+
+화면 전부 비어있음 + 0pts → analyze가 여전히 레거시 워커만 호출해서 v17 후보/보강/게이트가 전부 비활성.
+
+설정 페이지에서 바꿔도 변동 없음 → UI가 /api/settings/algo가 아닌 구 엔드포인트(v10)를 읽음.
+
+위 패치로 진입부에서 파이프라인을 강제하고, 실패 시 자동 레거시로 떨어지게 해서 즉시 안정화됩니다.

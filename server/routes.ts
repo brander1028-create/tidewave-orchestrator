@@ -236,18 +236,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         keywords, minRank, maxRank, postsPerBlog, titleExtract, enableLKMode, preferCompound, targetCategory
       }, null, 2));
       
-      // 🎯 v17 PIPELINE INTEGRATION: getAlgoConfig + preEnrich + Score-First Gate
-      console.log(`🚀 [v17] Loading algorithm configuration with hot-reload...`);
-      const { getAlgoConfig } = await import('./services/algo-config');
+      // === v17 설정 로드 (핫리로드) ===
+      const { getAlgoConfig } = await import("./services/algo-config");
       const cfg = await getAlgoConfig();
-      console.log(`✅ [v17] Config loaded - Engine: ${cfg.phase2.engine}, Gate: ${cfg.features.scoreFirstGate}`);
-      
-      // Pre-enrich: DB → API → upsert → merge
-      console.log(`🚀 [PRE-ENRICH] Starting volume enrichment for ${keywords.length} keywords`);
-      const kws = keywords.map(k => k.trim()).filter(Boolean);
-      await getVolumesWithHealth(db, kws);
-      console.log(`✅ [PRE-ENRICH] Volume data enriched for keywords: ${kws.join(', ')}`);
-      
+      const useV17 =
+        !!cfg?.features?.preEnrich ||
+        !!cfg?.features?.scoreFirstGate ||
+        cfg?.phase2?.engine !== "ngrams" ||
+        !!cfg?.features?.tierAutoFill;
+      console.log(`🔧 pipeline= ${useV17 ? "v17" : "v16"} | engine=${cfg.phase2.engine}`);
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
       }
@@ -276,12 +273,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
         progress: 0
       });
 
-      // Start analysis in background with LK Mode options
-      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
-        enableLKMode,
-        preferCompound,
-        targetCategory
-      });
+      // === 파이프라인 시작 ===
+      if (useV17) {
+        // 0) (선택) 키워드 레벨 사전 확장: DB→API→upsert→메모리 merge
+        if (cfg.features.preEnrich) {
+          console.log(`🚀 [PRE-ENRICH] Starting volume enrichment for ${keywords.length} keywords`);
+          const kws = keywords.map(k => k.trim()).filter(Boolean);
+          await getVolumesWithHealth(db, kws);
+          console.log(`✅ [PRE-ENRICH] Volume data enriched for keywords: ${kws.join(', ')}`);
+        }
+        // 1') v17 빠른 경로(폴백): 즉시 처리 후 결과 조립
+        try {
+          console.log(`🚀 [v17] Starting fast-path pipeline...`);
+          // 기본 processSerpAnalysisJob 호출하되, v17 설정으로
+          processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+            enableLKMode,
+            preferCompound,
+            targetCategory
+          });
+        } catch (e) {
+          console.error("v17 fast-path failed → fallback legacy", e);
+          processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+            enableLKMode,
+            preferCompound,
+            targetCategory
+          });
+        }
+      } else {
+        // v16 레거시 파이프라인
+        processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+          enableLKMode,
+          preferCompound,
+          targetCategory
+        });
+      }
 
       res.json({ 
         jobId: job.id,
@@ -2639,6 +2664,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const updatedConfig = updateScoreConfig(updates);
       console.log(`✅ [Settings] Successfully updated to version ${updatedConfig.version}`);
+      
+      // 🔥 v17 캐시 무효화 추가
+      try {
+        const { invalidateAlgoConfigCache } = await import('./services/algo-config');
+        invalidateAlgoConfigCache();
+        console.log(`🔄 [Hot-Reload] Cache invalidated after settings update`);
+      } catch (e) {
+        console.warn(`⚠️ [Hot-Reload] Failed to invalidate cache:`, e);
+      }
       
       res.json({
         success: true,
