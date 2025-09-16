@@ -12,6 +12,13 @@ import {
   type RankSnapshot, type InsertRankSnapshot,
   type MetricSnapshot, type InsertMetricSnapshot,
   type ReviewState, type InsertReviewState,
+  // v7 키워드 그룹 타입들
+  type Group, type InsertGroup,
+  type GroupKeyword, type InsertGroupKeyword,
+  type GroupIndexDaily, type InsertGroupIndexDaily,
+  type RankAggDay, type InsertRankAggDay,
+  type CollectionRule, type InsertCollectionRule,
+  type CollectionState, type InsertCollectionState,
   rankTimeSeries,
   metricTimeSeries,
   events,
@@ -25,7 +32,14 @@ import {
   productTargets,
   rankSnapshots,
   metricSnapshots,
-  reviewState
+  reviewState,
+  // v7 키워드 그룹 테이블들
+  groups,
+  groupKeywords,
+  groupIndexDaily,
+  rankAggDay,
+  collectionRules,
+  collectionState
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { db } from "./db";
@@ -100,6 +114,29 @@ export interface IStorage {
   // v6 Review State (신규 리뷰 감지) - Owner-aware methods for security
   getReviewState(owner: string, productKey: string): Promise<ReviewState | null>;
   updateReviewState(owner: string, data: InsertReviewState): Promise<ReviewState>;
+  
+  // v7 Group CRUD operations (키워드 그룹 관리) - Owner-aware methods for security
+  getGroups(owner: string): Promise<Group[]>;
+  getGroupById(owner: string, id: string): Promise<Group | null>;
+  createGroup(data: InsertGroup): Promise<Group>;
+  updateGroupByOwner(owner: string, id: string, updates: Partial<Group>): Promise<Group | null>;
+  deleteGroupByOwner(owner: string, id: string): Promise<boolean>;
+
+  // v7 Group Keywords operations (그룹 키워드 관리)
+  getGroupKeywords(groupId: string): Promise<GroupKeyword[]>;
+  addGroupKeyword(data: InsertGroupKeyword): Promise<GroupKeyword>;
+  removeGroupKeyword(groupId: string, keyword: string): Promise<boolean>;
+
+  // v7 Group Index and Analytics (그룹 인덱스 및 집계)
+  getGroupIndexDaily(groupId: string, range?: string): Promise<GroupIndexDaily[]>;
+
+  // v7 Rank Aggregation Daily (일일 랭킹 집계)
+  getRankAggDay(targetId: string, keyword: string, range?: string): Promise<RankAggDay[]>;
+  insertRankAggDay(data: InsertRankAggDay): Promise<RankAggDay>;
+
+  // v7 Collection Rules and State (수집 규칙 및 상태) - Owner-aware methods for security
+  getCollectionRules(owner: string): Promise<CollectionRule[]>;
+  getCollectionState(owner: string, targetId: string, keyword: string): Promise<CollectionState | null>;
   
   // Analytics
   getKPIData(period?: string): Promise<any>;
@@ -403,7 +440,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getExportDownload(jobId: string): Promise<any> {
-    const mimeTypes = {
+    const mimeTypes: Record<string, string> = {
       csv: "text/csv",
       xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       json: "application/json",
@@ -412,7 +449,7 @@ export class DatabaseStorage implements IStorage {
     
     return {
       filename: `export-${jobId}.csv`,
-      mimeType: mimeTypes.csv,
+      mimeType: mimeTypes["csv"],
       data: "키워드,순위,변동\n홍삼,5,+2\n홍삼스틱,8,-1"
     };
   }
@@ -491,7 +528,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createBlogTarget(data: InsertBlogTarget): Promise<BlogTarget> {
-    const [target] = await db.insert(blogTargets).values(data).returning();
+    const insertData = {
+      ...data,
+      queries: data.queries as string[]
+    };
+    const [target] = await db.insert(blogTargets).values([insertData]).returning();
+    if (!target) {
+      throw new Error("Failed to create blog target");
+    }
     return target;
   }
 
@@ -565,7 +609,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProductTarget(data: InsertProductTarget): Promise<ProductTarget> {
-    const [target] = await db.insert(productTargets).values(data).returning();
+    const insertData = {
+      ...data,
+      queries: data.queries as string[]
+    };
+    const [target] = await db.insert(productTargets).values([insertData]).returning();
+    if (!target) {
+      throw new Error("Failed to create product target");
+    }
     return target;
   }
 
@@ -798,7 +849,9 @@ export class DatabaseStorage implements IStorage {
       newReviews30d: metricSnapshots.newReviews30d,
       qaCount: metricSnapshots.qaCount,
       price: metricSnapshots.price,
-      stockFlag: metricSnapshots.stockFlag
+      stockFlag: metricSnapshots.stockFlag,
+      source: metricSnapshots.source,
+      metadata: metricSnapshots.metadata
     })
     .from(metricSnapshots)
     .innerJoin(productTargets, eq(metricSnapshots.productKey, productTargets.id))
@@ -824,7 +877,10 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Only insert if ownership is verified
-    const [snapshot] = await db.insert(metricSnapshots).values(data).returning();
+    const [snapshot] = await db.insert(metricSnapshots).values([data]).returning();
+    if (!snapshot) {
+      throw new Error("Failed to create metric snapshot");
+    }
     return snapshot;
   }
 
@@ -876,6 +932,136 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return updated;
   }
+
+  // v7 Group CRUD Implementation - Owner-aware for security
+  async getGroups(owner: string): Promise<Group[]> {
+    return await db.select()
+      .from(groups)
+      .where(eq(groups.owner, owner))
+      .orderBy(desc(groups.createdAt));
+  }
+
+  async getGroupById(owner: string, id: string): Promise<Group | null> {
+    const [group] = await db.select()
+      .from(groups)
+      .where(and(
+        eq(groups.id, id),
+        eq(groups.owner, owner)
+      ))
+      .limit(1);
+    return group || null;
+  }
+
+  async createGroup(data: InsertGroup): Promise<Group> {
+    const [group] = await db.insert(groups)
+      .values(data)
+      .returning();
+    return group;
+  }
+
+  async updateGroupByOwner(owner: string, id: string, updates: Partial<Group>): Promise<Group | null> {
+    const [updated] = await db.update(groups)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(and(
+        eq(groups.id, id),
+        eq(groups.owner, owner)
+      ))
+      .returning();
+    return updated || null;
+  }
+
+  async deleteGroupByOwner(owner: string, id: string): Promise<boolean> {
+    const deleted = await db.delete(groups)
+      .where(and(
+        eq(groups.id, id),
+        eq(groups.owner, owner)
+      ))
+      .returning({ id: groups.id });
+    return deleted.length > 0;
+  }
+
+  // v7 Group Keywords Implementation
+  async getGroupKeywords(groupId: string): Promise<GroupKeyword[]> {
+    return await db.select()
+      .from(groupKeywords)
+      .where(eq(groupKeywords.groupId, groupId))
+      .orderBy(desc(groupKeywords.addedAt));
+  }
+
+  async addGroupKeyword(data: InsertGroupKeyword): Promise<GroupKeyword> {
+    const [keyword] = await db.insert(groupKeywords)
+      .values(data)
+      .returning();
+    return keyword;
+  }
+
+  async removeGroupKeyword(groupId: string, keyword: string): Promise<boolean> {
+    const deleted = await db.delete(groupKeywords)
+      .where(and(
+        eq(groupKeywords.groupId, groupId),
+        eq(groupKeywords.keyword, keyword)
+      ))
+      .returning({ groupId: groupKeywords.groupId });
+    return deleted.length > 0;
+  }
+
+  // v7 Group Index Implementation
+  async getGroupIndexDaily(groupId: string, range = "30d"): Promise<GroupIndexDaily[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    return await db.select()
+      .from(groupIndexDaily)
+      .where(and(
+        eq(groupIndexDaily.groupId, groupId),
+        gte(groupIndexDaily.date, cutoffDate)
+      ))
+      .orderBy(desc(groupIndexDaily.date));
+  }
+
+  // v7 Rank Aggregation Daily Implementation
+  async getRankAggDay(targetId: string, keyword: string, range = "30d"): Promise<RankAggDay[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    return await db.select()
+      .from(rankAggDay)
+      .where(and(
+        eq(rankAggDay.targetId, targetId),
+        eq(rankAggDay.keyword, keyword),
+        gte(rankAggDay.date, cutoffDate)
+      ))
+      .orderBy(desc(rankAggDay.date));
+  }
+
+  async insertRankAggDay(data: InsertRankAggDay): Promise<RankAggDay> {
+    const [aggDay] = await db.insert(rankAggDay)
+      .values(data)
+      .returning();
+    return aggDay;
+  }
+
+  // v7 Collection Rules and State Implementation - Owner-aware for security
+  async getCollectionRules(owner: string): Promise<CollectionRule[]> {
+    return await db.select()
+      .from(collectionRules)
+      .where(eq(collectionRules.owner, owner))
+      .orderBy(desc(collectionRules.priority), desc(collectionRules.createdAt));
+  }
+
+  async getCollectionState(owner: string, targetId: string, keyword: string): Promise<CollectionState | null> {
+    const [state] = await db.select()
+      .from(collectionState)
+      .where(and(
+        eq(collectionState.owner, owner),
+        eq(collectionState.targetId, targetId),
+        eq(collectionState.keyword, keyword)
+      ))
+      .limit(1);
+    return state || null;
+  }
 }
 
 export class MemStorage implements IStorage {
@@ -894,6 +1080,13 @@ export class MemStorage implements IStorage {
   private rankSnapshots: Map<string, RankSnapshot>;
   private metricSnapshots: Map<string, MetricSnapshot>;
   private reviewStates: Map<string, ReviewState>;
+  // v7 키워드 그룹 변수들
+  private groups: Map<string, Group>;
+  private groupKeywords: Map<string, GroupKeyword>;
+  private groupIndexDaily: Map<string, GroupIndexDaily>;
+  private rankAggDay: Map<string, RankAggDay>;
+  private collectionRules: Map<string, CollectionRule>;
+  private collectionState: Map<string, CollectionState>;
 
   constructor() {
     this.rankSeries = new Map();
@@ -911,6 +1104,13 @@ export class MemStorage implements IStorage {
     this.rankSnapshots = new Map();
     this.metricSnapshots = new Map();
     this.reviewStates = new Map();
+    // v7 키워드 그룹 변수들 초기화
+    this.groups = new Map();
+    this.groupKeywords = new Map();
+    this.groupIndexDaily = new Map();
+    this.rankAggDay = new Map();
+    this.collectionRules = new Map();
+    this.collectionState = new Map();
     this.initializeMockData();
   }
 
@@ -1597,82 +1797,89 @@ export class MemStorage implements IStorage {
     const fromDate = new Date(dateRange.from);
     const toDate = new Date(dateRange.to);
     
-    return Array.from(this.rankSeries.values())
-      .filter(rank => {
-        const rankDate = new Date(rank.timestamp);
-        return rankDate >= fromDate && rankDate <= toDate;
-      })
-      .map(rank => ({
-        timestamp: rank.timestamp,
-        targetId: rank.targetId,
-        query: rank.query,
-        rank: rank.rank,
-        url: rank.url,
-        device: rank.device || 'desktop'
-      }));
+    const ranks = await db.select()
+      .from(rankTimeSeries)
+      .where(and(
+        gte(rankTimeSeries.timestamp, fromDate),
+        lte(rankTimeSeries.timestamp, toDate)
+      ));
+    
+    return ranks.map(rank => ({
+      timestamp: rank.timestamp,
+      targetId: rank.targetId,
+      query: rank.query,
+      rank: rank.rank,
+      device: rank.device,
+      source: rank.source
+    }));
   }
 
   private async exportAlertsData(dateRange: any): Promise<any[]> {
     const fromDate = new Date(dateRange.from);
     const toDate = new Date(dateRange.to);
     
-    return Array.from(this.alerts.values())
-      .filter(alert => {
-        const alertDate = new Date(alert.timestamp);
-        return alertDate >= fromDate && alertDate <= toDate;
-      })
-      .map(alert => ({
-        id: alert.id,
-        timestamp: alert.timestamp,
-        type: alert.type,
-        severity: alert.severity,
-        title: alert.title,
-        message: alert.message,
-        targetId: alert.targetId,
-        seen: alert.seen
-      }));
+    const alertsList = await db.select()
+      .from(alerts)
+      .where(and(
+        gte(alerts.timestamp, fromDate),
+        lte(alerts.timestamp, toDate)
+      ));
+    
+    return alertsList.map(alert => ({
+      id: alert.id,
+      timestamp: alert.timestamp,
+      rule: alert.rule,
+      targetId: alert.targetId,
+      prevRank: alert.prevRank,
+      currRank: alert.currRank,
+      delta: alert.delta,
+      reason: alert.reason,
+      seen: alert.seen
+    }));
   }
 
   private async exportSubmissionsData(dateRange: any): Promise<any[]> {
     const fromDate = new Date(dateRange.from);
     const toDate = new Date(dateRange.to);
     
-    return Array.from(this.submissions.values())
-      .filter(submission => {
-        const submissionDate = new Date(submission.timestamp);
-        return submissionDate >= fromDate && submissionDate <= toDate;
-      })
-      .map(submission => ({
-        id: submission.id,
-        timestamp: submission.timestamp,
-        type: submission.type,
-        status: submission.status,
-        content: submission.content,
-        targetInfo: submission.targetInfo,
-        submitter: submission.submitter,
-        reviewer: submission.reviewer,
-        reviewedAt: submission.reviewedAt,
-        reviewComment: submission.reviewComment
-      }));
+    const submissionsList = await db.select()
+      .from(submissions)
+      .where(and(
+        gte(submissions.timestamp, fromDate),
+        lte(submissions.timestamp, toDate)
+      ));
+    
+    return submissionsList.map(submission => ({
+      id: submission.id,
+      timestamp: submission.timestamp,
+      type: submission.type,
+      status: submission.status,
+      payload: submission.payload,
+      owner: submission.owner,
+      comment: submission.comment
+    }));
   }
 
   private async exportEventsData(dateRange: any): Promise<any[]> {
     const fromDate = new Date(dateRange.from);
     const toDate = new Date(dateRange.to);
     
-    return Array.from(this.events.values())
-      .filter(event => {
-        const eventDate = new Date(event.timestamp);
-        return eventDate >= fromDate && eventDate <= toDate;
-      })
-      .map(event => ({
-        id: event.id,
-        timestamp: event.timestamp,
-        type: event.type,
-        description: event.description,
-        targetId: event.targetId,
-        metadata: event.metadata
-      }));
+    const eventsList = await db.select()
+      .from(events)
+      .where(and(
+        gte(events.timestamp, fromDate),
+        lte(events.timestamp, toDate)
+      ));
+    
+    return eventsList.map(event => ({
+      id: event.id,
+      timestamp: event.timestamp,
+      type: event.type,
+      targetId: event.targetId,
+      actor: event.actor,
+      payload: event.payload,
+      severity: event.severity
+    }));
   }
 
   private async exportMetricsData(dateRange: any): Promise<any[]> {
@@ -1778,7 +1985,7 @@ export class MemStorage implements IStorage {
       throw new Error("Export job not found or not completed");
     }
     
-    const mimeTypes = {
+    const mimeTypes: Record<string, string> = {
       csv: 'text/csv',
       xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       json: 'application/json',
@@ -1850,6 +2057,7 @@ export class MemStorage implements IStorage {
     const target: BlogTarget = {
       id,
       ...data,
+      queries: data.queries as string[],
       windowMin: data.windowMin ?? null,
       windowMax: data.windowMax ?? null,
       scheduleCron: data.scheduleCron ?? null,
@@ -1930,6 +2138,7 @@ export class MemStorage implements IStorage {
     const target: ProductTarget = {
       id,
       ...data,
+      queries: data.queries as string[],
       windowMin: data.windowMin ?? null,
       windowMax: data.windowMax ?? null,
       scheduleCron: data.scheduleCron ?? null,
@@ -2162,6 +2371,155 @@ export class MemStorage implements IStorage {
     };
     this.reviewStates.set(data.productKey, state);
     return state;
+  }
+
+  // v7 Group CRUD Implementation - Owner-aware for security
+  async getGroups(owner: string): Promise<Group[]> {
+    return Array.from(this.groups.values())
+      .filter(group => group.owner === owner)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async getGroupById(owner: string, id: string): Promise<Group | null> {
+    const group = this.groups.get(id);
+    if (!group || group.owner !== owner) {
+      return null;
+    }
+    return group;
+  }
+
+  async createGroup(data: InsertGroup): Promise<Group> {
+    const id = randomUUID();
+    const group: Group = {
+      id,
+      ...data,
+      active: data.active ?? null,
+      description: data.description ?? null,
+      color: data.color ?? null,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.groups.set(id, group);
+    return group;
+  }
+
+  async updateGroupByOwner(owner: string, id: string, updates: Partial<Group>): Promise<Group | null> {
+    const group = this.groups.get(id);
+    if (!group || group.owner !== owner) {
+      return null;
+    }
+    
+    const updated: Group = {
+      ...group,
+      ...updates,
+      id, // Ensure ID doesn't change
+      owner, // Ensure owner doesn't change
+      updatedAt: new Date()
+    };
+    this.groups.set(id, updated);
+    return updated;
+  }
+
+  async deleteGroupByOwner(owner: string, id: string): Promise<boolean> {
+    const group = this.groups.get(id);
+    if (!group || group.owner !== owner) {
+      return false;
+    }
+    return this.groups.delete(id);
+  }
+
+  // v7 Group Keywords Implementation
+  async getGroupKeywords(groupId: string): Promise<GroupKeyword[]> {
+    return Array.from(this.groupKeywords.values())
+      .filter(gk => gk.groupId === groupId)
+      .sort((a, b) => b.addedAt.getTime() - a.addedAt.getTime());
+  }
+
+  async addGroupKeyword(data: InsertGroupKeyword): Promise<GroupKeyword> {
+    const id = randomUUID();
+    const groupKeyword: GroupKeyword = {
+      id,
+      ...data,
+      addedAt: new Date()
+    };
+    this.groupKeywords.set(id, groupKeyword);
+    return groupKeyword;
+  }
+
+  async removeGroupKeyword(groupId: string, keyword: string): Promise<boolean> {
+    const keywordEntry = Array.from(this.groupKeywords.entries())
+      .find(([, gk]) => gk.groupId === groupId && gk.keyword === keyword);
+    
+    if (keywordEntry) {
+      return this.groupKeywords.delete(keywordEntry[0]);
+    }
+    return false;
+  }
+
+  // v7 Group Index Implementation
+  async getGroupIndexDaily(groupId: string, range = "30d"): Promise<GroupIndexDaily[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    return Array.from(this.groupIndexDaily.values())
+      .filter(index => index.groupId === groupId && index.date >= cutoffDate)
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
+  }
+
+  // v7 Rank Aggregation Daily Implementation
+  async getRankAggDay(targetId: string, keyword: string, range = "30d"): Promise<RankAggDay[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    return Array.from(this.rankAggDay.values())
+      .filter(agg => 
+        agg.targetId === targetId &&
+        agg.keyword === keyword &&
+        agg.date >= cutoffDate
+      )
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
+  }
+
+  async insertRankAggDay(data: InsertRankAggDay): Promise<RankAggDay> {
+    const id = randomUUID();
+    const aggDay: RankAggDay = {
+      id,
+      ...data,
+      avgRank: data.avgRank ?? null,
+      minRank: data.minRank ?? null,
+      maxRank: data.maxRank ?? null,
+      deltaDaily: data.deltaDaily ?? null,
+      deltaWeekly: data.deltaWeekly ?? null,
+      checkCount: data.checkCount ?? null,
+      volatility: data.volatility ?? null
+    };
+    this.rankAggDay.set(id, aggDay);
+    return aggDay;
+  }
+
+  // v7 Collection Rules and State Implementation - Owner-aware for security
+  async getCollectionRules(owner: string): Promise<CollectionRule[]> {
+    return Array.from(this.collectionRules.values())
+      .filter(rule => rule.owner === owner)
+      .sort((a, b) => {
+        // Sort by priority first (higher priority first), then by creation date
+        if (a.priority !== b.priority) {
+          return (b.priority ?? 0) - (a.priority ?? 0);
+        }
+        return b.createdAt.getTime() - a.createdAt.getTime();
+      });
+  }
+
+  async getCollectionState(owner: string, targetId: string, keyword: string): Promise<CollectionState | null> {
+    const state = Array.from(this.collectionState.values())
+      .find(cs => 
+        cs.owner === owner &&
+        cs.targetId === targetId &&
+        cs.keyword === keyword
+      );
+    return state || null;
   }
 }
 

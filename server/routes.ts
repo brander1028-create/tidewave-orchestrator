@@ -11,7 +11,14 @@ import {
   insertRankSnapshotSchema,
   insertMetricSnapshotSchema,
   blogCheckSchema,
-  updateReviewStateSchema
+  updateReviewStateSchema as importedUpdateReviewStateSchema,
+  // v7 새로운 스키마들
+  insertGroupSchema,
+  insertGroupKeywordSchema,
+  insertGroupIndexDailySchema,
+  insertRankAggDaySchema,
+  insertCollectionRuleSchema,
+  insertCollectionStateSchema
 } from "@shared/schema";
 import { naverBlogScraper } from "./blog-scraper";
 import { z } from "zod";
@@ -70,6 +77,28 @@ const updateReviewStateSchema = z.object({
   recentReviews: z.number().min(0).optional(),
   flaggedReviews: z.number().min(0).optional(),
   positiveRatio: z.number().min(0).max(1).optional(),
+}).strict();
+
+// v7 Update schemas - only allow safe fields to be updated
+const updateGroupSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().nullable().optional(),
+  color: z.string().optional(),
+  active: z.boolean().optional(),
+}).strict();
+
+const updateCollectionRuleSchema = z.object({
+  name: z.string().min(1).optional(),
+  conditions: z.object({}).passthrough().optional(), // JSON 조건
+  actions: z.object({}).passthrough().optional(), // JSON 액션
+  priority: z.number().min(1).max(10).optional(),
+  active: z.boolean().optional(),
+}).strict();
+
+const updateCollectionStateSchema = z.object({
+  checkInterval: z.enum(['10m', '30m', '1h', '6h', '24h']).optional(),
+  costScore: z.number().min(0).max(100).optional(),
+  autoStopped: z.boolean().optional(),
 }).strict();
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -1218,6 +1247,215 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.send(download.data);
     } catch (error) {
       res.status(500).json({ message: "Failed to download export" });
+    }
+  });
+
+  // v7 Groups API - 키워드 그룹 시스템
+  app.get("/api/groups", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const groups = await storage.getGroups(owner);
+      res.json(groups);
+    } catch (error) {
+      res.status(500).json({ message: "그룹 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.get("/api/groups/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const group = await storage.getGroupById(owner, id);
+      if (!group) {
+        return res.status(404).json({ message: "그룹을 찾을 수 없습니다" });
+      }
+      
+      res.json(group);
+    } catch (error) {
+      res.status(500).json({ message: "그룹 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/groups", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = insertGroupSchema.safeParse({
+        ...req.body,
+        owner
+      });
+      
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 그룹 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const group = await storage.createGroup(validation.data);
+      res.status(201).json(group);
+    } catch (error) {
+      res.status(500).json({ message: "그룹 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/groups/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validation = updateGroupSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 그룹 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const group = await storage.updateGroupByOwner(owner, id, validation.data);
+      if (!group) {
+        return res.status(404).json({ message: "그룹을 찾을 수 없습니다" });
+      }
+      
+      res.json(group);
+    } catch (error) {
+      res.status(500).json({ message: "그룹 수정에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.delete("/api/groups/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const deleted = await storage.deleteGroupByOwner(owner, id);
+      if (!deleted) {
+        return res.status(404).json({ message: "그룹을 찾을 수 없습니다" });
+      }
+      
+      res.json({ message: "그룹이 삭제되었습니다" });
+    } catch (error) {
+      res.status(500).json({ message: "그룹 삭제에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 그룹 키워드 관리 API
+  app.get("/api/groups/:id/keywords", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      // 그룹 소유권 확인
+      const group = await storage.getGroupById(owner, id);
+      if (!group) {
+        return res.status(404).json({ message: "그룹을 찾을 수 없습니다" });
+      }
+      
+      const keywords = await storage.getGroupKeywords(id);
+      res.json(keywords);
+    } catch (error) {
+      res.status(500).json({ message: "그룹 키워드 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/groups/:id/keywords", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      // 그룹 소유권 확인
+      const group = await storage.getGroupById(owner, id);
+      if (!group) {
+        return res.status(404).json({ message: "그룹을 찾을 수 없습니다" });
+      }
+
+      const validation = insertGroupKeywordSchema.safeParse({
+        ...req.body,
+        groupId: id
+      });
+      
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 키워드 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const keyword = await storage.addGroupKeyword(validation.data);
+      res.status(201).json(keyword);
+    } catch (error) {
+      res.status(500).json({ message: "키워드 추가에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.delete("/api/groups/:id/keywords/:keyword", async (req, res) => {
+    try {
+      const { id, keyword } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      // 그룹 소유권 확인
+      const group = await storage.getGroupById(owner, id);
+      if (!group) {
+        return res.status(404).json({ message: "그룹을 찾을 수 없습니다" });
+      }
+      
+      const deleted = await storage.removeGroupKeyword(id, decodeURIComponent(keyword));
+      if (!deleted) {
+        return res.status(404).json({ message: "키워드를 찾을 수 없습니다" });
+      }
+      
+      res.json({ message: "키워드가 삭제되었습니다" });
+    } catch (error) {
+      res.status(500).json({ message: "키워드 삭제에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // 그룹 지수 조회 API
+  app.get("/api/groups/:id/index", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      // 그룹 소유권 확인
+      const group = await storage.getGroupById(owner, id);
+      if (!group) {
+        return res.status(404).json({ message: "그룹을 찾을 수 없습니다" });
+      }
+      
+      const { range = "30d" } = req.query;
+      const indexData = await storage.getGroupIndexDaily(id, range as string);
+      res.json(indexData);
+    } catch (error) {
+      res.status(500).json({ message: "그룹 지수 조회에 실패했습니다", error: String(error) });
     }
   });
 
