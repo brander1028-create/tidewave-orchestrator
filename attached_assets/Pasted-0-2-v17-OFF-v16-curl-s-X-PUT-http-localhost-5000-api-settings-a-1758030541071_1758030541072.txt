@@ -1,0 +1,73 @@
+0) 즉시 복구(롤백 스위치) — 2줄
+# v17 기능 잠시 OFF → v16 동작으로
+curl -s -X PUT http://localhost:5000/api/settings/algo \
+ -H "Content-Type: application/json" \
+ -d '{"features":{"preEnrich":false,"scoreFirstGate":false,"tierAutoFill":false},
+      "phase2":{"engine":"ngrams","postsPerBlog":10,"tiersPerPost":4},
+      "adscore":{"SCORE_MIN":0.0}}' > /dev/null
+# 새 분석 1회 실행
+curl -s -X POST http://localhost:5000/api/serp/analyze -H "Content-Type: application/json" \
+ -d '{"keywords":["잠실 맛집"],"mode":"phase2","postsPerBlog":10,"tiersPerPost":4}' | jq -r '.jobId'
+
+
+👉 기대: 티어에 텍스트/조회량/순위가 다시 뜬다(0pts 범벅/‘비어있음’ 해소).
+
+1) 안전 가드 패치(핵심 3줄) — 새 파이프라인 실패 시 자동 레거시로
+
+server/routes.ts (POST /api/serp/analyze)
+
+const cfg = await getAlgoConfig();
+const useV17 = !!(cfg?.features?.scoreFirstGate || cfg?.phase2?.engine !== 'ngrams');
+
+try {
+  if (useV17) {
+    // v17 경로: preEnrich → Gate → runPhase2
+    const cands = genCandidatesLKandPairs(titles, cfg);
+    await preEnrich(cands);                    // DB→API→upsert→merge (반드시 await)
+    applyScoreFirstGate(cands, cfg.adscore);   // eligible/adScore/skipReason
+    const tiers = await runPhase2({ titles, cands }, cfg); // rank+totalScore(서버)
+    return res.json(assembleResults(tiers, cfg));
+  }
+  // v16 레거시 경로
+  return legacyAnalyze(req, res);
+} catch (e) {
+  log.error("[SAFE-FALLBACK]", e);
+  return legacyAnalyze(req, res);
+}
+
+
+👉 새 경로가 또 비틀리면 자동으로 v16 로직으로 떨어져서 화면이 비지 않음.
+
+2) 관리자 설정 화면이 v17을 정말 읽는지 확인
+
+지금 페이지가 v10을 읽고 있으면 아무리 바꿔도 적용 안 돼.
+
+GET/PUT 엔드포인트: /api/settings/algo 로 교체
+
+저장 시 invalidateQueries 금지, setQueryData(["algo-settings"], saved) 사용
+
+빠른 체크:
+
+curl -s http://localhost:5000/api/settings/algo | jq '.adscore,.features,.phase2'
+
+
+👉 여기 값이 화면과 1:1로 보이면 OK.
+
+3) 다시 v17 켜는 순서(순차 ON)
+
+features.preEnrich=true 만 ON → 분석 1회 → 로그에 [PRE-ENRICH] 뜨는지
+
+features.scoreFirstGate=true, adscore.SCORE_MIN=0.55 → skippedByScore 카운트 확인
+
+phase2.engine="lk" → 조합 키워드(‘잠실 맛집’) 상단 노출 확인
+
+마지막으로 tierAutoFill=true → “비어있음” 완전 제거
+
+4) 내가 바로 보고 싶은 파일(필요 최소)
+
+server/routes.ts의 analyze 핸들러 전체
+
+server/services/algo-config.ts의 getAlgoConfig()
+
+server/phase2/index.ts의 runPhase2() 진입부
+이 3개만 주면 라인 단위로 정확히 물려있나 확인해서, 딱 맞는 diff로 고칠게.
