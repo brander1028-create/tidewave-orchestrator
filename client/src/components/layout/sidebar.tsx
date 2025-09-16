@@ -1,27 +1,28 @@
 import { Link, useLocation } from "wouter";
 import { 
   Home, 
-  Trophy, 
+  TrendingUp,
+  ShoppingCart,
   Star, 
   BarChart3, 
   Inbox, 
   Bell, 
-  Settings,
-  Download,
-  TrendingUp
+  Database,
+  Settings
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 
 const navigation = [
-  { name: "대시보드", href: "/dashboard", icon: Home },
-  { name: "순위 체크", href: "/rank", icon: Trophy },
-  { name: "리뷰 분석", href: "/reviews", icon: Star },
+  { name: "대시보드(블로그)", href: "/dashboard", icon: Home },
+  { name: "블로그 순위", href: "/blog-rank", icon: TrendingUp },
+  { name: "쇼핑몰 순위", href: "/shop-rank", icon: ShoppingCart },
+  { name: "리뷰 랭킹", href: "/reviews", icon: Star },
   { name: "인사이트", href: "/insights", icon: BarChart3 },
   { name: "제출함", href: "/inbox", icon: Inbox, badge: "3" },
   { name: "알림", href: "/alerts", icon: Bell },
+  { name: "데이터베이스", href: "/database", icon: Database },
   { name: "설정", href: "/settings", icon: Settings },
-  { name: "내보내기", href: "/exports", icon: Download },
 ];
 
 export default function Sidebar() {
