@@ -6,13 +6,17 @@ import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
 import { titleKeywordExtractor } from "./services/title-keyword-extractor";
 import { serpScraper } from "./services/serp-scraper";
+import { expandAllKeywords } from "./services/bfs-crawler";
+import { expandLKBatch, detectCategory, getLKModeStats } from "./services/lk-mode";
 import { z } from "zod";
 import { checkOpenAPI, checkSearchAds, checkKeywordsDB, checkAllServices, getHealthWithPrompt } from './services/health';
 import { shouldPreflight, probeHealth, getOptimisticHealth, markHealthFail, markHealthGood } from './services/health-cache';
 import { getVolumesWithHealth } from './services/externals-health';
 import { upsertKeywordsFromSearchAds, listKeywords, setKeywordExcluded, listExcluded, getKeywordVolumeMap, findKeywordByText, deleteAllKeywords, upsertMany, compIdxToScore, calculateOverallScore, getKeywordsCounts } from './store/keywords';
 // BFS Crawler imports
-import { loadSeedsFromCSV, loadOptimizedSeeds, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword, isStale, getCallBudgetStatus } from './services/bfs-crawler.js';
+import { loadSeedsFromCSV, loadOptimizedSeeds, createGlobalCrawler, getGlobalCrawler, clearGlobalCrawler, normalizeKeyword, isStale, getCallBudgetStatus, expandAllKeywords } from './services/bfs-crawler.js';
+// LK Mode imports
+import { expandLKBatch, detectCategory, getLKModeStats } from './services/lk-mode.js';
 import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
@@ -205,11 +209,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Start SERP analysis with keywords
   app.post("/api/serp/analyze", async (req, res) => {
     try {
-      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10, titleExtract = true } = req.body;
+      const validatedBody = z.object({
+        keywords: z.array(z.string()).min(1).max(20),
+        minRank: z.number().optional().default(2),
+        maxRank: z.number().optional().default(15),
+        postsPerBlog: z.number().optional().default(10),
+        titleExtract: z.boolean().optional().default(true),
+        enableLKMode: z.boolean().optional().default(false),
+        preferCompound: z.boolean().optional().default(true),
+        targetCategory: z.string().optional()
+      }).parse(req.body);
+
+      const { 
+        keywords, 
+        minRank, 
+        maxRank, 
+        postsPerBlog, 
+        titleExtract,
+        enableLKMode,
+        preferCompound,
+        targetCategory
+      } = validatedBody;
       
       // 🎯 디버깅: 요청 바디 로깅
       console.log(`🎯 SERP Request Body:`, JSON.stringify({
-        keywords, minRank, maxRank, postsPerBlog, titleExtract
+        keywords, minRank, maxRank, postsPerBlog, titleExtract, enableLKMode, preferCompound, targetCategory
       }, null, 2));
       
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
@@ -240,8 +264,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         progress: 0
       });
 
-      // Start analysis in background
-      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract);
+      // Start analysis in background with LK Mode options
+      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+        enableLKMode,
+        preferCompound,
+        targetCategory
+      });
 
       res.json({ 
         jobId: job.id,
@@ -1093,7 +1121,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // If validation passes, delegate to existing analyze endpoint logic
-      const { keywords, minRank = 2, maxRank = 15, postsPerBlog = 10, titleExtract = true } = req.body;
+      const validatedBody = z.object({
+        keywords: z.array(z.string()).min(1).max(20),
+        minRank: z.number().optional().default(2),
+        maxRank: z.number().optional().default(15),
+        postsPerBlog: z.number().optional().default(10),
+        titleExtract: z.boolean().optional().default(true),
+        enableLKMode: z.boolean().optional().default(false),
+        preferCompound: z.boolean().optional().default(true),
+        targetCategory: z.string().optional()
+      }).parse(req.body);
+
+      const { 
+        keywords, 
+        minRank, 
+        maxRank, 
+        postsPerBlog, 
+        titleExtract,
+        enableLKMode,
+        preferCompound,
+        targetCategory
+      } = validatedBody;
       
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
@@ -1111,8 +1159,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         progress: 0
       });
 
-      // Start analysis in background (reuse existing function)
-      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract);
+      // Start analysis in background (reuse existing function) with LK Mode options
+      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+        enableLKMode,
+        preferCompound,
+        targetCategory
+      });
 
       // 시작 성공 → 정상 기록
       const h = await getOptimisticHealth(db);
@@ -2118,6 +2170,110 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // === LK Mode (Location+Keyword Combo) APIs ===
+  
+  // LK Mode validation schemas
+  const lkExpandSchema = z.object({
+    keywords: z.array(z.string().min(1).max(50)).min(1).max(20),
+    preferCompound: z.boolean().default(true),
+    targetCategory: z.string().optional(),
+    maxVariantsPerSeed: z.number().int().min(1).max(100).default(50)
+  });
+  
+  const lkDetectCategorySchema = z.object({
+    keyword: z.string().min(1).max(50)
+  });
+  
+  // LK Mode Test: Generate Location+Keyword combinations
+  app.post('/api/lk-mode/expand', async (req, res) => {
+    try {
+      const validatedBody = lkExpandSchema.parse(req.body);
+      const { keywords, preferCompound, targetCategory, maxVariantsPerSeed } = validatedBody;
+      
+      console.log(`🏷️ [LK Mode] Expanding ${keywords.length} keywords: ${keywords.slice(0, 3).join(', ')}...`);
+      console.log(`🎯 [LK Mode] Options: preferCompound=${preferCompound}, targetCategory=${targetCategory}`);
+      
+      // Auto-detect categories for keywords
+      const categoryMapping: { [keyword: string]: string } = {};
+      if (!targetCategory) {
+        for (const keyword of keywords) {
+          const detected = detectCategory(keyword);
+          if (detected) {
+            categoryMapping[keyword] = detected;
+          }
+        }
+      }
+      
+      // Generate LK combinations
+      const lkVariants = expandLKBatch(keywords, {
+        preferCompound,
+        categoryMapping: targetCategory ? keywords.reduce((map, kw) => ({ ...map, [kw]: targetCategory }), {}) : categoryMapping,
+        maxVariantsPerSeed,
+        totalLimit: 1000 // API limit
+      });
+      
+      console.log(`✅ [LK Mode] Generated ${lkVariants.length} location+keyword combinations`);
+      
+      res.json({
+        success: true,
+        originalKeywords: keywords,
+        expandedKeywords: lkVariants,
+        options: { preferCompound, targetCategory, maxVariantsPerSeed },
+        categoryDetection: categoryMapping,
+        stats: {
+          originalCount: keywords.length,
+          expandedCount: lkVariants.length,
+          expansionRatio: Math.round((lkVariants.length / keywords.length) * 100) / 100
+        }
+      });
+      
+    } catch (error) {
+      console.error('❌ [LK Mode] Expansion failed:', error);
+      res.status(500).json({ error: 'LK Mode expansion failed', details: String(error) });
+    }
+  });
+  
+  // LK Mode Stats: Get statistics about locations and categories
+  app.get('/api/lk-mode/stats', async (req, res) => {
+    try {
+      const stats = getLKModeStats();
+      console.log(`📊 [LK Mode] Stats requested: ${stats.totalLocations} locations, ${stats.totalCategories} categories`);
+      
+      res.json({
+        success: true,
+        ...stats,
+        lastUpdated: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ [LK Mode] Stats failed:', error);
+      res.status(500).json({ error: 'Failed to get LK Mode stats', details: String(error) });
+    }
+  });
+
+  
+  // LK Mode Category Detection: Auto-detect category for a keyword
+  app.post('/api/lk-mode/detect-category', async (req, res) => {
+    try {
+      const validatedBody = lkDetectCategorySchema.parse(req.body);
+      const { keyword } = validatedBody;
+      
+      const detectedCategory = detectCategory(keyword);
+      console.log(`🔍 [LK Mode] Category detection for "${keyword}": ${detectedCategory || 'none'}`);
+      
+      res.json({
+        success: true,
+        keyword,
+        detectedCategory,
+        hasCategory: !!detectedCategory
+      });
+      
+    } catch (error) {
+      console.error('❌ [LK Mode] Category detection failed:', error);
+      res.status(500).json({ error: 'Category detection failed', details: String(error) });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
@@ -2152,7 +2308,19 @@ function extractBlogIdFromUrl(url: string): string {
 }
 
 // Background SERP analysis job processing
-async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank: number, maxRank: number, postsPerBlog: number = 10, titleExtract: boolean = true) {
+async function processSerpAnalysisJob(
+  jobId: string, 
+  keywords: string[], 
+  minRank: number, 
+  maxRank: number, 
+  postsPerBlog: number = 10, 
+  titleExtract: boolean = true,
+  lkOptions: {
+    enableLKMode?: boolean;
+    preferCompound?: boolean;
+    targetCategory?: string;
+  } = {}
+) {
   try {
     // Helper function to check if job is cancelled
     const checkIfCancelled = async (): Promise<boolean> => {
@@ -2163,6 +2331,9 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
     const job = await storage.getSerpJob(jobId);
     if (!job) return;
 
+    // Extract LK Mode options
+    const { enableLKMode = false, preferCompound = true, targetCategory } = lkOptions;
+
     await storage.updateSerpJob(jobId, {
       status: "running",
       currentStep: "discovering_blogs",
@@ -2172,11 +2343,39 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
 
     console.log(`🚀 Starting SERP analysis for job ${jobId} with keywords:`, keywords);
     console.log(`📊 System Configuration: HTTP + RSS based crawling (Playwright removed)`);
+    console.log(`🏷️ LK Mode: ${enableLKMode ? 'ENABLED' : 'DISABLED'}, Prefer compound: ${preferCompound}, Category: ${targetCategory || 'auto-detect'}`);
+    
+    // Step 0: Optionally expand keywords using LK Mode
+    let searchKeywords = keywords;
+    if (enableLKMode) {
+      try {
+        console.log(`🔄 [LK Mode] Expanding ${keywords.length} keywords for enhanced coverage...`);
+        const categoryMapping = targetCategory 
+          ? keywords.reduce((map, kw) => ({ ...map, [kw]: targetCategory }), {})
+          : {};
+          
+        const expandedKeywords = expandAllKeywords(keywords, {
+          enableLKMode: true,
+          preferCompound,
+          categoryMapping
+        });
+        
+        // Limit expanded keywords to avoid excessive API calls
+        const maxKeywords = Math.min(expandedKeywords.length, keywords.length * 5); // 5x expansion max
+        searchKeywords = expandedKeywords.slice(0, maxKeywords);
+        
+        console.log(`✅ [LK Mode] Expanded from ${keywords.length} to ${searchKeywords.length} keywords`);
+        console.log(`🔍 [LK Mode] Sample expanded keywords: ${searchKeywords.slice(0, 3).join(', ')}...`);
+      } catch (error) {
+        console.error(`❌ [LK Mode] Keyword expansion failed, using original keywords:`, error);
+        searchKeywords = keywords;
+      }
+    }
     
     // Step 1: Discover blogs for each keyword
     const allDiscoveredBlogs = new Map<string, any>(); // Use URL as key to deduplicate
     
-    for (const [index, keyword] of Array.from(keywords.entries())) {
+    for (const [index, keyword] of Array.from(searchKeywords.entries())) {
       // Check if job is cancelled before processing each keyword
       if (await checkIfCancelled()) {
         console.log(`Job ${jobId} cancelled during keyword discovery phase`);
@@ -2186,16 +2385,16 @@ async function processSerpAnalysisJob(jobId: string, keywords: string[], minRank
       try {
         // Update detailed progress
         await storage.updateSerpJob(jobId, {
-          currentStepDetail: `키워드 '${keyword}' 검색 중 (${index + 1}/${keywords.length})`,
+          currentStepDetail: `키워드 '${keyword}' 검색 중 (${index + 1}/${searchKeywords.length})`,
           detailedProgress: {
             currentKeyword: keyword,
             keywordIndex: index + 1,
-            totalKeywords: keywords.length,
+            totalKeywords: searchKeywords.length,
             phase: "keyword_search"
           }
         });
         
-        console.log(`Searching blogs for keyword: ${keyword} (${index + 1}/${keywords.length})`);
+        console.log(`Searching blogs for keyword: ${keyword} (${index + 1}/${searchKeywords.length})`);
         
         const serpResults = await serpScraper.searchKeywordOnMobileNaver(keyword, minRank, maxRank);
         

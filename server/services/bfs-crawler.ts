@@ -284,20 +284,54 @@ function expandModels(seed: string): string[] {
   return variants;
 }
 
-// 통합 확장 함수: 모든 Provider 적용
-export function expandAllKeywords(seeds: string[]): string[] {
+// 통합 확장 함수: 모든 Provider 적용 + LK 모드 지원
+export function expandAllKeywords(seeds: string[], options: {
+  enableLKMode?: boolean;
+  preferCompound?: boolean;
+  categoryMapping?: { [keyword: string]: string };
+} = {}): string[] {
+  const { enableLKMode = false, preferCompound = true, categoryMapping = {} } = options;
+  
   console.log(`🌱 EXP seeds: in=${seeds.length} - starting expansion...`);
+  console.log(`🏷️ LK Mode: ${enableLKMode ? 'ENABLED' : 'DISABLED'}, Prefer compound: ${preferCompound}`);
   
   const allExpanded = new Set<string>();
   
   // 원본 시드 추가
   seeds.forEach(seed => allExpanded.add(normalizeKeyword(seed)));
   
-  // 각 시드에 대해 모든 확장자 적용
+  // LK 모드가 활성화된 경우 우선 적용
+  if (enableLKMode) {
+    console.log(`🚀 [LK Mode] Applying Location+Keyword expansion...`);
+    
+    // LK 모드 확장 import 및 적용
+    try {
+      const { expandLKBatch } = require('./lk-mode.js');
+      const lkVariants = expandLKBatch(seeds, {
+        preferCompound,
+        categoryMapping,
+        maxVariantsPerSeed: 30,
+        totalLimit: 15000 // LK 모드는 더 많은 조합 생성
+      });
+      
+      lkVariants.forEach(variant => {
+        const normalized = normalizeKeyword(variant);
+        if (normalized.length > 1) {
+          allExpanded.add(normalized);
+        }
+      });
+      
+      console.log(`✅ [LK Mode] Added ${lkVariants.length} location+keyword combinations`);
+    } catch (error) {
+      console.error(`❌ [LK Mode] Failed to apply LK expansion:`, error);
+    }
+  }
+  
+  // 기존 확장자들 적용 (LK 모드와 병행)
   seeds.forEach(seed => {
     const variants = expandVariants(seed);
     const temporal = expandTemporal(seed);
-    const local = expandLocal(seed);
+    const local = expandLocal(seed); // 기존 local 확장자도 유지
     const travel = expandTravel(seed);
     const models = expandModels(seed);
     
@@ -315,11 +349,28 @@ export function expandAllKeywords(seeds: string[]): string[] {
   
   // 50,000개 상한 적용 (명세서 요구사항)
   if (expandedArray.length > 50000) {
-    // 균등 샘플링으로 50,000개로 제한
-    const sampled = expandedArray
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 50000);
-    console.log(`🔄 Frontier capped at 50,000 (from ${expandedArray.length})`);
+    // LK 모드일 때는 복합어 우선순위로 정렬
+    let sampled;
+    if (enableLKMode && preferCompound) {
+      // 복합어 우선순위로 샘플링
+      sampled = expandedArray
+        .sort((a, b) => {
+          const aWords = a.split(/\s+/).length;
+          const bWords = b.split(/\s+/).length;
+          // 2~3어 복합어 우선, 그 다음 총 길이
+          if (aWords >= 2 && aWords <= 3 && (bWords < 2 || bWords > 3)) return -1;
+          if (bWords >= 2 && bWords <= 3 && (aWords < 2 || aWords > 3)) return 1;
+          return b.length - a.length; // 긴 키워드 우선
+        })
+        .slice(0, 50000);
+      console.log(`🔄 [LK Mode] Frontier capped at 50,000 with compound priority (from ${expandedArray.length})`);
+    } else {
+      // 기존 랜덤 샘플링
+      sampled = expandedArray
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 50000);
+      console.log(`🔄 Frontier capped at 50,000 (from ${expandedArray.length})`);
+    }
     return sampled;
   }
   
