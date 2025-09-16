@@ -12,6 +12,8 @@ import {
   type RankSnapshot, type InsertRankSnapshot,
   type MetricSnapshot, type InsertMetricSnapshot,
   type ReviewState, type InsertReviewState,
+  // v7 키워드 매핑 타입들
+  type TargetKeyword, type InsertTargetKeyword,
   // v7 키워드 그룹 타입들
   type Group, type InsertGroup,
   type GroupKeyword, type InsertGroupKeyword,
@@ -36,6 +38,8 @@ import {
   rankSnapshots,
   metricSnapshots,
   reviewState,
+  // v7 키워드 매핑 테이블들
+  targetKeywords,
   // v7 키워드 그룹 테이블들
   groups,
   groupKeywords,
@@ -157,6 +161,12 @@ export interface IStorage {
   getSnapshotAggregation(owner: string, range?: string): Promise<any[]>; // 스냅샷 집계 조회
   getTokenUsageStats(owner: string): Promise<any>; // 토큰 사용량 통계
   
+  // v7 Target Keywords operations (타겟-키워드 매핑 관리) - Owner-aware methods for security
+  getTargetKeywords(targetId: string): Promise<TargetKeyword[]>; // 타겟의 키워드 목록 조회
+  addTargetKeywords(owner: string, targetId: string, keywords: string[], addedBy: string): Promise<TargetKeyword[]>; // 키워드 추가
+  removeTargetKeywords(owner: string, targetId: string, keywords: string[]): Promise<void>; // 키워드 제거
+  getBlogTargetsWithKeywords(owner: string): Promise<(BlogTarget & { keywords: string[] })[]>; // 키워드 포함된 블로그 타겟 조회
+
   // v7 Dashboard APIs (대시보드용 API)
   getRollingAlerts(owner: string, isActive?: boolean): Promise<RollingAlert[]>; // Top Ticker용 롤링 알림 조회
   createRollingAlert(data: InsertRollingAlert): Promise<RollingAlert>; // 롤링 알림 생성
@@ -1376,6 +1386,95 @@ export class DatabaseStorage implements IStorage {
       return result;
     }
   }
+
+  // v7 Target Keywords operations implementation
+  async getTargetKeywords(targetId: string): Promise<TargetKeyword[]> {
+    return await db.select()
+      .from(targetKeywords)
+      .where(and(
+        eq(targetKeywords.targetId, targetId),
+        eq(targetKeywords.active, true)
+      ))
+      .orderBy(asc(targetKeywords.keywordText));
+  }
+
+  async addTargetKeywords(owner: string, targetId: string, keywords: string[], addedBy: string): Promise<TargetKeyword[]> {
+    // 먼저 타겟의 소유권 확인 (중요한 데이터베이스 안전 규칙)
+    const target = await db.select()
+      .from(blogTargets)
+      .where(and(
+        eq(blogTargets.id, targetId),
+        eq(blogTargets.owner, owner)
+      ))
+      .limit(1);
+
+    if (target.length === 0) {
+      throw new Error(`Unauthorized: Target ${targetId} does not belong to owner ${owner}`);
+    }
+
+    // 키워드 정규화 (소문자 트림)
+    const normalizedKeywords = keywords.map(kw => kw.trim().toLowerCase()).filter(kw => kw.length > 0);
+
+    // 중복 방지를 위한 on conflict do nothing
+    if (normalizedKeywords.length > 0) {
+      const values = normalizedKeywords.map(keywordText => ({
+        targetId,
+        keywordText,
+        addedBy,
+        active: true
+      } as InsertTargetKeyword));
+
+      await db.insert(targetKeywords)
+        .values(values)
+        .onConflictDoNothing({ target: [targetKeywords.targetId, targetKeywords.keywordText] });
+    }
+
+    // 현재 키워드 목록 반환
+    return await this.getTargetKeywords(targetId);
+  }
+
+  async removeTargetKeywords(owner: string, targetId: string, keywords: string[]): Promise<void> {
+    // 먼저 타겟의 소유권 확인 (중요한 데이터베이스 안전 규칙)
+    const target = await db.select()
+      .from(blogTargets)
+      .where(and(
+        eq(blogTargets.id, targetId),
+        eq(blogTargets.owner, owner)
+      ))
+      .limit(1);
+
+    if (target.length === 0) {
+      throw new Error(`Unauthorized: Target ${targetId} does not belong to owner ${owner}`);
+    }
+
+    // 키워드 정규화 (소문자 트림)
+    const normalizedKeywords = keywords.map(kw => kw.trim().toLowerCase()).filter(kw => kw.length > 0);
+
+    if (normalizedKeywords.length > 0) {
+      await db.delete(targetKeywords)
+        .where(and(
+          eq(targetKeywords.targetId, targetId),
+          sql`${targetKeywords.keywordText} = ANY(${normalizedKeywords})`
+        ));
+    }
+  }
+
+  async getBlogTargetsWithKeywords(owner: string): Promise<(BlogTarget & { keywords: string[] })[]> {
+    // 먼저 블로그 타겟들 조회 (소유권 필터링 적용)
+    const targets = await this.getBlogTargets(owner);
+    
+    // 각 타겟에 대해 키워드 목록 조회
+    const result = [];
+    for (const target of targets) {
+      const keywords = await this.getTargetKeywords(target.id);
+      result.push({
+        ...target,
+        keywords: keywords.map(tk => tk.keywordText)
+      });
+    }
+
+    return result;
+  }
 }
 
 export class MemStorage implements IStorage {
@@ -1394,6 +1493,8 @@ export class MemStorage implements IStorage {
   private rankSnapshots: Map<string, RankSnapshot>;
   private metricSnapshots: Map<string, MetricSnapshot>;
   private reviewStates: Map<string, ReviewState>;
+  // v7 키워드 매핑 변수들
+  private targetKeywords: Map<string, TargetKeyword>;
   // v7 키워드 그룹 변수들
   private groups: Map<string, Group>;
   private groupKeywords: Map<string, GroupKeyword>;
@@ -1418,6 +1519,8 @@ export class MemStorage implements IStorage {
     this.rankSnapshots = new Map();
     this.metricSnapshots = new Map();
     this.reviewStates = new Map();
+    // v7 키워드 매핑 변수들 초기화
+    this.targetKeywords = new Map();
     // v7 키워드 그룹 변수들 초기화
     this.groups = new Map();
     this.groupKeywords = new Map();
@@ -3206,6 +3309,78 @@ export class MemStorage implements IStorage {
       updatedAt: new Date(),
     };
     return updatedSettings;
+  }
+
+  // v7 Target Keywords operations implementation (Mock)
+  async getTargetKeywords(targetId: string): Promise<TargetKeyword[]> {
+    const results: TargetKeyword[] = [];
+    // Map iteration을 Array.from()으로 안전하게 처리
+    const allKeywords = Array.from(this.targetKeywords.values());
+    for (const keyword of allKeywords) {
+      if (keyword.targetId === targetId && keyword.active) {
+        results.push(keyword);
+      }
+    }
+    return results.sort((a, b) => a.keywordText.localeCompare(b.keywordText));
+  }
+
+  async addTargetKeywords(owner: string, targetId: string, keywords: string[], addedBy: string): Promise<TargetKeyword[]> {
+    // Mock owner validation (중요한 데이터베이스 안전 규칙)
+    const target = Array.from(this.blogTargets.values()).find(t => t.id === targetId && t.owner === owner);
+    if (!target) {
+      throw new Error(`Unauthorized: Target ${targetId} does not belong to owner ${owner}`);
+    }
+
+    // 키워드 정규화 및 추가 (소문자 트림)
+    const normalizedKeywords = keywords.map(kw => kw.trim().toLowerCase()).filter(kw => kw.length > 0);
+    
+    for (const keywordText of normalizedKeywords) {
+      const key = `${targetId}-${keywordText}`;
+      if (!this.targetKeywords.has(key)) {
+        const newKeyword: TargetKeyword = {
+          targetId,
+          keywordText,
+          active: true,
+          addedBy,
+          ts: new Date(),
+        };
+        this.targetKeywords.set(key, newKeyword);
+      }
+    }
+
+    return await this.getTargetKeywords(targetId);
+  }
+
+  async removeTargetKeywords(owner: string, targetId: string, keywords: string[]): Promise<void> {
+    // Mock owner validation (중요한 데이터베이스 안전 규칙)  
+    const target = Array.from(this.blogTargets.values()).find(t => t.id === targetId && t.owner === owner);
+    if (!target) {
+      throw new Error(`Unauthorized: Target ${targetId} does not belong to owner ${owner}`);
+    }
+
+    // 키워드 정규화 및 제거 (소문자 트림)
+    const normalizedKeywords = keywords.map(kw => kw.trim().toLowerCase()).filter(kw => kw.length > 0);
+    
+    for (const keywordText of normalizedKeywords) {
+      const key = `${targetId}-${keywordText}`;
+      this.targetKeywords.delete(key);
+    }
+  }
+
+  async getBlogTargetsWithKeywords(owner: string): Promise<(BlogTarget & { keywords: string[] })[]> {
+    // Mock implementation with owner-aware filtering (중요한 데이터베이스 안전 규칙)
+    const targets = Array.from(this.blogTargets.values()).filter(t => t.owner === owner && t.active);
+    
+    const result = [];
+    for (const target of targets) {
+      const keywords = await this.getTargetKeywords(target.id);
+      result.push({
+        ...target,
+        keywords: keywords.map(tk => tk.keywordText)
+      });
+    }
+
+    return result;
   }
 }
 

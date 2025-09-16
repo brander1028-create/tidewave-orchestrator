@@ -529,6 +529,15 @@ export const blogCheckSchema = z.object({
   maxPages: z.number().min(1).max(5).default(3),
 });
 
+// v7 Target Keywords API schemas
+export const targetKeywordsManageSchema = z.object({
+  add: z.array(z.string().min(1).max(100)).optional().describe("추가할 키워드 목록"),
+  remove: z.array(z.string().min(1).max(100)).optional().describe("제거할 키워드 목록"),
+  addedBy: z.string().optional().describe("추가자 (기본값: owner)"),
+}).refine(data => data.add || data.remove, {
+  message: "add 또는 remove 중 하나는 필수입니다",
+});
+
 // v7 키워드 매핑 Insert 스키마
 export const insertTargetKeywordSchema = createInsertSchema(targetKeywords).omit({
   ts: true,

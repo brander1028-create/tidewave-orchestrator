@@ -20,7 +20,9 @@ import {
   insertCollectionRuleSchema,
   insertCollectionStateSchema,
   insertRollingAlertSchema,
-  insertDashboardSettingsSchema
+  insertDashboardSettingsSchema,
+  // v7 키워드 매핑 API 스키마
+  targetKeywordsManageSchema
 } from "@shared/schema";
 import { naverBlogScraper } from "./blog-scraper";
 import { z } from "zod";
@@ -245,8 +247,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
-      const targets = await storage.getBlogTargets(owner);
-      res.json(targets);
+      
+      // v7 키워드 매핑: expand=keywords 파라미터 지원
+      const expand = req.query.expand as string;
+      const includeKeywords = expand?.includes('keywords');
+      
+      if (includeKeywords) {
+        const targets = await storage.getBlogTargetsWithKeywords(owner);
+        res.json(targets);
+      } else {
+        const targets = await storage.getBlogTargets(owner);
+        res.json(targets);
+      }
     } catch (error) {
       res.status(500).json({ message: "블로그 타겟 조회에 실패했습니다", error: String(error) });
     }
@@ -321,6 +333,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(target);
     } catch (error) {
       res.status(500).json({ message: "블로그 타겟 수정에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v7 키워드 매핑 API: 키워드 추가/제거
+  app.post("/api/blog-targets/:id/keywords", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+
+      const validation = targetKeywordsManageSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "잘못된 키워드 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+
+      const { add, remove, addedBy } = validation.data;
+      let result: any[] = [];
+
+      // 키워드 추가 (중요한 데이터베이스 안전 규칙: owner 검증 필수)
+      if (add && add.length > 0) {
+        result = await storage.addTargetKeywords(owner, id, add, addedBy || owner);
+      }
+
+      // 키워드 제거 (owner 검증 필수)
+      if (remove && remove.length > 0) {
+        await storage.removeTargetKeywords(owner, id, remove);
+        // 제거 후 최신 목록 가져오기
+        result = await storage.getTargetKeywords(id);
+      }
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ message: "키워드 관리에 실패했습니다", error: String(error) });
     }
   });
 
