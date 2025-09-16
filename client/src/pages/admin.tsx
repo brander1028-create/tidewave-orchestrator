@@ -21,7 +21,9 @@ import {
   CheckCircle,
   Database,
   Zap,
-  Filter
+  Filter,
+  History,
+  Clock
 } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
@@ -127,6 +129,18 @@ export default function AdminPage() {
     }
   });
 
+  // Fetch settings history
+  const { data: history, isLoading: historyLoading } = useQuery({
+    queryKey: ['algo-settings-history'],
+    queryFn: async () => {
+      const response = await fetch('/api/settings/algo/history');
+      if (!response.ok) {
+        throw new Error('Failed to fetch settings history');
+      }
+      return response.json();
+    }
+  });
+
   // Form setup
   const form = useForm<FormData>({
     resolver: zodResolver(FormSchema),
@@ -196,7 +210,8 @@ export default function AdminPage() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.setQueryData(['algo-settings'], (oldData: AlgoConfig) => oldData);
+      queryClient.invalidateQueries({ queryKey: ['algo-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['algo-settings-history'] });
       toast({
         title: "설정 저장 완료",
         description: "v17 알고리즘 설정이 성공적으로 저장되었습니다.",
@@ -207,6 +222,41 @@ export default function AdminPage() {
       toast({
         title: "설정 저장 실패",
         description: "설정 저장 중 오류가 발생했습니다.",
+        variant: "destructive"
+      });
+    }
+  });
+
+  // Rollback mutation
+  const rollbackMutation = useMutation({
+    mutationFn: async ({ key, version }: { key: string, version: number }) => {
+      const response = await fetch('/api/settings/algo/rollback', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ key, version }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to rollback configuration');
+      }
+      
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['algo-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['algo-settings-history'] });
+      toast({
+        title: "설정 복원 완료",
+        description: "이전 설정으로 성공적으로 복원되었습니다.",
+      });
+    },
+    onError: (error) => {
+      console.error('Error rolling back config:', error);
+      toast({
+        title: "설정 복원 실패",
+        description: "설정 복원 중 오류가 발생했습니다.",
         variant: "destructive"
       });
     }
@@ -720,6 +770,75 @@ export default function AdminPage() {
                   />
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Settings History */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <History className="h-4 w-4" />
+                설정 히스토리
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                이전 설정 버전을 확인하고 롤백할 수 있습니다
+              </p>
+            </CardHeader>
+            <CardContent>
+              {historyLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+                  <span className="ml-2 text-sm text-muted-foreground">히스토리 로딩 중...</span>
+                </div>
+              ) : history && history.length > 0 ? (
+                <div className="space-y-3">
+                  {history.slice(0, 10).map((item: any, index: number) => (
+                    <div key={item.version || index} className="flex items-center justify-between p-3 border rounded-lg bg-gray-50 dark:bg-gray-800">
+                      <div className="flex items-center gap-3">
+                        <Clock className="h-4 w-4 text-muted-foreground" />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={index === 0 ? "default" : "secondary"}>
+                              v{item.version || index + 1}
+                            </Badge>
+                            {index === 0 && <Badge variant="outline" className="text-xs">현재</Badge>}
+                          </div>
+                          <div className="text-sm text-muted-foreground mt-1">
+                            {new Date(item.updatedAt || Date.now()).toLocaleString('ko-KR')}
+                            {item.updatedBy && ` • ${item.updatedBy}`}
+                          </div>
+                          {item.note && (
+                            <div className="text-xs text-muted-foreground mt-1">
+                              {item.note}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {index > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => rollbackMutation.mutate({ key: item.key, version: item.version })}
+                          disabled={rollbackMutation.isPending}
+                          data-testid={`rollback-v${item.version}`}
+                        >
+                          {rollbackMutation.isPending ? (
+                            <div className="animate-spin rounded-full h-3 w-3 border-b border-current mr-1"></div>
+                          ) : (
+                            <RotateCcw className="h-3 w-3 mr-1" />
+                          )}
+                          복원
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <History className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p>설정 히스토리가 없습니다</p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
