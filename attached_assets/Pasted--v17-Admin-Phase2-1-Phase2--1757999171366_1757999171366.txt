@@ -1,0 +1,185 @@
+[업데이트 요청 v17 — Admin 설정 + 플러그블 Phase2 + 핫리로드 + 버전스냅샷]
+1) 목표(두 줄)
+
+관리자 페이지에서 Phase2 수치·임계·룰·밴/카테고리·게이트/토글을 즉시 수정(핫리로드) + 스냅샷/롤백 지원.
+
+플러그블 Phase2 엔진(Strategy): lk(로컬+키워드), ngrams, hybrid를 스위치로 교체·확장.
+
+2) 설정 저장소 & API (스키마/엔드포인트)
+
+테이블(또는 파일) app_settings:
+
+key TEXT PK, json JSONB, version INT, updated_by TEXT, updated_at TIMESTAMP
+
+기본 row: ('algo', <DEFAULT_JSON>, 1, 'system', now())
+
+엔드포인트:
+
+GET /api/settings/algo → 현재 JSON
+
+PUT /api/settings/algo → 저장(버전 +1, 이전 버전은 settings_history에 스냅샷)
+
+GET /api/settings/history?key=algo&limit=20 → 롤백용 목록
+
+POST /api/settings/rollback {key, version} → 해당 버전 복원
+
+검증: zod(또는 class-validator)로 JSON validate (합계=1.0 등).
+
+설정 JSON (초기안)
+{
+  "phase2": {
+    "engine": "lk",               // "lk" | "ngrams" | "hybrid"
+    "postsPerBlog": 10,
+    "tiersPerPost": 4,
+    "preferCompound": true,
+    "allowThreeGram": true,
+    "cats": ["성분","효과","복용법","비교","가격","부작용"],
+    "banSingles": ["맛집","추천","방법","정리","여자","남자","바르"],
+    "VOL_MIN": 600
+  },
+  "weights": {                    // TotalScore
+    "volume": 0.70,
+    "content": 0.30
+  },
+  "contentWeights": { "freq": 0.5, "pos": 0.3, "len": 0.2 },
+  "adscore": {                    // AdScore(광고 적합도)
+    "wVolume": 0.35,
+    "wCompetition": 0.35,
+    "wAdDepth": 0.20,
+    "wCpc": 0.10,
+    "SCORE_MIN": 0.55,
+    "VOL_MIN": 600,
+    "AD_DEPTH_MIN": 1,
+    "CPC_MIN": 0,
+    "mode": "hard",              // "hard": 스킵, "soft": 표시만(랭크 생략)
+    "forceFill": true            // T개 미만일 때 임계 완화 채움
+  },
+  "features": {
+    "preEnrich": true,           // DB→API→업서트→동일응답 merge
+    "scoreFirstGate": true,      // AdScore Gate 최우선
+    "tierAutoFill": true,        // 2~4티어 자동 보강
+    "log_calculations": true,    // scoreTrace / gateTrace 로깅
+    "canary": { "enabled": false, "ratio": 0.2, "keywords": [] } // 점진 롤아웃
+  }
+}
+
+3) 플러그블 Phase2 엔진(Strategy 패턴)
+
+파일 구조:
+
+server/phase2/engines/lk.ts
+
+server/phase2/engines/ngrams.ts
+
+server/phase2/engines/hybrid.ts
+
+server/phase2/index.ts(레지스트리)
+
+인터페이스:
+
+export interface Phase2Engine {
+  name: "lk" | "ngrams" | "hybrid";
+  generateCandidates(ctx: { title: string; cfg: AlgoConfig }): Candidate[];
+  enrichAndScore(cands: Candidate[], cfg: AlgoConfig): Promise<Candidate[]>; // DB→API→업서트→merge + rank + totalScore
+  assignTiers(cands: Candidate[], cfg: AlgoConfig): Tier[]; // T개, 부족시 보강
+}
+export const registry = new Map([["lk", lkEngine], ["ngrams", ngramsEngine], ["hybrid", hybridEngine]]);
+export function runPhase2(ctx, cfg) {
+  const engine = registry.get(cfg.phase2.engine) ?? registry.get("lk")!;
+  const cands = engine.generateCandidates(ctx);
+  const enriched = await engine.enrichAndScore(cands, cfg);
+  return engine.assignTiers(enriched, cfg);
+}
+
+
+핫리로드: analyze 진입 시 getAlgoConfig()로 매 요청 최신 설정 로드(메모리 캐시 30초).
+
+4) Score-First Gate(최우선) 삽입 지점
+
+/api/serp/analyze 입력 검증 직후:
+
+preEnrich() 호출(모든 후보: DB→API→upsert→현재 메모리 merge)
+
+calcAdScore()로 adScore/eligible/skipReason 부여
+
+eligible=false && mode==="hard"는 랭크 미수행(스킵), soft는 표시만
+
+워커 경로(큐 소비)도 동일 적용(양쪽 모두).
+
+로그(설정 log_calculations=true):
+
+[PRE-ENRICH] start/ok
+
+[AdScore] text=..., V=..., C=..., AD=..., CPC=..., score=..., gate=eligible|skip(...)
+
+[TierFill] autofill=...
+
+5) 전수 저장 & 마이그 (경량)
+
+post_tier_checks 컬럼 추가(이미 진행 중이면 스킵):
+
+eligible BOOLEAN DEFAULT true
+
+adscore REAL NULL
+
+skip_reason TEXT NULL
+
+유니크 키 그대로 유지: (job_id,input_keyword,blog_id,post_id,tier,text_nrm)
+
+6) 관리자 페이지(UI) — 한 화면에서 편집/실험/배포
+
+섹션:
+
+가중치 카드: TotalScore(0.70/0.30), Content 내부(freq/pos/len)
+
+광고 적합 게이트: SCORE_MIN/VOL_MIN/AD_DEPTH_MIN/CPC_MIN, mode, forceFill
+
+키워드 생성: engine 선택(lk/ngrams/hybrid), cats/banSingles, preferCompound/allowThreeGram, VOL_MIN
+
+기능 토글: preEnrich/scoreFirstGate/tierAutoFill/log_calculations, canary(비율/키워드 화이트리스트)
+
+스냅샷/롤백: 현재값→(Draft 저장)→테스트 실행→(Publish) 버전+1, 히스토리/롤백 버튼
+
+샌드박스 테스트: 제목/키워드 입력→ 후보·게이트 결과·예상 API 콜 수·티어 미리보기(랭크는 soft 모드 미수행)
+
+UX 가드:
+
+합계 1.0 검증, 중복 키워드 제거, 저장 시 diff 표시.
+
+Publish 시 “변경 요약(임계↑/↓, 밴 추가/제거, 엔진 변경)”을 로그에 남김.
+
+7) 안전/권한
+
+RBAC: roles = ['admin','operator','viewer']; PUT/rollback은 admin만.
+
+변경 감사 로그: who/when/diff/version 저장.
+
+canary가 켜진 경우 키워드 일부/비율만 새 설정 적용 → 문제 시 즉시 롤백.
+
+8) DoD(완료 기준)
+
+ 관리자 페이지에서 값을 바꾸면 다음 분석부터 즉시 반영(서버 재시작 불필요).
+
+ 엔진 스위치(lk↔ngrams↔hybrid)만 바꿔도 Phase2 동작이 교체됨(코드 수정 없이).
+
+ 결과 JSON에 eligible/adScore/skipReason 포함, 로그에 [PRE-ENRICH]/[AdScore] 노출.
+
+ 전수 테이블에 eligible/adscore/skip_reason 저장.
+
+ 스냅샷/롤백으로 이전 버전으로 복귀 가능(1클릭).
+
+ canary 설정으로 부분 롤아웃/회수 가능.
+
+9) 지금 바로 적용할 기본 프리셋(권장)
+
+phase2.engine="lk", postsPerBlog=10, tiersPerPost=4, preferCompound=true, allowThreeGram=true, VOL_MIN=600
+
+weights.volume=0.70, content=0.30
+
+adscore: wV=0.35,wC=0.35,wD=0.20,wP=0.10, SCORE_MIN=0.55,VOL_MIN=600,AD_DEPTH_MIN=1,CPC_MIN=0, mode="hard", forceFill=true
+
+features: preEnrich=true, scoreFirstGate=true, tierAutoFill=true, log_calculations=true
+
+한줄 핑(정렬용)
+[Alignment Ping] 새로 만드는 게 아니라 ‘관리자 설정 + 플러그블 Phase2 + 핫리로드’로 업그레이드합니다.
+엔드포인트/페이지 유지, 마이그는 경량(app_settings, post_tier_checks 3컬럼). 새 기능은 전부 설정화

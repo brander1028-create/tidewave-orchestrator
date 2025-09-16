@@ -111,6 +111,26 @@ export const appMeta = pgTable("app_meta", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// v17: App settings for hot-reloadable configuration
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  json: jsonb("json").notNull(),
+  version: integer("version").notNull().default(1),
+  updatedBy: text("updated_by").notNull().default("system"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// v17: Settings history for rollback support
+export const settingsHistory = pgTable("settings_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull(),
+  json: jsonb("json").notNull(),
+  version: integer("version").notNull(),
+  updatedBy: text("updated_by").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+  note: text("note"), // Change summary/description
+});
+
 // Post tier checks table for comprehensive tier recording (v10 Score-First Gate requirements)
 export const postTierChecks = pgTable("post_tier_checks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -185,6 +205,14 @@ export const insertPostTierCheckSchema = createInsertSchema(postTierChecks).omit
   createdAt: true,
 });
 
+export const insertAppSettingsSchema = createInsertSchema(appSettings).omit({
+  updatedAt: true,
+});
+
+export const insertSettingsHistorySchema = createInsertSchema(settingsHistory).omit({
+  id: true,
+});
+
 // Types for new entities
 export type SerpJob = typeof serpJobs.$inferSelect;
 export type InsertSerpJob = z.infer<typeof insertSerpJobSchema>;
@@ -202,6 +230,10 @@ export type BlogRegistry = typeof blogRegistry.$inferSelect;
 export type InsertBlogRegistry = z.infer<typeof insertBlogRegistrySchema>;
 export type PostTierCheck = typeof postTierChecks.$inferSelect;
 export type InsertPostTierCheck = z.infer<typeof insertPostTierCheckSchema>;
+export type AppSettings = typeof appSettings.$inferSelect;
+export type InsertAppSettings = z.infer<typeof insertAppSettingsSchema>;
+export type SettingsHistory = typeof settingsHistory.$inferSelect;
+export type InsertSettingsHistory = z.infer<typeof insertSettingsHistorySchema>;
 
 // New API contract interface - matches specification document
 export interface SerpResultsData {
