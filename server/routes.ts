@@ -487,16 +487,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             for (let tierNum = 1; tierNum <= T; tierNum++) {
               const tierCheck = postTierData.find(check => check.tier === tierNum);
               if (tierCheck) {
-                // Calculate score based on volume and rank (similar to keyword scoring)
-                let score = 0;
-                if (tierCheck.volume !== null && tierCheck.rank !== null) {
-                  if (tierCheck.rank >= 1 && tierCheck.rank <= 10) {
-                    // Score calculation: volume-based with rank multiplier
-                    const volumeScore = Math.min(tierCheck.volume / 1000, 50); // Max 50 for volume
-                    const rankMultiplier = (11 - tierCheck.rank) / 10; // Rank 1 = 1.0, Rank 10 = 0.1
-                    score = Math.round(volumeScore * rankMultiplier);
-                  }
-                }
+                // Use actual score computed by v17 pipeline
+                const score = tierCheck.score ?? tierCheck.adscore ?? 0;
                 
                 tiers.push({
                   tier: tierNum,
@@ -2916,73 +2908,20 @@ async function processSerpAnalysisJob(
               const postTitle = post.title;
               console.log(`     📄 [Tier Checks] Post ${postIndex + 1}/${Math.min(scrapedPosts.length, postsPerBlog)}: "${postTitle.substring(0, 50)}..."`);
               
-              // Extract T tiers of keywords from this post
-              const tierResult = await titleKeywordExtractor.extractTopNByCombined([postTitle], T);
-              const savedPost = postIndexMap.get(postTitle); // Use precomputed index
+              const savedPost = postIndexMap.get(postTitle); // Use precomputed index FIRST
               
               if (!savedPost) {
                 console.log(`     ⚠️ [Tier Checks] Post not found in DB: ${postTitle.substring(0, 30)}...`);
                 continue;
               }
               
-              // Save tier checks for each tier
-              for (let tierNum = 1; tierNum <= T; tierNum++) {
-                // ✅ CANCELLATION FIX: Check cancellation within tier loop
-                if (await checkIfCancelled()) {
-                  console.log(`Job ${jobId} cancelled during tier ${tierNum} for ${blog.blogName}`);
-                  return;
-                }
-                
-                const tierKeyword = tierResult.topN[tierNum - 1];
-                
-                if (tierKeyword) {
-                  // Check SERP ranking for this tier keyword
-                  console.log(`       🏅 [Tier ${tierNum}] Checking rank for: ${tierKeyword.text}`);
-                  const rank = await serpScraper.checkKeywordRankingInMobileNaver(tierKeyword.text, blog.blogUrl);
-                  
-                  // ✅ FIELD FIX: Use correct volume field and required schema fields
-                  const volume = tierKeyword.raw_volume ?? null;
-                  const normalizedText = tierKeyword.text.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
-                  const isRelated = keywords.some(original => {
-                    const normalizedOriginal = original.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
-                    return normalizedText.includes(normalizedOriginal) || postTitle.toLowerCase().includes(original.toLowerCase());
-                  });
-                  
-                  // Save to post_tier_checks table (id auto-generated)
-                  await db.insert(postTierChecks).values({
-                    jobId: job.id,
-                    inputKeyword: inputKeyword,
-                    blogId: blog.blogId,
-                    postId: savedPost.id,
-                    postTitle: postTitle,
-                    tier: tierNum,
-                    textSurface: tierKeyword.text,
-                    textNrm: normalizedText,
-                    volume: volume,
-                    rank: rank,
-                    related: isRelated
-                  });
-                  
-                  console.log(`       ✅ [Tier ${tierNum}] Saved: ${tierKeyword.text} → rank ${rank || 'NA'} (vol: ${volume || 'NA'})`);
-                } else {
-                  // No keyword found for this tier - save empty entry
-                  await db.insert(postTierChecks).values({
-                    jobId: job.id,
-                    inputKeyword: inputKeyword,
-                    blogId: blog.blogId,
-                    postId: savedPost.id,
-                    postTitle: postTitle,
-                    tier: tierNum,
-                    textSurface: "",
-                    textNrm: "",
-                    volume: null,
-                    rank: null,
-                    related: false
-                  });
-                  
-                  console.log(`       ⚫ [Tier ${tierNum}] Empty tier saved`);
-                }
-              }
+              // ✅ v17 파이프라인 적용: Pre-enrich + Score-First Gate + autoFill
+              console.log(`🚀 [v17 Pipeline] Processing post: "${postTitle.substring(0, 50)}..."`);
+              const { processPostTitleV17 } = await import('./services/v17-pipeline');
+              const v17Result = await processPostTitleV17(postTitle, job.id, blog.blogId, savedPost.id || 0, inputKeyword);
+              console.log(`✅ [v17 Pipeline] Generated ${v17Result.tiers.length} tiers with scores`);
+              
+              // v17 pipeline handles all tier processing and database saving - no additional processing needed
               
               // ✅ PERFORMANCE FIX: Reduced delay per post instead of per tier
               await new Promise(resolve => setTimeout(resolve, 100));

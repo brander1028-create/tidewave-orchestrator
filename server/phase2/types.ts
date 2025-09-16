@@ -88,13 +88,8 @@ export interface Candidate {
 // Tier assignment result
 export interface Tier {
   tier: number;
-  text: string;
-  volume: number | null;
-  rank: number | null;
+  candidate: Candidate;  // ✅ Wrap candidate object instead of flat properties
   score: number;
-  eligible?: boolean;
-  adScore?: number;
-  skipReason?: string;
 }
 
 // Phase2 processing context

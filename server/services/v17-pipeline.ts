@@ -1,0 +1,233 @@
+/**
+ * v17 Pipeline: Pre-enrich + Score-First Gate + autoFill
+ * 사용자 요구사항대로 구현
+ */
+import { getAlgoConfig } from './algo-config';
+import { getVolumesWithHealth } from './externals-health';
+import { serpScraper } from './serp-scraper';
+import { db } from '../db';
+import { postTierChecks } from '../../shared/schema';
+
+// Import Phase2 engines
+// Phase2 engines
+import { engineRegistry } from '../phase2';
+import { Candidate, Tier } from '../phase2/types';
+
+export interface V17PipelineResult {
+  tiers: Array<{
+    tier: number;
+    text: string;
+    volume: number | null;
+    rank: number | null;
+    score: number;
+    adScore?: number;
+    eligible?: boolean;
+    skipReason?: string;
+  }>;
+  stats: {
+    candidatesGenerated: number;
+    preEnriched: number;
+    gateFiltered: number;
+    tiersAutoFilled: number;
+  };
+}
+
+/**
+ * v17 완전 파이프라인: 제목 → 후보 생성 → Pre-enrich → Gate → 점수 → 티어 → 자동보강
+ */
+export async function processPostTitleV17(
+  title: string,
+  jobId: string,
+  blogId: string,
+  postId: number,
+  inputKeyword: string
+): Promise<V17PipelineResult> {
+  console.log(`🚀 [v17 Pipeline] Starting for title: "${title.substring(0, 50)}..."`);
+  
+  // Step 1: v17 핫리로드 설정
+  const cfg = await getAlgoConfig();
+  console.log(`⚙️ [v17 Pipeline] Config loaded - Engine: ${cfg.phase2.engine}, Gate: ${cfg.features.scoreFirstGate ? 'ON' : 'OFF'}`);
+  
+  // Step 2: Phase2 엔진으로 후보 생성
+  const engine = engineRegistry.get(cfg.phase2.engine);
+  
+  if (!engine) {
+    throw new Error(`Unknown Phase2 engine: ${cfg.phase2.engine}`);
+  }
+  
+  const ctx = { title };
+  const candidates = engine.generateCandidates(ctx, cfg);
+  console.log(`🔤 [v17 Pipeline] Generated ${candidates.length} candidates using ${cfg.phase2.engine} engine`);
+  
+  const stats = {
+    candidatesGenerated: candidates.length,
+    preEnriched: 0,
+    gateFiltered: 0,
+    tiersAutoFilled: 0,
+  };
+  
+  // Step 3: Pre-enrich (DB→API→upsert→merge)
+  if (cfg.features.preEnrich) {
+    console.log(`📊 [v17 Pipeline] Pre-enriching ${candidates.length} candidates`);
+    
+    const candidateTexts = candidates.map(c => c.text);
+    try {
+      const volumeData = await getVolumesWithHealth(db, candidateTexts);
+    
+    // Merge volumes back to candidates
+    candidates.forEach(candidate => {
+      const volumeInfo = volumeData.volumes[candidate.text.toLowerCase()];
+      if (volumeInfo) {
+        candidate.volume = volumeInfo.total;
+        stats.preEnriched++;
+      }
+    });
+    
+      console.log(`✅ [v17 Pipeline] Pre-enriched ${stats.preEnriched}/${candidates.length} candidates`);
+    } catch (error) {
+      console.error(`❌ [v17 Pipeline] Pre-enrich failed:`, error);
+    }
+  }
+  
+  // Step 4: Score-First Gate + Scoring
+  const enrichedCandidates = await engine.enrichAndScore(candidates, cfg);
+  
+  // Count gate filtering
+  stats.gateFiltered = enrichedCandidates.filter(c => !c.eligible).length;
+  console.log(`🚫 [v17 Pipeline] Gate filtered ${stats.gateFiltered} candidates`);
+  
+  // Step 5: Ranking checks
+  console.log(`🔍 [v17 Pipeline] Checking SERP rankings for ${enrichedCandidates.length} candidates`);
+  const rankedCandidates: Candidate[] = [];
+  
+  for (const candidate of enrichedCandidates) {
+    let rank: number | null = null;
+    
+    // Only check rank for eligible candidates in hard mode
+    if (candidate.eligible || cfg.adscore.mode === 'soft') {
+      try {
+        rank = await serpScraper.checkKeywordRankingInMobileNaver(candidate.text, `https://blog.naver.com/${blogId}`);
+        console.log(`   📊 [Rank Check] "${candidate.text}" → rank ${rank || 'NA'}`);
+      } catch (error) {
+        console.error(`   ❌ [Rank Check] Failed for "${candidate.text}":`, error);
+      }
+    }
+    
+    rankedCandidates.push({
+      ...candidate,
+      rank,
+    });
+  }
+  
+  // Step 6: Tier assignment + Auto-fill
+  const tiers = engine.assignTiers(rankedCandidates, cfg);
+  
+  // Step 7: Auto-fill if enabled and needed  
+  let finalTiers = [...tiers];  // ✅ Create copy to avoid mutation
+  if (cfg.features.tierAutoFill && tiers.length < cfg.phase2.tiersPerPost) {
+    console.log(`🔧 [v17 Pipeline] Auto-filling tiers (${tiers.length}/${cfg.phase2.tiersPerPost})`);
+    
+    // Simple auto-fill: add remaining candidates as additional tiers
+    const usedTexts = new Set(tiers.map(t => t.candidate?.text).filter(Boolean));
+    const remainingCandidates = rankedCandidates.filter(c => !usedTexts.has(c.text));
+    
+    // Fill remaining slots
+    while (finalTiers.length < cfg.phase2.tiersPerPost && remainingCandidates.length > 0) {
+      const candidate = remainingCandidates.shift()!;
+      finalTiers.push({
+        tier: finalTiers.length + 1,
+        candidate,
+        score: candidate.totalScore || 0,
+      });
+      stats.tiersAutoFilled++;
+    }
+    
+    console.log(`✅ [v17 Pipeline] Auto-filled ${stats.tiersAutoFilled} tiers`);
+  }
+  
+  // Step 8: Save to postTierChecks (eligible/adscore/skip_reason 함께 저장)
+  console.log(`💾 [v17 Pipeline] Saving ${finalTiers.length} tiers to database`);
+  
+  for (const tier of finalTiers) {
+    console.log(`🔍 [v17 Debug] Tier ${tier.tier}:`, JSON.stringify(tier, null, 2));
+    
+    const candidate = tier.candidate;
+    if (!candidate) {
+      console.error(`❌ [v17 Pipeline] Tier ${tier.tier} has no candidate object!`);
+      continue;
+    }
+    
+    if (!candidate.text) {
+      console.error(`❌ [v17 Pipeline] Tier ${tier.tier} candidate has no text!`);
+      continue;
+    }
+    
+    const normalizedText = candidate.text.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
+    const isRelated = inputKeyword.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '').includes(normalizedText) ||
+                     title.toLowerCase().includes(candidate.text.toLowerCase());
+    
+    try {
+      await db.insert(postTierChecks).values({
+        jobId,
+        inputKeyword,
+        blogId,
+        postId: String(postId), // ✅ Convert to string
+        postTitle: title,
+        tier: tier.tier,
+        textSurface: candidate.text,
+        textNrm: normalizedText,
+        volume: candidate.volume,
+        rank: candidate.rank,
+        score: tier.score,
+        related: isRelated,
+        // v17 추가: Gate 정보
+        eligible: candidate.eligible ?? true,
+        adscore: candidate.adScore, // ✅ Lowercase column name
+        skipReason: candidate.skipReason,
+      });
+    } catch (insertError) {
+      console.error(`❌ [v17 Pipeline] Insert failed for tier ${tier.tier}:`, insertError);
+      throw insertError;
+    }
+    
+    console.log(`   💾 [Tier ${tier.tier}] "${candidate.text}" → score ${tier.score}, rank ${candidate.rank || 'NA'}, eligible ${candidate.eligible}`);
+  }
+  
+  // Prepare return format
+  const result: V17PipelineResult = {
+    tiers: finalTiers.map(tier => ({
+      tier: tier.tier,
+      text: tier.candidate.text,
+      volume: tier.candidate.volume,
+      rank: tier.candidate.rank,
+      score: tier.score,
+      adScore: tier.candidate.adScore,
+      eligible: tier.candidate.eligible,
+      skipReason: tier.candidate.skipReason,
+    })),
+    stats,
+  };
+  
+  console.log(`✅ [v17 Pipeline] Completed - Generated ${result.tiers.length} tiers with scores`);
+  return result;
+}
+
+/**
+ * 서버에서 점수 계산 (사용자 요구사항 3단계)
+ */
+export function calculateTotalScore(candidate: Candidate, cfg: any): number {
+  // volumeScale = min(100, log10(max(1, volume))*25);
+  const volume = candidate.volume || 1;
+  const volumeScale = Math.min(100, Math.log10(Math.max(1, volume)) * 25);
+  
+  // contentScore = 0.5*freq + 0.3*pos + 0.2*len; (내부 가중치)
+  const freq = candidate.frequency || 0;
+  const pos = 1 / Math.max(1, candidate.position || 1); // Position penalty
+  const len = Math.min(1, (candidate.length || 1) / 20); // Length normalization
+  const contentScore = 0.5 * freq + 0.3 * pos + 0.2 * len;
+  
+  // totalScore = 0.7*volumeScale + 0.3*contentScore; (cfg.weights로 조정)
+  const totalScore = (cfg.weights?.volume || 0.7) * volumeScale + (cfg.weights?.content || 0.3) * contentScore * 100;
+  
+  return Math.round(totalScore * 100) / 100; // 소수점 2자리
+}

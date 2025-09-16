@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { 
@@ -18,101 +18,146 @@ import {
   RotateCcw,
   Settings,
   AlertTriangle,
-  CheckCircle
+  CheckCircle,
+  Database,
+  Zap,
+  Filter
 } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 
-// Scoring configuration schema
-const ScoringConfigSchema = z.object({
-  version: z.string(),
-  description: z.string(),
-  scoring: z.object({
-    weights: z.object({
-      volume: z.number().min(0).max(1),
-      competition: z.number().min(0).max(1),
-      ad_depth: z.number().min(0).max(1),
-      cpc: z.number().min(0).max(1)
-    }),
-    normalization: z.object({
-      volume: z.object({
-        type: z.enum(['logarithmic', 'linear']),
-        base: z.number().optional(),
-        max_raw: z.number(),
-        scale_factor: z.number().optional()
-      }),
-      competition: z.object({
-        type: z.enum(['direct', 'linear']),
-        scale: z.number()
-      }),
-      ad_depth: z.object({
-        type: z.literal('linear'),
-        max: z.number()
-      }),
-      cpc: z.object({
-        type: z.literal('linear'),
-        max: z.number()
-      })
-    }),
-    competition_mapping: z.record(z.number())
+// v17 Algorithm configuration schema
+const AlgoConfigSchema = z.object({
+  weights: z.object({
+    volume: z.number().min(0).max(1),
+    content: z.number().min(0).max(1)
+  }).refine(data => Math.abs((data.volume + data.content) - 1.0) < 0.001, {
+    message: "Volume and content weights must sum to 1.0",
   }),
-  logging: z.object({
-    enabled: z.boolean(),
-    detailed: z.boolean(),
-    log_calculations: z.boolean()
+  contentWeights: z.object({
+    freq: z.number().min(0).max(1),
+    pos: z.number().min(0).max(1),
+    len: z.number().min(0).max(1),
+  }).refine(data => Math.abs((data.freq + data.pos + data.len) - 1.0) < 0.001, {
+    message: "Content weights (freq + pos + len) must sum to 1.0",
   }),
-  metadata: z.object({
-    last_modified: z.string(),
-    modified_by: z.string(),
-    change_log: z.array(z.object({
-      date: z.string(),
-      changes: z.string(),
-      author: z.string()
-    }))
-  })
+  phase2: z.object({
+    engine: z.enum(['lk', 'ngrams', 'hybrid']),
+    tiersPerPost: z.number().int().min(1).max(10),
+    preferCompound: z.boolean(),
+    allowThreeGram: z.boolean(),
+    VOL_MIN: z.number().int().min(0),
+  }),
+  features: z.object({
+    preEnrich: z.boolean(),
+    scoreFirstGate: z.boolean(),
+    tierAutoFill: z.boolean(),
+    log_calculations: z.boolean(),
+  }),
+  adscore: z.object({
+    wVolume: z.number().min(0).max(1),
+    wCompetition: z.number().min(0).max(1),
+    wAdDepth: z.number().min(0).max(1),
+    wCpc: z.number().min(0).max(1),
+    SCORE_MIN: z.number().min(0).max(1),
+    VOL_MIN: z.number().int().min(0),
+    AD_DEPTH_MIN: z.number().min(0),
+    CPC_MIN: z.number().min(0),
+    mode: z.enum(['hard', 'soft']),
+    forceFill: z.boolean(),
+  }).refine(data => Math.abs((data.wVolume + data.wCompetition + data.wAdDepth + data.wCpc) - 1.0) < 0.001, {
+    message: "AdScore weights must sum to 1.0",
+  }),
 });
 
-type ScoringConfig = z.infer<typeof ScoringConfigSchema>;
+type AlgoConfig = z.infer<typeof AlgoConfigSchema>;
 
-const WeightsFormSchema = z.object({
-  volume: z.number().min(0).max(1),
-  competition: z.number().min(0).max(1),
-  ad_depth: z.number().min(0).max(1),
-  cpc: z.number().min(0).max(1)
-}).refine(
-  (data) => Math.abs((data.volume + data.competition + data.ad_depth + data.cpc) - 1.0) < 0.01,
-  {
-    message: "가중치의 합은 1.0이어야 합니다",
-    path: ["volume"]
-  }
-);
+const FormSchema = z.object({
+  weights: z.object({
+    volume: z.number().min(0).max(1),
+    content: z.number().min(0).max(1)
+  }),
+  contentWeights: z.object({
+    freq: z.number().min(0).max(1),
+    pos: z.number().min(0).max(1),
+    len: z.number().min(0).max(1),
+  }),
+  phase2: z.object({
+    engine: z.enum(['lk', 'ngrams', 'hybrid']),
+    tiersPerPost: z.number().int().min(1).max(10),
+    preferCompound: z.boolean(),
+    allowThreeGram: z.boolean(),
+    VOL_MIN: z.number().int().min(0),
+  }),
+  features: z.object({
+    preEnrich: z.boolean(),
+    scoreFirstGate: z.boolean(),
+    tierAutoFill: z.boolean(),
+    log_calculations: z.boolean(),
+  }),
+  adscore: z.object({
+    wVolume: z.number().min(0).max(1),
+    wCompetition: z.number().min(0).max(1),
+    wAdDepth: z.number().min(0).max(1),
+    wCpc: z.number().min(0).max(1),
+    SCORE_MIN: z.number().min(0).max(1),
+    VOL_MIN: z.number().int().min(0),
+    AD_DEPTH_MIN: z.number().min(0),
+    CPC_MIN: z.number().min(0),
+    mode: z.enum(['hard', 'soft']),
+    forceFill: z.boolean(),
+  }),
+});
 
-type WeightsForm = z.infer<typeof WeightsFormSchema>;
+type FormData = z.infer<typeof FormSchema>;
 
 export default function AdminPage() {
   const { toast } = useToast();
   
-  // Fetch current scoring config
+  // Fetch current algo config
   const { data: config, isLoading, error } = useQuery({
-    queryKey: ['/api/scoring-config'],
+    queryKey: ['algo-settings'],
     queryFn: async () => {
-      const response = await fetch('/api/scoring-config');
+      const response = await fetch('/api/settings/algo');
       if (!response.ok) {
-        throw new Error('Failed to fetch scoring config');
+        throw new Error('Failed to fetch algo config');
       }
       const data = await response.json();
-      return ScoringConfigSchema.parse(data);
+      return AlgoConfigSchema.parse(data);
     }
   });
 
   // Form setup
-  const form = useForm<WeightsForm>({
-    resolver: zodResolver(WeightsFormSchema),
+  const form = useForm<FormData>({
+    resolver: zodResolver(FormSchema),
     defaultValues: {
-      volume: config?.scoring.weights.volume || 0.35,
-      competition: config?.scoring.weights.competition || 0.35,
-      ad_depth: config?.scoring.weights.ad_depth || 0.20,
-      cpc: config?.scoring.weights.cpc || 0.10
+      weights: { volume: 0.70, content: 0.30 },
+      contentWeights: { freq: 0.5, pos: 0.3, len: 0.2 },
+      phase2: {
+        engine: 'lk',
+        tiersPerPost: 4,
+        preferCompound: true,
+        allowThreeGram: true,
+        VOL_MIN: 600,
+      },
+      features: {
+        preEnrich: true,
+        scoreFirstGate: true,
+        tierAutoFill: true,
+        log_calculations: true,
+      },
+      adscore: {
+        wVolume: 0.35,
+        wCompetition: 0.35,
+        wAdDepth: 0.20,
+        wCpc: 0.10,
+        SCORE_MIN: 0.55,
+        VOL_MIN: 600,
+        AD_DEPTH_MIN: 1,
+        CPC_MIN: 0,
+        mode: 'hard',
+        forceFill: true,
+      },
     }
   });
 
@@ -120,44 +165,41 @@ export default function AdminPage() {
   useEffect(() => {
     if (config) {
       form.reset({
-        volume: config.scoring.weights.volume,
-        competition: config.scoring.weights.competition,
-        ad_depth: config.scoring.weights.ad_depth,
-        cpc: config.scoring.weights.cpc
+        weights: config.weights,
+        contentWeights: config.contentWeights,
+        phase2: config.phase2,
+        features: config.features,
+        adscore: config.adscore,
       });
-      setLoggingEnabled(config.logging.enabled);
-      setDetailedLogging(config.logging.detailed);
-      setLogCalculations(config.logging.log_calculations);
     }
   }, [config, form]);
 
-  // Logging states
-  const [loggingEnabled, setLoggingEnabled] = useState(config?.logging.enabled || false);
-  const [detailedLogging, setDetailedLogging] = useState(config?.logging.detailed || false);
-  const [logCalculations, setLogCalculations] = useState(config?.logging.log_calculations || false);
-
-  // Update mutation
+  // Update mutation  
   const updateConfigMutation = useMutation({
-    mutationFn: async (updatedConfig: ScoringConfig) => {
-      const response = await fetch('/api/scoring-config', {
+    mutationFn: async (updatedConfig: AlgoConfig) => {
+      const response = await fetch('/api/settings/algo', {
         method: 'PUT',
-        body: JSON.stringify(updatedConfig),
         headers: {
           'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({
+          json: updatedConfig,
+          updatedBy: 'admin',
+          note: 'Updated via admin panel'
+        }),
       });
       
       if (!response.ok) {
-        throw new Error('Failed to update scoring config');
+        throw new Error('Failed to update algo config');
       }
       
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/scoring-config'] });
+      queryClient.setQueryData(['algo-settings'], (oldData: AlgoConfig) => oldData);
       toast({
         title: "설정 저장 완료",
-        description: "점수 계산 엔진 설정이 성공적으로 저장되었습니다.",
+        description: "v17 알고리즘 설정이 성공적으로 저장되었습니다.",
       });
     },
     onError: (error) => {
@@ -170,25 +212,9 @@ export default function AdminPage() {
     }
   });
 
-  const onSubmit = (weights: WeightsForm) => {
-    if (!config) return;
-
-    const updatedConfig: ScoringConfig = {
-      ...config,
-      scoring: {
-        ...config.scoring,
-        weights: {
-          volume: weights.volume,
-          competition: weights.competition,
-          ad_depth: weights.ad_depth,
-          cpc: weights.cpc
-        }
-      },
-      logging: {
-        enabled: loggingEnabled,
-        detailed: detailedLogging,
-        log_calculations: logCalculations
-      }
+  const onSubmit = (formData: FormData) => {
+    const updatedConfig: AlgoConfig = {
+      ...formData,
     };
 
     updateConfigMutation.mutate(updatedConfig);
@@ -196,20 +222,48 @@ export default function AdminPage() {
 
   const resetToDefaults = () => {
     form.reset({
-      volume: 0.35,
-      competition: 0.35,
-      ad_depth: 0.20,
-      cpc: 0.10
+      weights: { volume: 0.70, content: 0.30 },
+      contentWeights: { freq: 0.5, pos: 0.3, len: 0.2 },
+      phase2: {
+        engine: 'lk',
+        tiersPerPost: 4,
+        preferCompound: true,
+        allowThreeGram: true,
+        VOL_MIN: 600,
+      },
+      features: {
+        preEnrich: true,
+        scoreFirstGate: true,
+        tierAutoFill: true,
+        log_calculations: true,
+      },
+      adscore: {
+        wVolume: 0.35,
+        wCompetition: 0.35,
+        wAdDepth: 0.20,
+        wCpc: 0.10,
+        SCORE_MIN: 0.55,
+        VOL_MIN: 600,
+        AD_DEPTH_MIN: 1,
+        CPC_MIN: 0,
+        mode: 'hard',
+        forceFill: true,
+      },
     });
-    setLoggingEnabled(true);
-    setDetailedLogging(false);
-    setLogCalculations(false);
   };
 
-  // Calculate current weight sum for validation feedback
-  const currentWeights = form.watch();
-  const weightSum = Object.values(currentWeights).reduce((sum, val) => sum + (val || 0), 0);
-  const isValidSum = Math.abs(weightSum - 1.0) < 0.01;
+  // Calculate weight sums for validation feedback
+  const currentWeights = form.watch('weights');
+  const currentContentWeights = form.watch('contentWeights');
+  const currentAdscoreWeights = form.watch('adscore');
+  
+  const weightSum = (currentWeights?.volume || 0) + (currentWeights?.content || 0);
+  const contentWeightSum = (currentContentWeights?.freq || 0) + (currentContentWeights?.pos || 0) + (currentContentWeights?.len || 0);
+  const adscoreWeightSum = (currentAdscoreWeights?.wVolume || 0) + (currentAdscoreWeights?.wCompetition || 0) + (currentAdscoreWeights?.wAdDepth || 0) + (currentAdscoreWeights?.wCpc || 0);
+  
+  const isValidWeightSum = Math.abs(weightSum - 1.0) < 0.01;
+  const isValidContentWeightSum = Math.abs(contentWeightSum - 1.0) < 0.01;
+  const isValidAdscoreWeightSum = Math.abs(adscoreWeightSum - 1.0) < 0.01;
 
   if (isLoading) {
     return (
@@ -258,207 +312,427 @@ export default function AdminPage() {
             </div>
           </div>
           <Badge variant="outline" className="bg-blue-50">
-            {config?.version || 'v10.0'}
+            v17.0
           </Badge>
         </div>
 
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-          {/* Weights Configuration */}
+          {/* Phase2 Engine Configuration */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                가중치 설정
-                {isValidSum ? (
+                <Database className="h-4 w-4" />
+                Phase2 엔진 설정
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="engine">엔진 선택</Label>
+                  <Select 
+                    value={form.watch('phase2.engine')} 
+                    onValueChange={(value: 'lk' | 'ngrams' | 'hybrid') => form.setValue('phase2.engine', value)}
+                  >
+                    <SelectTrigger data-testid="engine-select">
+                      <SelectValue placeholder="엔진 선택" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="lk">LK (Local + Keyword)</SelectItem>
+                      <SelectItem value="ngrams">NGrams</SelectItem>
+                      <SelectItem value="hybrid">Hybrid (LK + NGrams)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="tiersPerPost">포스트당 티어 수</Label>
+                  <Input
+                    id="tiersPerPost"
+                    type="number"
+                    min="1"
+                    max="10"
+                    {...form.register("phase2.tiersPerPost", { valueAsNumber: true })}
+                    data-testid="tiers-per-post"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="VOL_MIN">최소 검색량</Label>
+                  <Input
+                    id="VOL_MIN"
+                    type="number"
+                    min="0"
+                    {...form.register("phase2.VOL_MIN", { valueAsNumber: true })}
+                    data-testid="vol-min"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-4">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="preferCompound"
+                    {...form.register("phase2.preferCompound")}
+                    data-testid="prefer-compound"
+                  />
+                  <Label htmlFor="preferCompound">복합어 선호</Label>
+                </div>
+                
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="allowThreeGram"
+                    {...form.register("phase2.allowThreeGram")}
+                    data-testid="allow-three-gram"
+                  />
+                  <Label htmlFor="allowThreeGram">3그램 허용</Label>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Main Weights Configuration */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                메인 가중치 설정
+                {isValidWeightSum ? (
                   <CheckCircle className="h-4 w-4 text-green-600" />
                 ) : (
                   <AlertTriangle className="h-4 w-4 text-yellow-600" />
                 )}
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                키워드 점수 계산에 사용되는 각 요소의 가중치를 설정합니다. 총합은 1.0이어야 합니다.
-              </p>
-              <div className="text-sm">
-                <span className="font-medium">현재 합계: </span>
-                <span className={isValidSum ? "text-green-600" : "text-red-600"}>
+                현재 합계: <span className={isValidWeightSum ? "text-green-600" : "text-red-600"}>
                   {weightSum.toFixed(3)}
                 </span>
-                {!isValidSum && (
-                  <span className="text-red-600 ml-2">
-                    (1.0과의 차이: {Math.abs(weightSum - 1.0).toFixed(3)})
-                  </span>
-                )}
-              </div>
+              </p>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="volume">검색량 가중치 (Volume)</Label>
+                  <Label htmlFor="volume-weight">검색량 가중치</Label>
                   <Input
-                    id="volume"
+                    id="volume-weight"
                     type="number"
                     step="0.01"
                     min="0"
                     max="1"
-                    {...form.register("volume", { valueAsNumber: true })}
+                    {...form.register("weights.volume", { valueAsNumber: true })}
                     data-testid="weight-volume"
                   />
-                  {form.formState.errors.volume && (
-                    <p className="text-sm text-red-600">{form.formState.errors.volume.message}</p>
-                  )}
                 </div>
-
+                
                 <div className="space-y-2">
-                  <Label htmlFor="competition">경쟁도 가중치 (Competition)</Label>
+                  <Label htmlFor="content-weight">컨텐츠 가중치</Label>
                   <Input
-                    id="competition"
+                    id="content-weight"
                     type="number"
                     step="0.01"
                     min="0"
                     max="1"
-                    {...form.register("competition", { valueAsNumber: true })}
-                    data-testid="weight-competition"
+                    {...form.register("weights.content", { valueAsNumber: true })}
+                    data-testid="weight-content"
                   />
-                  {form.formState.errors.competition && (
-                    <p className="text-sm text-red-600">{form.formState.errors.competition.message}</p>
-                  )}
                 </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="ad_depth">광고 깊이 가중치 (AD Depth)</Label>
-                  <Input
-                    id="ad_depth"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="1"
-                    {...form.register("ad_depth", { valueAsNumber: true })}
-                    data-testid="weight-ad-depth"
-                  />
-                  {form.formState.errors.ad_depth && (
-                    <p className="text-sm text-red-600">{form.formState.errors.ad_depth.message}</p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="cpc">CPC 가중치</Label>
-                  <Input
-                    id="cpc"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="1"
-                    {...form.register("cpc", { valueAsNumber: true })}
-                    data-testid="weight-cpc"
-                  />
-                  {form.formState.errors.cpc && (
-                    <p className="text-sm text-red-600">{form.formState.errors.cpc.message}</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <Button type="button" variant="outline" onClick={resetToDefaults} data-testid="reset-defaults">
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  기본값 복원
-                </Button>
               </div>
             </CardContent>
           </Card>
 
-          {/* Logging Configuration */}
+          {/* Content Weights Configuration */}
           <Card>
             <CardHeader>
-              <CardTitle>로깅 설정</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                컨텐츠 가중치 설정
+                {isValidContentWeightSum ? (
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                ) : (
+                  <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                )}
+              </CardTitle>
               <p className="text-sm text-muted-foreground">
-                점수 계산 과정의 로깅 옵션을 설정합니다
+                현재 합계: <span className={isValidContentWeightSum ? "text-green-600" : "text-red-600"}>
+                  {contentWeightSum.toFixed(3)}
+                </span>
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <Label htmlFor="logging-enabled">로깅 활성화</Label>
-                  <p className="text-xs text-muted-foreground">
-                    점수 계산 엔진의 기본 로깅을 활성화합니다
-                  </p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="freq-weight">빈도 가중치</Label>
+                  <Input
+                    id="freq-weight"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("contentWeights.freq", { valueAsNumber: true })}
+                    data-testid="weight-freq"
+                  />
                 </div>
-                <Switch
-                  id="logging-enabled"
-                  checked={loggingEnabled}
-                  onCheckedChange={setLoggingEnabled}
-                  data-testid="logging-enabled"
-                />
-              </div>
-
-              <Separator />
-
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <Label htmlFor="detailed-logging">상세 로깅</Label>
-                  <p className="text-xs text-muted-foreground">
-                    더 자세한 디버깅 정보를 포함합니다
-                  </p>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="pos-weight">위치 가중치</Label>
+                  <Input
+                    id="pos-weight"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("contentWeights.pos", { valueAsNumber: true })}
+                    data-testid="weight-pos"
+                  />
                 </div>
-                <Switch
-                  id="detailed-logging"
-                  checked={detailedLogging}
-                  onCheckedChange={setDetailedLogging}
-                  disabled={!loggingEnabled}
-                  data-testid="detailed-logging"
-                />
-              </div>
-
-              <Separator />
-
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <Label htmlFor="log-calculations">계산 과정 로깅</Label>
-                  <p className="text-xs text-muted-foreground">
-                    점수 계산의 각 단계별 결과를 기록합니다
-                  </p>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="len-weight">길이 가중치</Label>
+                  <Input
+                    id="len-weight"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("contentWeights.len", { valueAsNumber: true })}
+                    data-testid="weight-len"
+                  />
                 </div>
-                <Switch
-                  id="log-calculations"
-                  checked={logCalculations}
-                  onCheckedChange={setLogCalculations}
-                  disabled={!loggingEnabled}
-                  data-testid="log-calculations"
-                />
               </div>
             </CardContent>
           </Card>
 
-          {/* Config Info */}
-          {config && (
-            <Card>
-              <CardHeader>
-                <CardTitle>설정 정보</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <Label className="font-medium">버전:</Label>
-                    <p className="text-muted-foreground">{config.version}</p>
-                  </div>
-                  <div>
-                    <Label className="font-medium">마지막 수정:</Label>
-                    <p className="text-muted-foreground">
-                      {new Date(config.metadata.last_modified).toLocaleString('ko-KR')}
+          {/* AdScore Gate Configuration */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Filter className="h-4 w-4" />
+                Score-First Gate 설정
+                {isValidAdscoreWeightSum ? (
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                ) : (
+                  <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                )}
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                AdScore 가중치 합계: <span className={isValidAdscoreWeightSum ? "text-green-600" : "text-red-600"}>
+                  {adscoreWeightSum.toFixed(3)}
+                </span>
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="wVolume">검색량 가중치</Label>
+                  <Input
+                    id="wVolume"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("adscore.wVolume", { valueAsNumber: true })}
+                    data-testid="adscore-volume"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="wCompetition">경쟁도 가중치</Label>
+                  <Input
+                    id="wCompetition"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("adscore.wCompetition", { valueAsNumber: true })}
+                    data-testid="adscore-competition"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="wAdDepth">광고 깊이 가중치</Label>
+                  <Input
+                    id="wAdDepth"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("adscore.wAdDepth", { valueAsNumber: true })}
+                    data-testid="adscore-ad-depth"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="wCpc">CPC 가중치</Label>
+                  <Input
+                    id="wCpc"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("adscore.wCpc", { valueAsNumber: true })}
+                    data-testid="adscore-cpc"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="SCORE_MIN">최소 점수</Label>
+                  <Input
+                    id="SCORE_MIN"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    {...form.register("adscore.SCORE_MIN", { valueAsNumber: true })}
+                    data-testid="score-min"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="adscore-VOL_MIN">최소 검색량</Label>
+                  <Input
+                    id="adscore-VOL_MIN"
+                    type="number"
+                    min="0"
+                    {...form.register("adscore.VOL_MIN", { valueAsNumber: true })}
+                    data-testid="adscore-vol-min"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="AD_DEPTH_MIN">최소 광고 깊이</Label>
+                  <Input
+                    id="AD_DEPTH_MIN"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    {...form.register("adscore.AD_DEPTH_MIN", { valueAsNumber: true })}
+                    data-testid="ad-depth-min"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="CPC_MIN">최소 CPC</Label>
+                  <Input
+                    id="CPC_MIN"
+                    type="number"
+                    step="1"
+                    min="0"
+                    {...form.register("adscore.CPC_MIN", { valueAsNumber: true })}
+                    data-testid="cpc-min"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="adscore-mode">게이트 모드</Label>
+                  <Select 
+                    value={form.watch('adscore.mode')} 
+                    onValueChange={(value: 'hard' | 'soft') => form.setValue('adscore.mode', value)}
+                  >
+                    <SelectTrigger data-testid="adscore-mode">
+                      <SelectValue placeholder="모드 선택" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hard">Hard (필터링)</SelectItem>
+                      <SelectItem value="soft">Soft (표시만)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="forceFill"
+                  {...form.register("adscore.forceFill")}
+                  data-testid="force-fill"
+                />
+                <Label htmlFor="forceFill">Force Fill (완화 모드)</Label>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Features Configuration */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-4 w-4" />
+                기능 설정
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label htmlFor="preEnrich">Pre-enrich</Label>
+                    <p className="text-xs text-muted-foreground">
+                      키워드 사전 보강 활성화
                     </p>
                   </div>
-                  <div className="md:col-span-2">
-                    <Label className="font-medium">설명:</Label>
-                    <p className="text-muted-foreground">{config.description}</p>
-                  </div>
+                  <Switch
+                    id="preEnrich"
+                    checked={form.watch('features.preEnrich')}
+                    onCheckedChange={(checked) => form.setValue('features.preEnrich', checked)}
+                    data-testid="pre-enrich"
+                  />
                 </div>
-              </CardContent>
-            </Card>
-          )}
+                
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label htmlFor="scoreFirstGate">Score-First Gate</Label>
+                    <p className="text-xs text-muted-foreground">
+                      점수 우선 게이트 활성화
+                    </p>
+                  </div>
+                  <Switch
+                    id="scoreFirstGate"
+                    checked={form.watch('features.scoreFirstGate')}
+                    onCheckedChange={(checked) => form.setValue('features.scoreFirstGate', checked)}
+                    data-testid="score-first-gate"
+                  />
+                </div>
+                
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label htmlFor="tierAutoFill">티어 자동보강</Label>
+                    <p className="text-xs text-muted-foreground">
+                      티어 부족 시 자동 보강
+                    </p>
+                  </div>
+                  <Switch
+                    id="tierAutoFill"
+                    checked={form.watch('features.tierAutoFill')}
+                    onCheckedChange={(checked) => form.setValue('features.tierAutoFill', checked)}
+                    data-testid="tier-auto-fill"
+                  />
+                </div>
+                
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label htmlFor="log_calculations">계산 과정 로깅</Label>
+                    <p className="text-xs text-muted-foreground">
+                      점수 계산 과정 기록
+                    </p>
+                  </div>
+                  <Switch
+                    id="log_calculations"
+                    checked={form.watch('features.log_calculations')}
+                    onCheckedChange={(checked) => form.setValue('features.log_calculations', checked)}
+                    data-testid="log-calculations"
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
-          {/* Save Button */}
-          <div className="flex justify-end">
+          {/* Actions */}
+          <div className="flex justify-between">
+            <Button type="button" variant="outline" onClick={resetToDefaults} data-testid="reset-defaults">
+              <RotateCcw className="h-4 w-4 mr-2" />
+              기본값 복원
+            </Button>
+            
             <Button 
               type="submit" 
-              disabled={!isValidSum || updateConfigMutation.isPending}
+              disabled={!isValidWeightSum || !isValidContentWeightSum || !isValidAdscoreWeightSum || updateConfigMutation.isPending}
               data-testid="save-config"
             >
               {updateConfigMutation.isPending ? (
