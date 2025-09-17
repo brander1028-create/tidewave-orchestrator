@@ -39,7 +39,7 @@ import {
   FolderPlus,
   Trash2
 } from "lucide-react";
-import { targetsApi, scrapingApi, rankApi, manualBlogApi } from "@/lib/api";
+import { targetsApi, scrapingApi, rankApi } from "@/lib/api";
 import type { TrackedTarget, InsertTrackedTarget } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -339,10 +339,20 @@ export default function Rank() {
         return;
       }
       
-      setProgress({ done: 0, total: plan.tasks.length, text: "순위 체크를 시작합니다..." });
+      setProgress({ done: 0, total: plan.tasks.length, text: `${selectedTab === 'blog' ? '블로그' : '쇼핑'} 순위 체크를 시작합니다...` });
       
-      // Execute batch check
-      await rankApi.batchBlogCheck(plan.tasks, controller);
+      // Convert plan tasks to scraping format
+      const scrapingTargets = plan.tasks.map(task => ({
+        targetId: task.target_id,
+        query: task.query,
+        kind: selectedTab as 'blog' | 'shop',
+        device: 'mobile' as const,
+        sort: undefined,
+        target: undefined
+      }));
+      
+      // Execute batch check with correct kind
+      await scrapingApi.batchRankCheck(scrapingTargets, controller);
       
       // Invalidate cached data to refresh UI
       queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
