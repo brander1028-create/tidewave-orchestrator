@@ -417,8 +417,7 @@ export async function processPostTitleVFinal(
   const existingDbInfo = finalCandidateTexts.length > 0 ? await db.select({
     text: managedKeywords.text,
     source: managedKeywords.source,
-    ad_depth: managedKeywords.ad_depth,
-    est_cpc_krw: managedKeywords.est_cpc_krw
+    ad_eligible: managedKeywords.ad_eligible
   })
     .from(managedKeywords)
     .where(inArray(managedKeywords.text, finalCandidateTexts)) : [];
@@ -427,9 +426,8 @@ export async function processPostTitleVFinal(
   
   const finalPool = eligibleCandidates.filter(k => {
     const dbInfo = dbMap.get(k.text);
-    const hasCommerce = dbInfo?.source === "api_ok" && 
-                       (dbInfo?.ad_depth ?? 0) > 0 && 
-                       (dbInfo?.est_cpc_krw ?? 0) > 0;
+    // ★ 패치: ad_eligible 필드 직접 사용 (Gate와 일관성)
+    const hasCommerce = dbInfo?.source === "api_ok" && dbInfo?.ad_eligible === true;
     const meetsThreshold = (k.volume ?? 0) >= MIN_VOL || (k.adScore ?? 0) >= MIN_ADS;
     
     return hasCommerce && meetsThreshold;
