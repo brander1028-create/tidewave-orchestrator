@@ -1,14 +1,94 @@
+// ✅ Shared keyword normalization (architect 권장)
+export function normalizeKeyword(text: string): string {
+  return text.normalize('NFKC').toLowerCase().replace(/[\s\-_.]+/g, '');
+}
+
+// ✅ Multi-key lookup with normalization priority
+export function multiKeyLookup<T>(map: Record<string, T>, keyword: string): T | null {
+  const keyRaw = keyword;
+  const keyLC = keyword.toLowerCase().trim();
+  const keyNrm = normalizeKeyword(keyword);
+  
+  return map[keyRaw] || map[keyLC] || map[keyNrm] || null;
+}
+
+// ✅ Build canonical volume map (architect 전략)
+export function buildCanonicalVolumeMap(
+  inputKeywords: string[], 
+  tiers: any[], 
+  keywordVolumeMap: Record<string, number | null>
+): Record<string, number | null> {
+  const canonical: Record<string, number | null> = {};
+  let sourceA = 0, sourceB = 0, sourceC = 0;
+  
+  // (A) Pre-enriched DB/API volumes for input keywords (최우선)
+  for (const keyword of inputKeywords) {
+    const volume = multiKeyLookup(keywordVolumeMap, keyword);
+    if (volume && volume > 0) {
+      canonical[keyword] = volume;
+      // 정규화된 키들에도 동일 값 설정
+      canonical[keyword.toLowerCase().trim()] = volume;
+      canonical[normalizeKeyword(keyword)] = volume;
+      sourceA++;
+    }
+  }
+  
+  // (B) Tier candidate volumes (보조)
+  for (const t of tiers) {
+    for (const kw of (t.keywords ?? [])) {
+      if (kw.volume && kw.volume > 0) {
+        const keys = [kw.text, kw.inputKeyword].filter(Boolean);
+        for (const key of keys) {
+          if (!canonical[key]) {
+            canonical[key] = kw.volume;
+            canonical[key.toLowerCase().trim()] = kw.volume;
+            canonical[normalizeKeyword(key)] = kw.volume;
+            sourceB++;
+          }
+        }
+      }
+    }
+  }
+  
+  // (C) ManagedKeywords DB fallback (최후)
+  for (const keyword of inputKeywords) {
+    if (!canonical[keyword]) {
+      const volume = multiKeyLookup(keywordVolumeMap, keyword);
+      if (volume && volume > 0) {
+        canonical[keyword] = volume;
+        canonical[keyword.toLowerCase().trim()] = volume;
+        canonical[normalizeKeyword(keyword)] = volume;
+        sourceC++;
+      }
+    }
+  }
+  
+  console.log(`📊 [Canonical Map] Sources: A=${sourceA}, B=${sourceB}, C=${sourceC}`);
+  return canonical;
+}
+
 // v17 파이프라인 결과 조립 - UI 호환 스키마 생성 (순수 함수)
 export function assembleResults(jobId: string, tiers: any[], cfg: any) {
   console.log(`🔧 [assembleResults] Processing ${tiers.length} tiers for job ${jobId}`);
   
+  // 🔧 TODO: Canonical volume map 통합 예정 (현재는 호환성 유지)
   const searchVolumes: Record<string, number|null> = {};
   
-  // 모든 tier에서 키워드 볼륨 수집
+  // 모든 tier에서 키워드 볼륨 수집 (inputKeyword 기준으로 수정)
   for (const t of tiers) {
     for (const kw of (t.keywords ?? [])) {
-      const k = kw.text?.trim?.() || "";
-      if (k) searchVolumes[k] = kw.volume ?? null;
+      // ✅ 수정: inputKeyword를 키로 사용 (UI가 찾는 원본 키워드)
+      const inputKey = kw.inputKeyword?.trim?.() || "";
+      const extractedKey = kw.text?.trim?.() || "";
+      
+      // 원본 입력 키워드로 volume 설정
+      if (inputKey && kw.volume !== null && kw.volume !== undefined) {
+        searchVolumes[inputKey] = kw.volume;
+      }
+      // 추출된 키워드도 같은 volume으로 설정 (호환성)
+      if (extractedKey && kw.volume !== null && kw.volume !== undefined) {
+        searchVolumes[extractedKey] = kw.volume;
+      }
     }
   }
 

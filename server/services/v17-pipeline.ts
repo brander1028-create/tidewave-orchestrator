@@ -160,12 +160,21 @@ export async function processPostTitleV17(
     try {
       const volumeData = await getVolumesWithHealth(db, candidateTexts);
     
-    // Merge volumes back to candidates
+    // Merge volumes back to candidates (다중 키 조회로 수정)
     candidates.forEach(candidate => {
-      const volumeInfo = volumeData.volumes[candidate.text.toLowerCase()];
-      if (volumeInfo) {
+      // ✅ 수정: 다중 키 조회 (architect 권장사항)
+      const keyRaw = candidate.text;
+      const keyLC = keyRaw.toLowerCase().trim();
+      const keyNrm = keyRaw.normalize('NFKC').toLowerCase().replace(/[\s\-_.]+/g, '');
+      
+      const volumeInfo = volumeData.volumes[keyRaw] || 
+                        volumeData.volumes[keyLC] || 
+                        volumeData.volumes[keyNrm];
+      
+      if (volumeInfo && volumeInfo.total > 0) {
         candidate.volume = volumeInfo.total;
         stats.preEnriched++;
+        console.log(`   📊 [Pre-enrich] "${candidate.text}" → volume ${volumeInfo.total}`);
       }
     });
     
@@ -262,7 +271,7 @@ export async function processPostTitleV17(
         tier: tier.tier,
         textSurface: candidate.text,
         textNrm: normalizedText,
-        volume: candidate.volume,
+        volume: candidate.volume ?? null, // ✅ null 저장 (0 방지)
         rank: candidate.rank,
         score: tier.score,
         related: isRelated,
