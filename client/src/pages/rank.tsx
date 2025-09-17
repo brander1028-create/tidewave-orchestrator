@@ -506,7 +506,7 @@ export default function Rank() {
                 </Button>
                 
                 <div className="flex flex-wrap gap-2 max-h-20 overflow-y-auto custom-scrollbar">
-                  {mockData.map((item) => (
+                  {currentRankingData.map((item) => (
                     <Badge 
                       key={item.id} 
                       variant="secondary" 
@@ -604,7 +604,7 @@ export default function Rank() {
               <CardContent className="space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-muted-foreground">추적 키워드</span>
-                  <span className="text-sm font-medium text-foreground">{mockData.length}개</span>
+                  <span className="text-sm font-medium text-foreground">{currentRankingData.length}개</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-muted-foreground">평균 순위</span>
