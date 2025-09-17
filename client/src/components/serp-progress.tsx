@@ -69,7 +69,7 @@ export default function SerpProgress({ jobId }: SerpProgressProps) {
   const isFailed = job.status === "failed";
 
   return (
-    <Card className="mb-8 shadow-sm" data-job-id={jobId}>
+    <Card className="mb-8 shadow-sm">
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle>분석 진행 상황</CardTitle>

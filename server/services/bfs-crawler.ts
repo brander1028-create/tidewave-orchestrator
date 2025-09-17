@@ -257,30 +257,18 @@ function expandTravel(seed: string): string[] {
   return variants;
 }
 
-
 // 3-5) Models/Series Provider: 브랜드+시리즈+모델
 function expandModels(seed: string): string[] {
   const variants: string[] = [];
   
   // 브랜드별 모델 변형
   const brandModels: { [key: string]: string[] } = {
-    // 전자제품
-    '샤오미': ['로봇청소기', '밴드', '스마트워치', '블루투스 이어폰'],
-    '아이폰': ['15', '14', '13', '12', 'SE'],
-    '갤럭시': ['s24', 's23', '노트20', 'a시리즈'],
-    '에어팟': ['프로', '맥스', '3세대', '2세대'],
-    
-    // 화장품/뷰티
-    '닥터지': ['레드 블레미쉬', '그린티 세럼', 'V7 토닝라이트'],
-    '라네즈': ['워터 슬리핑 마스크', '립 슬리핑 마스크', 'BB쿠션'],
-    '설화수': ['자음생크림', '윤조에센스', '순행클렌징폼'],
-    
-    // 건강식품
-    '종근당': ['홍삼정', '비타민', '칼슘'],
-    '나우푸드': ['비타민D', '오메가3', '마그네슘'],
-    '솔가': ['비타민C', '철분', '아연']
+    '샤오미': ['로봇청소기 m40', '로봇청소기 m30', '로봇청소기 s10', '로봇청소기 e10'],
+    '아이폰': ['17', '17 프로', '17pro', '16', '16 프로', '15'],
+    '갤럭시': ['s25', 's25 울트라', '플립7', '폴드7', 's24', 's24 울트라'],
+    '블루투스': ['이어폰 노캔', '이어폰 방수', '이어폰 게이밍', '헤드폰', '스피커']
   };
-
+  
   // 시드에 포함된 브랜드 확인 후 모델 추가
   Object.entries(brandModels).forEach(([brand, models]) => {
     if (seed.includes(brand.toLowerCase()) || seed.includes(brand)) {
@@ -326,7 +314,7 @@ export function expandAllKeywords(seeds: string[], options: {
         totalLimit: 15000 // LK 모드는 더 많은 조합 생성
       });
       
-      lkVariants.forEach((variant: string) => {
+      lkVariants.forEach(variant => {
         const normalized = normalizeKeyword(variant);
         if (normalized.length > 1) {
           allExpanded.add(normalized);
@@ -401,8 +389,6 @@ export class BFSKeywordCrawler {
   private hasAdsOnly: boolean;
   private chunkSize: number;
   private concurrency: number;
-  private minClickRate: number;
-  private minCpc: number;
   
   // Phase 3: 단일 실행 가드용 타임스탬프
   public lastUpdated: Date = new Date();
@@ -446,8 +432,6 @@ export class BFSKeywordCrawler {
     concurrency: number;
     stopIfNoNewPct?: number;
     strict?: boolean;
-    minClickRate?: number;
-    minCpc?: number;
   }) {
     this.maxTarget = config.target;
     this.maxHops = config.maxHops;
@@ -455,8 +439,6 @@ export class BFSKeywordCrawler {
     this.hasAdsOnly = config.hasAdsOnly;
     this.chunkSize = config.chunkSize;
     this.concurrency = config.concurrency;
-    this.minClickRate = config.minClickRate ?? 0.0; // 기본값: 0.0% (필터링 없음)
-    this.minCpc = config.minCpc ?? 0; // 기본값: 0원 (필터링 없음)
     // 새로운 매개변수들은 추후 구현에서 활용 예정
   }
 
@@ -594,16 +576,6 @@ export class BFSKeywordCrawler {
         
         const rawVolume = safeParseNumber(volumeData.total);
         const hasAds = safeParseNumber(volumeData.plAvgDepth) > 0;
-        const clickRate = safeParseNumber(volumeData.plClickRate) / 100; // API는 0-100, 우리는 0-1
-        const cpc = safeParseNumber(volumeData.avePcCpc ?? volumeData.aveMobileCpc ?? 0);
-        
-        // 🔥 강화된 필터 적용 - 모든 모드에서 기본 성능 체크
-        if (rawVolume <= 0) {
-          console.log(`⏭️  "${keyword}" volume 0 - zero volume, skipping`);
-          this.progress.skipped++;
-          this.progress.attempted++;
-          continue;
-        }
         
         // 필터 적용 - ONLY in searchads mode (Phase 1: 임시 저장 정책)
         if (mode === 'searchads') {
@@ -614,36 +586,6 @@ export class BFSKeywordCrawler {
           
           if (this.hasAdsOnly && !hasAds) {
             console.log(`⏭️  "${keyword}" has no ads - skipping`);
-            continue;
-          }
-          
-          // 🆕 클릭률 필터링 (0.0% = 무조건 제외)
-          if (clickRate === 0.0) {
-            console.log(`⏭️  "${keyword}" click rate 0.0% - zero performance, skipping`);
-            this.progress.skipped++;
-            this.progress.attempted++;
-            continue;
-          }
-          
-          if (clickRate < this.minClickRate) {
-            console.log(`⏭️  "${keyword}" click rate ${(clickRate * 100).toFixed(1)}% < ${(this.minClickRate * 100).toFixed(1)}% - skipping`);
-            this.progress.skipped++;
-            this.progress.attempted++;
-            continue;
-          }
-          
-          // 🆕 CPC 필터링 (0원 = 의미 없는 키워드 제외)
-          if (cpc === 0 && this.minCpc > 0) {
-            console.log(`⏭️  "${keyword}" CPC 0원 - zero value, skipping`);
-            this.progress.skipped++;
-            this.progress.attempted++;
-            continue;
-          }
-          
-          if (cpc < this.minCpc) {
-            console.log(`⏭️  "${keyword}" CPC ${cpc}원 < ${this.minCpc}원 - skipping`);
-            this.progress.skipped++;
-            this.progress.attempted++;
             continue;
           }
         } else {
@@ -737,8 +679,6 @@ export function createGlobalCrawler(config: {
   concurrency: number;
   stopIfNoNewPct?: number;
   strict?: boolean;
-  minClickRate?: number;
-  minCpc?: number;
 }): BFSKeywordCrawler {
   globalCrawler = new BFSKeywordCrawler(config);
   return globalCrawler;

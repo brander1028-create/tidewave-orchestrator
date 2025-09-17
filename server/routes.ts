@@ -296,23 +296,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             useV17Assembly: true
           });
           
-          // ★ Robust error handling with fallback + 완료 상태 설정
-          v17Promise.then(async () => {
+          // ★ Robust error handling with fallback
+          v17Promise.then(() => {
             console.log('✅ [v17] fast-path finished successfully');
-            // ★ 핵심 수정: Job 상태를 'completed'로 설정
-            await storage.updateSerpJob(job.id, { 
-              status: 'completed', 
-              progress: 100, 
-              currentStep: 'completed',
-              currentStepDetail: '분석 완료',
-              completedSteps: 3
-            });
-            console.log('✅ [v17] Job status updated to completed');
-          }).catch(async (error) => {
+          }).catch(error => {
             console.error('[SAFE-FALLBACK] v17 failed → legacy', error);
-            // Fallback to legacy processing (using new module to avoid circular imports)
-            const { runLegacySerpJob } = await import("./services/serp-legacy");
-            runLegacySerpJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+            // Fallback to legacy processing
+            processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
               enableLKMode,
               preferCompound,
               targetCategory
@@ -516,9 +506,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Start analysis with test configuration
       console.log(`🧪 [SANDBOX] Created test job ${job.id}, starting analysis...`);
       
-      // Use the legacy analysis function but mark as test (avoid circular imports)
-      const { runLegacySerpJob } = await import("./services/serp-legacy");
-      runLegacySerpJob(job.id, [keyword], 2, 15, 10, true, {
+      // Use the existing analysis function but mark as test
+      processSerpAnalysisJob(job.id, [keyword], 2, 15, 10, true, {
         enableLKMode: false,
         preferCompound: true
         // Note: testMode and testConfig handled via job.results
@@ -638,21 +627,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Get all discovered blogs and determine NEW status via blog_registry
       const allBlogs = await storage.getDiscoveredBlogs(job.id);
-      console.log(`📊 SELECT discovered_blogs: found ${allBlogs.length} blogs for jobId=${job.id}`);
-      
-      // ★ 빈 배열 가드: 블로그가 없으면 빈 결과 반환
-      if (allBlogs.length === 0) {
-        console.log(`⚠️ [Empty Discovery] No blogs found for job ${req.params.jobId}, returning empty results`);
-        return res.json({
-          jobId: req.params.jobId,
-          params: { postsPerBlog: P, tiersPerPost: T },
-          finalStats: { blogs: 0, posts: 0, keywords: 0, tiers: [] },
-          searchVolumes: {},
-          summaryByKeyword: [],
-          attemptsByKeyword: {},
-          exposureStatsByKeyword: {}
-        });
-      }
       
       // Check blog_registry for status filtering and NEW determination
       const blogRegistryEntries = await db.select().from(blogRegistry).where(
@@ -2068,33 +2042,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         for (const [text, v] of Object.entries<any>(volumeResults.volumes)) {
           const rawVolume = safeParseNumber(v.total ?? v.volumeMonthly ?? 0);
           const adDepth   = safeParseNumber(v.plAvgDepth ?? v.adWordsCnt ?? 0);
-          const estCpc    = safeParseNumber(v.avePcCpc ?? v.aveMobileCpc ?? 0);
+          const estCpc    = safeParseNumber(v.avePcCpc ?? v.cpc ?? 0);
           const compIdx   = v.compIdx ?? '중간';
 
-          // 🔥 강화된 필터링 적용
           if (rawVolume < minVolume) continue;
           if (hasAdsOnly && adDepth <= 0) continue;
-          
-          // 클릭률 필터링 추가
-          const clickRate = safeParseNumber(v.plClickRate ?? 0) / 100;
-          if (clickRate === 0.0) {
-            console.log(`⏭️ Seed "${text}" click rate 0.0% - zero performance, skipping`);
-            continue;
-          }
-          if (clickRate < 0.001) { // 0.1% 미만 제외
-            console.log(`⏭️ Seed "${text}" click rate ${(clickRate * 100).toFixed(1)}% < 0.1% - skipping`);
-            continue;
-          }
-          
-          // CPC 필터링 추가
-          if (estCpc === 0) {
-            console.log(`⏭️ Seed "${text}" CPC 0원 - zero value, skipping`);
-            continue;
-          }
-          if (estCpc < 50) { // 50원 미만 제외
-            console.log(`⏭️ Seed "${text}" CPC ${estCpc}원 < 50원 - skipping`);
-            continue;
-          }
 
           keywordsToInsert.push({
             text,
@@ -2126,9 +2078,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         chunkSize,
         concurrency,
         stopIfNoNewPct,
-        strict,
-        minClickRate: 0.001, // 0.1% 이상 (보수적 시작값)
-        minCpc: 50 // 50원 이상 (의미있는 상업적 가치)
+        strict
       });
 
       // Initialize with seeds (명세서: 프론티어 = seeds ∪ expandAll(seeds))
@@ -2894,7 +2844,7 @@ function extractBlogIdFromUrl(url: string): string {
 }
 
 // Background SERP analysis job processing
-export async function processSerpAnalysisJob(
+async function processSerpAnalysisJob(
   jobId: string, 
   keywords: string[], 
   minRank: number, 

@@ -86,8 +86,6 @@ export default function KeywordInput({ onAnalysisStarted }: KeywordInputProps) {
         title: "분석 시작됨", 
         description: `${keywords.length}개 키워드로 네이버 검색 분석이 시작되었습니다. ${strictMode ? "(엄격 모드)" : "(유연 모드)"}`,
       });
-      // ★ 테스팅 에이전트를 위한 jobId 노출
-      (window as any).__lastJobId__ = data.jobId;
       onAnalysisStarted(data.jobId);
     },
     onError: (error: any) => {

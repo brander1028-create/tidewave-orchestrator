@@ -33,37 +33,11 @@ export class BlogScraper {
   // REMOVED: No more seed blogs - only real search results
 
   /**
-   * Extract blog ID from blog URL - handles PostView.nhn URLs correctly
+   * Extract blog ID from blog URL
    */
   private extractBlogId(blogUrl: string): string | null {
-    try {
-      const url = new URL(blogUrl);
-      
-      // Handle PostView.nhn or PostView.naver URLs with blogId parameter
-      if (url.pathname.includes('PostView.nhn') || url.pathname.includes('PostView.naver') ||
-          url.pathname.includes('PostList.nhn') || url.pathname.includes('PostList.naver')) {
-        const blogId = url.searchParams.get('blogId');
-        if (blogId) {
-          console.log(`🔍 Extracted blogId from URL params: ${blogId}`);
-          return blogId;
-        }
-      }
-      
-      // Handle regular blog URLs: blog.naver.com/blogId or blog.naver.com/blogId/postId
-      const pathMatch = url.pathname.match(/^\/([^/]+)/);
-      if (pathMatch && pathMatch[1] !== 'PostView.nhn' && pathMatch[1] !== 'PostView.naver' &&
-          pathMatch[1] !== 'PostList.nhn' && pathMatch[1] !== 'PostList.naver') {
-        const blogId = pathMatch[1];
-        console.log(`🔍 Extracted blogId from path: ${blogId}`);
-        return blogId;
-      }
-      
-      console.log(`❌ Could not extract blogId from URL: ${blogUrl}`);
-      return null;
-    } catch (error) {
-      console.error(`❌ Error parsing blog URL ${blogUrl}:`, error);
-      return null;
-    }
+    const match = blogUrl.match(/blog\.naver\.com\/([^/]+)/);
+    return match ? match[1] : null;
   }
 
   /**
@@ -77,28 +51,24 @@ export class BlogScraper {
    * Try RSS feed first, then fall back to HTTP scraping
    */
   async scrapeBlogPosts(blogUrl: string, limit = 10): Promise<ScrapedPost[]> {
-    console.log(`🔍 [SCRAPER] Starting blog post collection from: ${blogUrl}`);
+    console.log(`🔍 Starting blog post collection from: ${blogUrl}`);
     
     const blogId = this.extractBlogId(blogUrl);
     if (!blogId) {
-      console.log(`❌ [SCRAPER] Could not extract blog ID from ${blogUrl}`);
+      console.log(`❌ Could not extract blog ID from ${blogUrl}`);
       return []; // Return empty instead of fake posts
     }
 
-    console.log(`🆔 [SCRAPER] Successfully extracted blogId: ${blogId} from ${blogUrl}`);
-
     // Step 1: Try RSS feed first (PRIORITY)
-    console.log(`📡 [SCRAPER] Attempting RSS feed for blog: ${blogId}`);
+    console.log(`📡 Attempting RSS feed for blog: ${blogId}`);
     const rssPosts = await this.tryRssFeed(blogId, limit);
-    
     if (rssPosts.length >= 3) {
-      console.log(`✅ [SCRAPER] RSS successful: ${rssPosts.length} posts collected from ${blogUrl}`);
-      console.log(`📋 [SCRAPER] RSS post titles: ${rssPosts.map(p => p.title).join(' | ')}`);
+      console.log(`✅ RSS successful: ${rssPosts.length} posts collected from ${blogUrl}`);
       return rssPosts;
     }
 
     // Step 2: Fallback to HTTP scraping of mobile blog
-    console.log(`🔄 [SCRAPER] RSS failed (${rssPosts.length} posts), falling back to HTTP scraping`);
+    console.log(`🔄 RSS failed (${rssPosts.length} posts), falling back to HTTP scraping`);
     const httpPosts = await this.tryHttpScraping(blogUrl, limit);
     
     // Combine results, RSS first
@@ -108,15 +78,10 @@ export class BlogScraper {
     
     // Return whatever we found - no fake posts
     if (finalPosts.length < 3) {
-      console.log(`⚠️ [SCRAPER] Only ${finalPosts.length} posts found from ${blogUrl}, insufficient for analysis`);
+      console.log(`⚠️ Only ${finalPosts.length} posts found from ${blogUrl}, but no fake posts added`);
     }
     
-    console.log(`📊 [SCRAPER] Final result for ${blogUrl}: ${finalPosts.length} posts (RSS: ${rssPosts.length}, HTTP: ${httpPosts.length})`);
-    
-    if (finalPosts.length > 0) {
-      console.log(`📋 [SCRAPER] Final post titles: ${finalPosts.slice(0, 3).map(p => p.title).join(' | ')}${finalPosts.length > 3 ? ` + ${finalPosts.length - 3} more` : ''}`);
-    }
-    
+    console.log(`📊 Final result for ${blogUrl}: ${finalPosts.length} posts (${rssPosts.length} from RSS, ${httpPosts.length} from HTTP, ${finalPosts.length - rssPosts.length - httpPosts.length} fallback)`);
     return finalPosts;
   }
 
@@ -133,13 +98,11 @@ export class BlogScraper {
           'User-Agent': this.userAgent,
           'Accept': 'application/rss+xml, application/xml, text/xml',
           'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
-          'Referer': `https://blog.naver.com/${blogId}`,
         }
       });
 
       if (!response.ok) {
-        console.log(`⚠️ RSS response not ok: ${response.status} ${response.statusText} for ${rssUrl}`);
-        console.log(`📝 Response headers:`, Object.fromEntries(response.headers.entries()));
+        console.log(`⚠️ RSS response not ok: ${response.status} for ${rssUrl}`);
         return [];
       }
 
