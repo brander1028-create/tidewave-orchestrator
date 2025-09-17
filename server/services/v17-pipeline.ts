@@ -1,12 +1,13 @@
 /**
- * v17 Pipeline: Pre-enrich + Score-First Gate + autoFill
- * 사용자 요구사항대로 구현
+ * v17 Pipeline: Pre-enrich + Score-First Gate + autoFill + Auto Keyword Enrichment
+ * 완전 자동화된 키워드 관리 시스템
  */
 import { getAlgoConfig } from './algo-config';
 import { getVolumesWithHealth } from './externals-health';
 import { serpScraper } from './serp-scraper';
 import { db } from '../db';
 import { postTierChecks } from '../../shared/schema';
+import { autoEnrichFromTitle } from './auto-keyword-enrichment';
 
 // Import Phase2 engines
 // Phase2 engines
@@ -77,6 +78,23 @@ export async function processPostTitleV17(
   inputKeyword: string
 ): Promise<V17PipelineResult> {
   console.log(`🚀 [v17 Pipeline] Starting for title: "${title.substring(0, 50)}..."`);
+  
+  // Step 0: 자동 키워드 Enrichment (사용자 요구사항)
+  console.log(`🔍 [v17 Pipeline] Starting auto-enrichment for title analysis`);
+  try {
+    const enrichmentResult = await autoEnrichFromTitle(title, inputKeyword, jobId, blogId);
+    console.log(`✅ [v17 Pipeline] Auto-enrichment completed:`);
+    console.log(`   - Found in DB: ${enrichmentResult.foundInDB.length}`);
+    console.log(`   - Missing from DB: ${enrichmentResult.missingFromDB.length}`);
+    console.log(`   - Newly enriched: ${enrichmentResult.newlyEnriched.length}`);
+    console.log(`   - Top keyword: ${enrichmentResult.topKeyword}`);
+    console.log(`   - Generated combinations: ${enrichmentResult.generatedCombinations.length}`);
+    console.log(`   - Filtered ineligible: ${enrichmentResult.filteredIneligible.length}`);
+    console.log(`   - Final tiers: ${enrichmentResult.finalTiers.length}`);
+    console.log(`   - API calls: ${enrichmentResult.stats.apiCalls}`);
+  } catch (enrichmentError) {
+    console.error(`⚠️ [v17 Pipeline] Auto-enrichment failed, continuing with standard pipeline:`, enrichmentError);
+  }
   
   // Step 1: v17 핫리로드 설정
   const baseCfg = await getAlgoConfig();
