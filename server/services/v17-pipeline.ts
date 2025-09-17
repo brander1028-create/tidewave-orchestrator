@@ -343,6 +343,12 @@ export async function processSerpAnalysisJobWithV17Assembly(
     
     console.log(`📊 [v17 Assembly] Found ${tierData.length} tier records, ${blogData.length} blogs`);
     
+    if (tierData.length > 0) {
+      console.log(`✅ [v17 Assembly] Tier data sample: ${tierData.slice(0, 3).map(t => `${t.textSurface}:${t.score}`).join(', ')}`);
+    } else {
+      console.log(`⚠️ [v17 Assembly] No tier data found for job ${jobId} - proceeding with empty results`);
+    }
+    
     // ★ assembleResults가 기대하는 형식으로 변환
     const tiers: any[] = tierData.map(tier => ({
       tier: tier.tier,
@@ -372,8 +378,10 @@ export async function processSerpAnalysisJobWithV17Assembly(
     }));
     
     // 4) 결과 조립
+    console.log(`🔧 [v17 Assembly] Assembling results with ${tiers.length} tiers`);
     const { assembleResults } = await import("../phase2/helpers");
     const payload = assembleResults(jobId, tiers, cfg);
+    console.log(`✅ [v17 Assembly] Results assembled - keywords: ${payload.keywords?.length || 0}, blogs: ${payload.blogs?.length || 0}`);
     
     // 5) 결과를 DB에 저장
     const { MemStorage } = await import("../storage");  
