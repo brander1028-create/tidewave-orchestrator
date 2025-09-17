@@ -627,6 +627,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Get all discovered blogs and determine NEW status via blog_registry
       const allBlogs = await storage.getDiscoveredBlogs(job.id);
+      console.log(`📊 SELECT discovered_blogs: found ${allBlogs.length} blogs for jobId=${job.id}`);
+      
+      // ★ 빈 배열 가드: 블로그가 없으면 빈 결과 반환
+      if (allBlogs.length === 0) {
+        console.log(`⚠️ [Empty Discovery] No blogs found for job ${req.params.jobId}, returning empty results`);
+        return res.json({
+          jobId: req.params.jobId,
+          params: { postsPerBlog: P, tiersPerPost: T },
+          finalStats: { blogs: 0, posts: 0, keywords: 0, tiers: [] },
+          searchVolumes: {},
+          summaryByKeyword: [],
+          attemptsByKeyword: {},
+          exposureStatsByKeyword: {}
+        });
+      }
       
       // Check blog_registry for status filtering and NEW determination
       const blogRegistryEntries = await db.select().from(blogRegistry).where(
