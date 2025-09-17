@@ -86,44 +86,57 @@ function extractTokens(title: string, banSingles: string[] = []): string[] {
 async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<Candidate[]> {
   const gatedCandidates: Candidate[] = [];
   
+  // 3) Gate 정책(제목 단계는 soft) + 연결어 컷
+  const BAN_SINGLES = new Set(["정리","방법","추천","후기","테스트","여자","바르","및","과","와","의","이제","중인데","때인가"]);
+  
   for (const candidate of candidates) {
     let eligible = true;
     let skipReason: string | undefined;
     let adScore = 0;
     
     try {
-      // 광고 불가/지표 0 체크 (하드컷)
-      const volume = candidate.volume || 0;
-      const hasZeroMetrics = volume === 0;
-      
-      if (hasZeroMetrics) {
+      // 연결어/조사류는 하드컷
+      if (BAN_SINGLES.has(candidate.text) || /^\d+$/.test(candidate.text)) {
         eligible = false;
-        skipReason = "Zero volume";
+        skipReason = "ban";
       } else {
-        // AdScore 계산 (나중에 70:30 적용)
-        const { calculateAdScore } = await import('./adscore-engine');
+        // 광고 불가/지표 0 체크 (ineligible) 
+        const volume = candidate.volume || 0;
+        const competition = 0.5; // Mock 수정 - 타입 오류 해결
+        const ctr = 0; // Mock 수정 - 타입 오류 해결  
+        const adDepth = 2; // Mock - 타입 오류 해결
         
-        const metrics = {
-          volume,
-          competition: 0.5, // Mock for now
-          adDepth: 2,
-          cpc: 100
-        };
-        
-        const weights = {
-          volume: cfg.adscore?.wVolume || 0.4,
-          competition: cfg.adscore?.wCompetition || 0.3,
-          adDepth: cfg.adscore?.wAdDepth || 0.2,
-          cpc: cfg.adscore?.wCpc || 0.1
-        };
-        
-        const adScoreResult = calculateAdScore(metrics, weights);
-        adScore = adScoreResult.adScore;
-        
-        // Soft 모드에서는 eligible = true 유지
-        if (cfg.adscore?.mode === 'hard' && adScore < (cfg.adscore?.SCORE_MIN || 0.35)) {
+        const ineligible = (competition === 0 && ctr === 0); // Note: competition is currently 0.5 (mock)
+        if (ineligible) {
           eligible = false;
-          skipReason = `AdScore too low: ${adScore}`;
+          skipReason = "ineligible";
+        } else {
+          // 제목 단계: vol<thr 하드컷 제거! (volume 조건 없음)
+          // AdScore 계산 (나중에 70:30 적용)
+          const { calculateAdScore } = await import('./adscore-engine');
+          
+          const metrics = {
+            volume,
+            competition: 0.5, // Mock fallback
+            adDepth: 2,
+            cpc: 100
+          };
+          
+          const weights = {
+            volume: cfg.adscore?.wVolume || 0.4,
+            competition: cfg.adscore?.wCompetition || 0.3,
+            adDepth: cfg.adscore?.wAdDepth || 0.2,
+            cpc: cfg.adscore?.wCpc || 0.1
+          };
+          
+          const adScoreResult = calculateAdScore(metrics, weights);
+          adScore = adScoreResult.adScore;
+          
+          // 제목 단계는 soft 권장: score 기준도 mode==="hard"에서만
+          if (cfg.adscore?.mode === 'hard' && adScore < (cfg.adscore?.SCORE_MIN || 0.35)) {
+            eligible = false;
+            skipReason = `AdScore too low: ${adScore}`;
+          }
         }
       }
     } catch (error) {

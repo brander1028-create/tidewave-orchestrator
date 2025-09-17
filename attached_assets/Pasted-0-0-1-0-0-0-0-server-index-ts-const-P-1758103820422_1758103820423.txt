@@ -1,0 +1,136 @@
+0) 배포/런타임 즉시복구 (포트/헬스/부팅블로킹 제거)
+0-1) 서버 리스닝 고정 (환경 포트 + 0.0.0.0)
+// server/index.ts (또는 진입점)
+const PORT = Number(process.env.PORT) || 3000;
+app.get('/__ready', (_req,res)=>res.status(200).send('ok')); // 가벼운 준비상태
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[server] listening on ${PORT}`);
+  // 절대 여기서 대용량 pre-enrich 돌리지 말 것!
+});
+
+0-2) “Run command/Start” 확인
+
+Run/Start: node dist/server/index.js (또는 npm run start)
+
+Build: npm run build
+
+Vite dev(5173) 쓰고 있으면 배포에선 Express만 노출(PORT로), 프론트는 정적 서빙 or 별도.
+
+0-3) 부팅 시 장시간 작업 금지
+
+상단 모듈 로드시나 app.listen() 직후에 대량 API 콜 금지.
+
+무조건 요청 들어올 때 또는 큐/워커로 돌려.
+
+Health check는 /__ready로 설정(응답 50ms 이내).
+
+1) SearchAds 413/400 안정화 (지금 루프 끊기)
+1-1) 배치/변형 최소화 + 하드 스킵 조건
+// server/services/searchads-robust.ts
+function cleanKeyword(k:string){
+  // 허용 문자만(한글/영문/숫자/공백). 나머지는 제거.
+  return k.replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/g,' ').trim();
+}
+export function variantsFor(surface:string){
+  const s = cleanKeyword(surface);
+  const ns = s.replace(/\s+/g,'');
+  const arr = [s, ns];
+  if (s.length >= 12) arr.push(s.replace(/\s+/g,'-'));
+  return arr;
+}
+const MIN_BATCH=1, MAX_ATTEMPTS_PER_KEY=5;
+
+while (i < items.length) {
+  try { /* batch 호출 */ }
+  catch (e) {
+    if (is413(e) || is400(e)) {
+      // 배치=1 & minimal 변형에서도 400가 계속이면 "이 키워드는 스킵"
+      if (batch===MIN_BATCH && minimal && ++attemptsPerKey[key] >= MAX_ATTEMPTS_PER_KEY) {
+        markPartialFail(key); i += 1; minimal=false; attemptsPerKey[key]=0; continue;
+      }
+      //… (이전 안내대로 8→4→2→1, minimal variants 토글)
+      continue;
+    }
+    throw e;
+  }
+}
+
+1-2) TTL Fresh 판정: 0-벡터는 Fresh 아님
+
+(이미 안내한 대로) isFresh()에서 volume=0 AND ctr=0 AND competition=0 → Fresh false.
+과거 0 값은 하루 이상 지난 건 NULL로 정리(강제 재조회).
+
+2) 토큰 정제 + 빅그램 Gate 이전에 ‘프리엔리치 2회’ 완료
+2-1) 제목 토큰 클린업
+// server/title/tokenize.ts
+const BAN_SINGLES = new Set(["정리","방법","추천","후기","테스트","여자","바르","및","과","와","의","이제","중인데","때인가"]);
+export function extractTokens(title:string){
+  return title.replace(/[^\p{L}\p{N}\s]/gu,' ')
+    .split(/\s+/)
+    .map(t=>t.replace(/(은|는|이|가|을|를|에|에서|으로|로|과|와|의|및|도|만|까지|부터)$/,''))
+    .filter(t=>t.length>=2 && !BAN_SINGLES.has(t) && !/^\d+$/.test(t));
+}
+
+2-2) 파이프라인 순서(고정)
+// processPostTitle (요약)
+const toks = extractTokens(title);
+
+// 1) 제목 단어 preEnrich (DB→API→upsert→merge)
+await preEnrichKeywords(toks.map(t=>({surface:t, variants:variantsFor(t)})), {forceZeroRefresh:true});
+
+// 2) base 선정(조회량 최대 단일) + 빅그램 생성
+const base = await keywordsRepo.pickMaxVolumeToken(toks) ?? toks.sort((a,b)=>b.length-a.length)[0];
+const pairs = expandBigrams(base, toks).map(p=>({surface:p, variants:variantsFor(p)}));
+
+// 3) 빅그램 preEnrich (DB→API→upsert→merge)
+await preEnrichKeywords(pairs, {forceZeroRefresh:true});
+
+// 4) 이제 Gate/정렬/TopK → rank
+
+3) Gate 정책(제목 단계는 soft) + 연결어 컷
+// checkGateEligibility
+const ineligible = (k)=> k.ad_eligible===false || ((k.ctr??0)===0 && (k.competition??0)===0);
+if (ineligible(c)) return reject("ineligible");
+
+// 제목 자동보강 단계: vol<thr 하드컷 제거. score 기준도 mode==="hard"에서만.
+if (cfg.adscore.mode==="hard" && (c.adScore??0) < (cfg.adscore.SCORE_MIN??0.35)) return reject("score<thr");
+
+// 연결어/조사류는 하드컷
+if (BAN_SINGLES.has(c.text) || /^\d+$/.test(c.text)) return reject("ban");
+return pass();
+
+
+설정(임시 권장): mode="soft", SCORE_MIN=0.35, VOL_MIN=30, forceFill=true.
+
+4) 저장/응답 체결 + 레거시 호환
+// assembleResults
+tier.score   = tier.totalScore ?? tier.score ?? tier.adScore ?? 0; // 서버 계산값 우선
+tier.adScore = tier.adScore ?? null;
+payload.summaryByKeyword = buildSummaryByKeywordFromTiers(tiers, cfg);
+payload.finalStats = { ...legacyStats, tiers };      // 레거시 화면도 살림
+
+
+FK 에러(23503): 테스트 라우트는 post_tier_checks 저장 스킵, 실제 SERP job에서만 job_id=serp_jobs.id로 insert.
+
+const jobId = ctx.jobId ?? row.job_id ?? null;
+if (!jobId) logger.warn("[vFinal] TEST run — skip tier insert");
+else await keywordsRepo.insertTierCheck({ job_id: jobId, ...row });
+
+5) 지금 로그에 딱 맞춘 “바로 확인” 4가지
+
+포트/헬스: 배포 대시보드에 “Listening on {PORT}” 로그가 보이고, GET /__ready 200.
+
+SearchAds: 400/413 루프가 배치=1에서 최대 5회만 시도 후 건너뛰고 다음 키워드로 진행(로그에 “partial-fail(skip)” 보여야 정상).
+
+제목 조합: Generated combinations: N이 0이 아님 + 그 조합들에 대해 volume 숫자 채워짐(– 감소).
+
+TopK: 제목 단계에서 최소 1개 이상 선정(soft 모드), 연결어류(“이제…중인데…”)는 Gate=ban으로 제거.
+
+6) 마지막으로 — 왜 마지막에 “포트 열어라”가 떴나
+
+배포/헬스 체크 구간에서 서버가 부팅 중에 대량 SearchAds 호출로 응답이 지연되면, 헬스 프로브가 “포트가 안 열렸다”고 판단한다.
+
+그래서 포트 오픈(리스닝) 먼저, 헤비 잡은 요청/워커에서, 헬스는 초경량으로.
+
+원하면, 위 패치들을 git diff로 바로 뽑아줄 수 있어. 우선 포트/헬스(0번) → robust(1번) → 토큰/순서(2번) → 게이트(3번) → 저장/응답(4번) 순으로 반영하고, 새 잡 한 번 돌려서 vol<thr 연쇄 컷/400 루프가 끊기는지 확인해봐.

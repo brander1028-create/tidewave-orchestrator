@@ -6,6 +6,9 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+// 0-1) 가벼운 헬스체크 (50ms 이내)
+app.get('/__ready', (_req, res) => res.status(200).send('ok'));
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -56,16 +59,10 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || '5000', 10);
-  server.listen({
-    port,
-    host: "0.0.0.0",
-    reusePort: true,
-  }, () => {
-    log(`serving on port ${port}`);
+  // 0-1) 서버 리스닝 고정 (환경 포트 + 0.0.0.0)
+  const PORT = Number(process.env.PORT) || 3000;
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[server] listening on ${PORT}`);
+    // 절대 여기서 대용량 pre-enrich 돌리지 말 것!
   });
 })();
