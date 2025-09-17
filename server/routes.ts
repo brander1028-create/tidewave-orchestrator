@@ -628,9 +628,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const allBlogs = await storage.getDiscoveredBlogs(job.id);
       
       // Check blog_registry for status filtering and NEW determination
-      const blogRegistryEntries = await db.select().from(blogRegistry).where(
-        sql`blog_id IN (${sql.join(allBlogs.map(b => b.blogId), sql`, `)})`
-      );
+      const blogRegistryEntries = allBlogs.length > 0 
+        ? await db.select().from(blogRegistry).where(
+            sql`blog_id IN (${sql.join(allBlogs.map(b => b.blogId), sql`, `)})`
+          )
+        : [];
       const blogStatusMap = new Map(blogRegistryEntries.map(entry => [entry.blogId, entry.status]));
       
       // Filter out blacklist/outreach blogs and determine NEW blogs
