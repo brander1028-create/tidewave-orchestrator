@@ -12,6 +12,7 @@ import { DataTable } from "@/components/ui/data-table";
 import { Sparkline } from "@/components/ui/sparkline";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
+import { Progress } from "@/components/ui/progress";
 import { RankTrendChart } from "@/components/charts/rank-trend-chart";
 import { 
   KeywordChip, 
@@ -34,7 +35,19 @@ import {
   X,
   Eye,
   RefreshCw,
-  Bell
+  Bell,
+  ArrowUpDown,
+  Signal,
+  ExternalLink,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Users,
+  FolderPlus,
+  ChevronUp,
+  ChevronDown,
+  Trash2,
+  Loader2
 } from "lucide-react";
 import { ColumnDef } from "@tanstack/react-table";
 import { targetsApi, scrapingApi, rankApi, manualBlogApi } from "@/lib/api";
@@ -70,10 +83,92 @@ const addManualBlogSchema = z.object({
 
 type AddManualBlogForm = z.infer<typeof addManualBlogSchema>;
 
+// Format functions
+const formatNumber = (num: number): string => {
+  return new Intl.NumberFormat('ko-KR').format(num);
+};
+
+const formatChange = (change: number): string => {
+  const sign = change > 0 ? '+' : '';
+  return `${sign}${change}`;
+};
+
+// 토스 스타일 미니 트렌드 차트 컴포넌트
+const TossTrendChart = ({ data, change }: { data: number[], change: number }) => {
+  const width = 60;
+  const height = 24;
+  const padding = 2;
+  
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  
+  // 데이터를 SVG 좌표로 변환
+  const points = data.map((value, index) => {
+    const x = padding + (index * (width - padding * 2)) / (data.length - 1);
+    const y = height - padding - ((value - min) / range) * (height - padding * 2);
+    return `${x},${y}`;
+  }).join(' ');
+  
+  // 변동에 따른 색상 결정
+  const color = change > 0 ? '#ef4444' : change < 0 ? '#3b82f6' : '#6b7280';
+  
+  return (
+    <div className="flex items-center">
+      <svg width={width} height={height} className="mr-2">
+        {/* 점선 배경 */}
+        <defs>
+          <pattern id="dots" patternUnits="userSpaceOnUse" width="4" height="4">
+            <circle cx="2" cy="2" r="0.5" fill="currentColor" className="text-muted-foreground" opacity="0.2" />
+          </pattern>
+        </defs>
+        <rect width={width} height={height} fill="url(#dots)" />
+        
+        {/* 라인 차트 */}
+        <polyline
+          points={points}
+          fill="none"
+          stroke={color}
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        
+        {/* 시작점과 끝점 */}
+        {data.length > 1 && (
+          <>
+            <circle
+              cx={padding}
+              cy={height - padding - ((data[0] - min) / range) * (height - padding * 2)}
+              r="1"
+              fill={color}
+              opacity="0.8"
+            />
+            <circle
+              cx={width - padding}
+              cy={height - padding - ((data[data.length - 1] - min) / range) * (height - padding * 2)}
+              r="1.5"
+              fill={color}
+            />
+          </>
+        )}
+      </svg>
+    </div>
+  );
+};
+
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
+  const [keywordSearchTerm, setKeywordSearchTerm] = React.useState("");
+  const [selectedBrand, setSelectedBrand] = React.useState("전체");
+  const [viewMode, setViewMode] = React.useState<"all" | "on" | "off">("all");
+  const [sortBy, setSortBy] = React.useState("recent");
+  const [isRunning, setIsRunning] = React.useState(false);
+  const [progress, setProgress] = React.useState({ done: 0, total: 0, text: "" });
+  const [abortController, setAbortController] = React.useState<AbortController | null>(null);
+  const cancelledRef = React.useRef(false);
   const queryClient = useQueryClient();
   
   // Fetch tracked targets from API
@@ -173,8 +268,89 @@ export default function Rank() {
       });
   };
 
-  // Current ranking data based on tracked targets
-  const currentRankingData = convertTargetsToRankingData(trackedTargets);
+  // Convert tracked targets to ranking data with enhanced data
+  const generateMockData = (targets: TrackedTarget[]) => {
+    return targets.map((target, index) => {
+      const idNum = parseInt(target.id?.slice(-1) || '0') || index;
+      const rank = [15, 3, 25, 12, 7, 20, 8][idNum % 7] || (idNum % 30) + 1;
+      const change = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
+      const volume = [18500, 45600, 12300, 28900, 33200, 19800, 24100][idNum % 7] || Math.floor(Math.random() * 50000) + 10000;
+      const score = [72, 91, 68, 88, 85, 74, 82][idNum % 7] || Math.floor(Math.random() * 40) + 60;
+      const brands = ["브랜드A", "브랜드B", "브랜드C"];
+      const groups = ["그룹1", "그룹2", "그룹3"];
+      
+      return {
+        id: target.id || (index + 1).toString(),
+        active: true,
+        keyword: target.query || `키워드 ${index + 1}`,
+        volume,
+        score,
+        rank,
+        change,
+        maintainDays: [7, 28, 3, 21, 35, 14, 42][idNum % 7] || Math.floor(Math.random() * 50) + 1,
+        blogId: `blog${index + 1}`,
+        blogUrl: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
+        trend: Array.from({ length: 10 }, (_, i) => rank + (i % 5) - 2),
+        postDate: `9월 ${17 + (idNum % 14)}일`,
+        lastCheck: new Date().toISOString(),
+        brand: brands[idNum % brands.length],
+        group: groups[idNum % groups.length]
+      };
+    });
+  };
+
+  const mockData = React.useMemo(() => generateMockData(trackedTargets), [trackedTargets]);
+  
+  // 브랜드 목록
+  const brands = ["전체", ...Array.from(new Set(mockData.map(item => item.brand)))];
+
+  // Filtering and sorting logic
+  const filteredData = React.useMemo(() => {
+    let filtered = mockData;
+    
+    // 키워드 검색 필터
+    if (keywordSearchTerm.trim()) {
+      filtered = filtered.filter(item => 
+        item.keyword.toLowerCase().includes(keywordSearchTerm.toLowerCase()) ||
+        item.group.toLowerCase().includes(keywordSearchTerm.toLowerCase())
+      );
+    }
+    
+    // 브랜드 필터
+    if (selectedBrand !== "전체") {
+      filtered = filtered.filter(item => item.brand === selectedBrand);
+    }
+    
+    // ON/OFF 필터
+    if (viewMode === "on") {
+      filtered = filtered.filter(item => item.active);
+    } else if (viewMode === "off") {
+      filtered = filtered.filter(item => !item.active);
+    }
+    
+    // 정렬
+    const sorted = [...filtered].sort((a, b) => {
+      switch (sortBy) {
+        case "volume":
+          return b.volume - a.volume;
+        case "score":
+          return b.score - a.score;
+        case "rank":
+          return a.rank - b.rank;
+        case "change":
+          return Math.abs(b.change) - Math.abs(a.change);
+        case "maintain":
+          return b.maintainDays - a.maintainDays;
+        case "keyword":
+          return a.keyword.localeCompare(b.keyword);
+        case "recent":
+        default:
+          return new Date(b.lastCheck).getTime() - new Date(a.lastCheck).getTime();
+      }
+    });
+    
+    return sorted;
+  }, [mockData, keywordSearchTerm, selectedBrand, viewMode, sortBy]);
 
   // Handle form submission
   const onSubmit = (data: AddManualBlogForm) => {
@@ -495,14 +671,110 @@ export default function Rank() {
             </div>
           </div>
 
-          {/* Ranking Table */}
-          <DataTable
-            columns={columns}
-            data={currentRankingData}
-            title="블로그 순위 현황"
-            description={`총 ${currentRankingData.length}개 키워드`}
-            onRowClick={(row) => setSelectedRankingDetail(row)}
-          />
+          {/* Blog Rank Grid */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-foreground">블로그 순위 현황</h3>
+              <div className="text-sm text-muted-foreground">
+                총 {filteredData.length}개 키워드
+              </div>
+            </div>
+            
+            {filteredData.length === 0 ? (
+              <div className="text-center py-12">
+                <p className="text-muted-foreground">조건에 맞는 데이터가 없습니다.</p>
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                {filteredData.map((item) => (
+                  <div key={item.id} className="bg-card border border-border rounded-lg p-4 hover:bg-accent/50 transition-colors">
+                    <div className="grid grid-cols-12 gap-4 items-center">
+                      {/* 키워드 정보 */}
+                      <div className="col-span-3">
+                        <div className="space-y-1">
+                          <button 
+                            className="font-medium text-foreground hover:text-primary transition-colors text-left"
+                            onClick={() => setSelectedRankingDetail(item)}
+                            data-testid={`button-keyword-${item.id}`}
+                          >
+                            {item.keyword}
+                          </button>
+                          <div className="text-xs text-muted-foreground">
+                            {item.brand} · {item.group}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            블로그ID: {item.blogId}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* 조회량/점수 */}
+                      <div className="col-span-2">
+                        <div className="space-y-1">
+                          <button 
+                            className="text-sm font-medium hover:text-primary transition-colors"
+                            onClick={() => setSelectedRankingDetail(item)}
+                            data-testid={`button-volume-${item.id}`}
+                          >
+                            {formatNumber(item.volume)}
+                          </button>
+                          <div className="text-xs text-muted-foreground">
+                            점수: {item.score}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* 순위 */}
+                      <div className="col-span-1 text-center">
+                        <div className="text-lg font-bold text-foreground">
+                          {item.rank}위
+                        </div>
+                      </div>
+                      
+                      {/* 변동 */}
+                      <div className="col-span-1 text-center">
+                        <div className={`text-sm font-medium ${
+                          item.change > 0 ? "text-red-500" : 
+                          item.change < 0 ? "text-blue-500" : "text-gray-500"
+                        }`}>
+                          {formatChange(item.change)}
+                        </div>
+                      </div>
+                      
+                      {/* 유지일 */}
+                      <div className="col-span-1 text-center">
+                        <div className="text-sm font-medium text-foreground">
+                          {item.maintainDays}일
+                        </div>
+                      </div>
+                      
+                      {/* 트렌드 차트 */}
+                      <div className="col-span-2">
+                        <TossTrendChart data={item.trend} change={item.change} />
+                      </div>
+                      
+                      {/* 상태 및 액션 */}
+                      <div className="col-span-2 flex items-center justify-end gap-2">
+                        <Switch
+                          checked={item.active}
+                          size="sm"
+                          data-testid={`switch-active-${item.id}`}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedRankingDetail(item)}
+                          data-testid={`button-detail-${item.id}`}
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </TabsContent>
 
         <TabsContent value="shopping" className="space-y-6">
