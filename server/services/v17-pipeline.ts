@@ -312,22 +312,23 @@ export async function processSerpAnalysisJobWithV17Assembly(
     // 1) v17 설정 로드
     const cfg = await getAlgoConfig();
     
-    // 2) 기본 processSerpAnalysisJob 실행 (legacy와 동일하지만 v17 모드)
-    // 동적 import로 circular dependency 방지
-    const { default: routes } = await import("../routes");
+    // 2) 기본 SERP 분석 실행 (legacy processor로 순환 import 방지)
+    console.log(`📝 [v17 Assembly] Starting real SERP analysis for ${jobId}`);
     
-    // processSerpAnalysisJob을 Promise로 래핑 (원래는 fire-and-forget)
-    await new Promise<void>((resolve, reject) => {
-      setTimeout(async () => {
-        try {
-          // 여기서 실제 legacy 함수 호출 (나중에 구현)
-          console.log(`📝 [v17 Assembly] Basic processing completed for ${jobId}`);
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      }, 1000); // 임시로 1초 대기
-    });
+    // 순환 import 방지를 위해 별도 모듈에서 legacy processor 호출
+    const { runLegacySerpJob } = await import("./serp-legacy");
+    
+    await runLegacySerpJob(
+      jobId,
+      keywords,
+      minRank,
+      maxRank,
+      postsPerBlog,
+      titleExtract,
+      lkOptions
+    );
+    
+    console.log(`✅ [v17 Assembly] Real SERP analysis completed for ${jobId}`);
     
     // 3) v17 tier 데이터 수집 및 조립
     console.log(`🔧 [v17 Assembly] Collecting tier data for ${jobId}`);

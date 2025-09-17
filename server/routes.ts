@@ -299,10 +299,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // ★ Robust error handling with fallback
           v17Promise.then(() => {
             console.log('✅ [v17] fast-path finished successfully');
-          }).catch(error => {
+          }).catch(async (error) => {
             console.error('[SAFE-FALLBACK] v17 failed → legacy', error);
-            // Fallback to legacy processing
-            processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+            // Fallback to legacy processing (using new module to avoid circular imports)
+            const { runLegacySerpJob } = await import("./services/serp-legacy");
+            runLegacySerpJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
               enableLKMode,
               preferCompound,
               targetCategory
@@ -506,8 +507,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Start analysis with test configuration
       console.log(`🧪 [SANDBOX] Created test job ${job.id}, starting analysis...`);
       
-      // Use the existing analysis function but mark as test
-      processSerpAnalysisJob(job.id, [keyword], 2, 15, 10, true, {
+      // Use the legacy analysis function but mark as test (avoid circular imports)
+      const { runLegacySerpJob } = await import("./services/serp-legacy");
+      runLegacySerpJob(job.id, [keyword], 2, 15, 10, true, {
         enableLKMode: false,
         preferCompound: true
         // Note: testMode and testConfig handled via job.results
@@ -2859,7 +2861,7 @@ function extractBlogIdFromUrl(url: string): string {
 }
 
 // Background SERP analysis job processing
-async function processSerpAnalysisJob(
+export async function processSerpAnalysisJob(
   jobId: string, 
   keywords: string[], 
   minRank: number, 
