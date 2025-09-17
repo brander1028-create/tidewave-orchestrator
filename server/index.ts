@@ -110,8 +110,79 @@ app.use((req, res, next) => {
     cron.schedule(V713_CONFIG.GLOBAL_RANK_CRON, async () => {
       log("[v7.13 크론] 전역 순위 체크 시작");
       try {
-        // TODO: v7.13 전역 순위 체크 로직 구현 예정
-        log("[v7.13 크론] 전역 순위 체크 완료 (구현 예정)");
+        const { storage } = await import("./storage");
+        const { naverBlogScraper } = await import("./blog-scraper");
+        
+        // 모든 활성 blog-keyword pairs 조회
+        const allPairs = await storage.getBlogKeywordTargets();
+        const activePairs = allPairs.filter(pair => pair.active);
+        
+        if (activePairs.length === 0) {
+          log("[v7.13 크론] 활성화된 페어가 없습니다");
+          return;
+        }
+        
+        log(`[v7.13 크론] ${activePairs.length}개 페어 순위 체크 시작`);
+        let successCount = 0;
+        let totalCount = 0;
+        
+        // 동시성 제어를 위해 배치 처리
+        const BATCH_SIZE = 5;
+        for (let i = 0; i < activePairs.length; i += BATCH_SIZE) {
+          const batch = activePairs.slice(i, i + BATCH_SIZE);
+          
+          const batchPromises = batch.map(async (pair) => {
+            try {
+              totalCount++;
+              log(`[v7.13 크론] 처리 중: ${pair.keyword} @ ${pair.blogUrl}`);
+              
+              // NaverBlogScraper 사용한 순위 체크
+              const scrapingResult = await naverBlogScraper.scrapeNaverBlog({
+                query: pair.keyword,
+                targetUrl: pair.blogUrl,
+                device: 'pc', // PC 우선, 실패시 자동 mobile fallback
+                maxPages: 3
+              });
+              
+              if (scrapingResult.success && scrapingResult.data) {
+                const rankData = scrapingResult.data;
+                
+                // 순위 데이터를 rank_time_series에 저장
+                await storage.saveRankSnapshot({
+                  pairId: pair.id,
+                  keyword: pair.keyword,
+                  rank: rankData.rank,
+                  page: rankData.page || 1,
+                  position: rankData.position || rankData.rank || null,
+                  title: rankData.title || '',
+                  url: rankData.url || pair.blogUrl,
+                  snippet: rankData.snippet || '',
+                  device: 'pc',
+                  checkedAt: new Date(),
+                  exposed: rankData.rank !== null ? true : false
+                });
+                
+                successCount++;
+                log(`[v7.13 크론] 성공: ${pair.keyword} - 순위 ${rankData.rank || '없음'}`);
+              } else {
+                log(`[v7.13 크론] 실패: ${pair.keyword} - ${scrapingResult.error || '순위 없음'}`);
+              }
+              
+            } catch (pairError) {
+              log(`[v7.13 크론] 페어 처리 실패 (${pair.keyword}): ${pairError instanceof Error ? pairError.message : String(pairError)}`);
+            }
+          });
+          
+          // 배치 실행 및 완료 대기
+          await Promise.allSettled(batchPromises);
+          
+          // 배치 간 짧은 대기 (과부하 방지)
+          if (i + BATCH_SIZE < activePairs.length) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+        
+        log(`[v7.13 크론] 전역 순위 체크 완료: ${successCount}/${totalCount} 성공`);
       } catch (error: any) {
         log(`[v7.13 크론] 전역 순위 체크 실패: ${error instanceof Error ? error.message : String(error)}`);
       }
