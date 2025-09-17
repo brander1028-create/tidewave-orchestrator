@@ -8,10 +8,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Progress } from "@/components/ui/progress";
+import { DataTable } from "@/components/ui/data-table";
+import { Sparkline } from "@/components/ui/sparkline";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
-import { useToast } from "@/hooks/use-toast";
+import { RankTrendChart } from "@/components/charts/rank-trend-chart";
+import { 
+  KeywordChip, 
+  StreakBadge, 
+  GoToLinkButton, 
+  ExposureFilter, 
+  StartAllChecksButton,
+  RankChangeBadge
+} from "@/components/ui/ranking-badges";
+import { toast } from "@/hooks/use-toast";
 import { 
   Search, 
   Settings, 
@@ -24,27 +34,14 @@ import {
   X,
   Eye,
   RefreshCw,
-  Bell,
-  ArrowUpDown,
-  Signal,
-  ExternalLink,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  Users,
-  ChevronUp,
-  ChevronDown,
-  Loader2,
-  Database,
-  FolderPlus,
-  Trash2
+  Bell
 } from "lucide-react";
-import { targetsApi, scrapingApi, rankApi } from "@/lib/api";
+import { ColumnDef } from "@tanstack/react-table";
+import { targetsApi, scrapingApi, rankApi, manualBlogApi } from "@/lib/api";
 import type { TrackedTarget, InsertTrackedTarget } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Link } from "wouter";
 
 interface RankingData {
   id: string;
@@ -59,49 +56,25 @@ interface RankingData {
   lastCheck: string;
   exposed: boolean;
   streakDays: number;
-  volume: number;
-  score: number;
-  brand: string;
-  active: boolean;
 }
 
-// Form schema for tracked target
-const addTargetSchema = z.object({
-  query: z.string().min(1, "키워드를 입력해주세요"),
+// Form schema for manual blog entry
+const addManualBlogSchema = z.object({
+  keyword: z.string().min(1, "키워드를 입력해주세요"),
   url: z.string().url("올바른 URL을 입력해주세요"),
-  windowMin: z.number().min(1).default(1),
-  windowMax: z.number().min(1).default(10),
-  kind: z.enum(["blog", "shop"]).default("blog"),
-  owner: z.string().default("admin"),
+  title: z.string().min(1, "블로그 제목을 입력해주세요"),
+  rank: z.number().min(1, "순위는 1 이상이어야 합니다").optional(),
+  notes: z.string().optional(),
+  submittedBy: z.string().default("admin"),
 });
 
-type AddTargetForm = z.infer<typeof addTargetSchema>;
-
-// Format functions
-const formatNumber = (num: number): string => {
-  return new Intl.NumberFormat('ko-KR').format(num);
-};
-
-const formatChange = (change: number): string => {
-  if (change === 0) return "0";
-  return change > 0 ? `+${change}` : change.toString();
-};
+type AddManualBlogForm = z.infer<typeof addManualBlogSchema>;
 
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
-  const [isSettingsSectionExpanded, setIsSettingsSectionExpanded] = React.useState(false);
-  const [keywordSearchTerm, setKeywordSearchTerm] = React.useState("");
-  const [selectedBrand, setSelectedBrand] = React.useState("전체");
-  const [viewMode, setViewMode] = React.useState<"all" | "on" | "off">("all");
-  const [sortBy, setSortBy] = React.useState("recent");
-  const [isRunning, setIsRunning] = React.useState(false);
-  const [progress, setProgress] = React.useState({ done: 0, total: 0, text: "" });
-  const [abortController, setAbortController] = React.useState<AbortController | null>(null);
-
   const queryClient = useQueryClient();
-  const { toast } = useToast();
   
   // Fetch tracked targets from API
   const { data: trackedTargets = [], isLoading: targetsLoading } = useQuery<TrackedTarget[]>({
@@ -110,44 +83,43 @@ export default function Rank() {
   });
   
   // Form for adding new targets
-  const form = useForm<AddTargetForm>({
-    resolver: zodResolver(addTargetSchema),
+  const form = useForm<AddManualBlogForm>({
+    resolver: zodResolver(addManualBlogSchema),
     defaultValues: {
-      query: "",
+      keyword: "",
       url: "",
-      windowMin: 1,
-      windowMax: 10,
-      kind: selectedTab as "blog" | "shop",
-      owner: "admin",
+      title: "",
+      rank: undefined,
+      notes: "",
+      submittedBy: "admin",
     },
   });
   
-  // Add tracked target mutation  
-  const addTargetMutation = useMutation({
-    mutationFn: async (data: AddTargetForm) => {
-      return await targetsApi.create({
-        query: data.query,
+  // Add manual blog entry mutation  
+  const addBlogMutation = useMutation({
+    mutationFn: async (data: AddManualBlogForm) => {
+      return await manualBlogApi.create({
+        keyword: data.keyword,
         url: data.url,
-        windowMin: data.windowMin,
-        windowMax: data.windowMax,
-        kind: data.kind,
-        owner: data.owner,
-        enabled: true,
+        title: data.title,
+        rank: data.rank ?? null,
+        notes: data.notes ?? null,
+        submittedBy: data.submittedBy,
       });
     },
     onSuccess: () => {
       toast({
-        title: "키워드 추가 완료",
-        description: "새 키워드 추적이 성공적으로 시작되었습니다.",
+        title: "블로그 입력 완료",
+        description: "수동 블로그 입력이 성공적으로 저장되었습니다.",
       });
-      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/manual-blogs'] });
       setIsAddBlogOpen(false);
       form.reset();
     },
     onError: (error) => {
       toast({
-        title: "추가 실패",
-        description: `키워드 추가 중 오류가 발생했습니다: ${error.message}`,
+        title: "입력 실패",
+        description: `블로그 입력 중 오류가 발생했습니다: ${error.message}`,
         variant: "destructive",
       });
     },
@@ -183,9 +155,6 @@ export default function Rank() {
         const idNum = parseInt(target.id?.slice(-1) || '0') || index;
         const baseRank = [8, 15, 12, 20, 7, 25, 11][idNum % 7] || (idNum % 30) + 1;
         const baseChange = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
-        const volume = [1200, 850, 2400, 560, 1800, 920, 1500][idNum % 7] || 1000;
-        const score = [85, 72, 91, 68, 88, 74, 82][idNum % 7] || 75;
-        const brands = ["브랜드A", "브랜드B", "브랜드C", "브랜드D"];
         
         return {
           id: target.id || (index + 1).toString(),
@@ -199,11 +168,7 @@ export default function Rank() {
           status: target.enabled ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
           lastCheck: "5분 전",
           exposed: baseRank <= 15, // 15위까지만 노출
-          streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3,
-          volume: volume,
-          score: score,
-          brand: brands[idNum % 4] || "브랜드A",
-          active: target.enabled || false
+          streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3
         };
       });
   };
@@ -211,56 +176,9 @@ export default function Rank() {
   // Current ranking data based on tracked targets
   const currentRankingData = convertTargetsToRankingData(trackedTargets);
 
-  // Brands for filtering
-  const brands = ["전체", ...Array.from(new Set(currentRankingData.map(item => item.brand)))];
-
-  // Filtered data based on search and filters
-  const filteredData = React.useMemo(() => {
-    let filtered = currentRankingData;
-    
-    // 키워드 검색 필터
-    if (keywordSearchTerm.trim()) {
-      filtered = filtered.filter(item => 
-        item.keyword.toLowerCase().includes(keywordSearchTerm.toLowerCase())
-      );
-    }
-    
-    // 브랜드 필터
-    if (selectedBrand !== "전체") {
-      filtered = filtered.filter(item => item.brand === selectedBrand);
-    }
-    
-    // ON/OFF 필터
-    if (viewMode === "on") {
-      filtered = filtered.filter(item => item.active);
-    } else if (viewMode === "off") {
-      filtered = filtered.filter(item => !item.active);
-    }
-    
-    // 정렬
-    filtered.sort((a, b) => {
-      switch (sortBy) {
-        case "volume":
-          return b.volume - a.volume;
-        case "score":
-          return b.score - a.score;
-        case "rank":
-          return a.rank - b.rank;
-        case "change":
-          return b.change - a.change;
-        case "keyword":
-          return a.keyword.localeCompare(b.keyword);
-        default:
-          return 0;
-      }
-    });
-    
-    return filtered;
-  }, [currentRankingData, keywordSearchTerm, selectedBrand, viewMode, sortBy]);
-
   // Handle form submission
-  const onSubmit = (data: AddTargetForm) => {
-    addTargetMutation.mutate(data);
+  const onSubmit = (data: AddManualBlogForm) => {
+    addBlogMutation.mutate(data);
   };
   
   // Handle target deletion
@@ -270,500 +188,501 @@ export default function Rank() {
     }
   };
 
-  // Toggle keyword active status
-  const toggleKeywordActive = async (id: string) => {
-    try {
-      const item = trackedTargets.find(target => target.id === id);
-      if (!item) {
-        throw new Error('키워드를 찾을 수 없습니다.');
-      }
-      
-      // Optimistic update
-      queryClient.setQueryData(['/api/tracked-targets'], (old: TrackedTarget[] = []) => {
-        return old.map(target => 
-          target.id === id ? { ...target, enabled: !target.enabled } : target
+  const columns: ColumnDef<RankingData>[] = [
+    {
+      accessorKey: "keyword",
+      header: "키워드",
+      cell: ({ row }) => {
+        const idNum = parseInt(row.original.id?.slice(-1) || '0');
+        // Mock data: 키워드별 조회량과 점수
+        const volume = [1200, 850, 2400, 560, 1800, 920, 1500][idNum % 7] || 1000;
+        const score = [85, 72, 91, 68, 88, 74, 82][idNum % 7] || 75;
+        
+        return (
+          <div className="space-y-2">
+            <KeywordChip 
+              keyword={row.original.keyword}
+              volume={volume}
+              score={score}
+            />
+          </div>
         );
-      });
-      
-      const response = await fetch(`/api/tracked-targets/${id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-role': 'admin'
-        },
-        body: JSON.stringify({ enabled: !item.enabled }),
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      toast({
-        title: "상태 변경 완료",
-        description: `키워드가 ${!item.enabled ? '활성화' : '비활성화'}되었습니다.`,
-      });
-    } catch (error: any) {
-      // 오류 시 쿼리 캐시 무효화하여 실제 상태로 복원
-      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
-      
-      toast({
-        title: "상태 변경 실패",
-        description: `오류: ${error.message}`,
-        variant: "destructive",
-      });
-    }
-  };
+      },
+    },
+    {
+      accessorKey: "rank",
+      header: "현재 순위",
+      cell: ({ row }) => {
+        return (
+          <div className="space-y-2">
+            <div className="text-sm">
+              <span className="text-2xl font-bold text-foreground">{row.original.rank}</span>
+              <span className="text-muted-foreground text-sm ml-1">위</span>
+            </div>
+            <StreakBadge days={row.original.streakDays} exposed={row.original.exposed} />
+          </div>
+        );
+      },
+    },
+    {
+      accessorKey: "change",
+      header: "변동",
+      cell: ({ row }) => {
+        return (
+          <RankChangeBadge change={row.original.change} />
+        );
+      },
+    },
+    {
+      accessorKey: "url",
+      header: "바로가기",
+      cell: ({ row }) => (
+        <GoToLinkButton 
+          url={`https://${row.original.url}`}
+          title={`${row.original.keyword} 블로그로 이동`}
+        />
+      ),
+    },
+    {
+      accessorKey: "trend",
+      header: "트렌드",
+      cell: ({ row }) => {
+        const change = row.original.change;
+        const trend = change > 0 ? "up" : change < 0 ? "down" : "stable";
+        return <Sparkline data={row.original.trend} trend={trend} />;
+      },
+    },
+    {
+      accessorKey: "lastCheck",
+      header: "마지막 체크",
+      cell: ({ row }) => (
+        <span className="text-sm text-muted-foreground">{row.original.lastCheck}</span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "액션",
+      cell: ({ row }) => (
+        <div className="flex gap-2">
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="h-8 w-8 p-0"
+            onClick={() => setSelectedRankingDetail(row.original)}
+            data-testid={`button-view-${row.original.id}`}
+          >
+            <Eye className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+            <Bell className="h-4 w-4" />
+          </Button>
+        </div>
+      ),
+    },
+  ];
 
-  // Run all checks function
-  const runAllChecks = async () => {
-    if (filteredData.length === 0) return;
-    
-    const controller = new AbortController();
-    setAbortController(controller);
-    setIsRunning(true);
-    setProgress({ done: 0, total: 0, text: "순위 체크 계획을 가져오는 중..." });
-    
-    try {
-      // Get plan first
-      const targetIds = filteredData.map(item => item.id);
-      const plan = await rankApi.plan({
-        kind: selectedTab,
-        target_ids: targetIds
-      });
-      
-      if (plan.tasks.length === 0) {
-        toast({
-          title: "체크할 항목 없음",
-          description: "현재 선택된 필터에서 체크할 키워드가 없습니다.",
-        });
-        return;
-      }
-      
-      setProgress({ done: 0, total: plan.tasks.length, text: `${selectedTab === 'blog' ? '블로그' : '쇼핑'} 순위 체크를 시작합니다...` });
-      
-      // Convert plan tasks to scraping format
-      const scrapingTargets = plan.tasks.map(task => ({
-        targetId: task.target_id,
-        query: task.query,
-        kind: selectedTab as 'blog' | 'shop',
-        device: 'mobile' as const,
-        sort: undefined,
-        target: undefined
-      }));
-      
-      // Execute batch check with correct kind
-      await scrapingApi.batchRankCheck(scrapingTargets, controller);
-      
-      // Invalidate cached data to refresh UI
-      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
-      
-      toast({
-        title: "순위 체크 완료",
-        description: `${plan.tasks.length}개 작업의 순위 체크가 완료되었습니다.`,
-      });
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        toast({
-          title: "순위 체크 취소",
-          description: "사용자에 의해 순위 체크가 취소되었습니다.",
-        });
-      } else {
-        toast({
-          title: "순위 체크 실패",
-          description: `순위 체크 중 오류가 발생했습니다: ${error.message}`,
-          variant: "destructive",
-        });
-      }
-    } finally {
-      setIsRunning(false);
-      setAbortController(null);
-    }
-  };
+  // These functions are now handled by mutations above
 
-  const handleCancel = () => {
-    if (abortController) {
-      abortController.abort();
-    }
-    setIsRunning(false);
-    setProgress({ done: 0, total: 0, text: "" });
-  };
+  const detailTrendData = selectedRankingDetail ? Array.from({ length: 30 }, (_, i) => {
+    const date = new Date();
+    date.setDate(date.getDate() - (29 - i));
+    return {
+      date: date.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }),
+      rank: selectedRankingDetail.rank + Math.floor(Math.random() * 6) - 3,
+      score: 101 - (selectedRankingDetail.rank + Math.floor(Math.random() * 6) - 3),
+      events: Math.random() > 0.8 ? [{ type: 'rank_change', message: '순위 변동' }] : [],
+    };
+  }) : [];
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <div className="border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-xl font-semibold text-foreground">순위 대시보드</h1>
-              <p className="text-sm text-muted-foreground">네이버 블로그 & 쇼핑 SERP 순위 모니터링 및 인사이트 분석</p>
+    <div className="space-y-6">
+      {/* Tab Navigation */}
+      <Tabs value={selectedTab} onValueChange={setSelectedTab}>
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="blog" data-testid="tab-blog">블로그 순위</TabsTrigger>
+          <TabsTrigger value="shopping" data-testid="tab-shopping">쇼핑몰 순위</TabsTrigger>
+          <TabsTrigger value="reviews" data-testid="tab-reviews">리뷰 랭킹</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="blog" className="space-y-6">
+          {/* Control Cards */}
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            {/* Keyword Management */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Search className="w-4 h-4 text-primary" />
+                  키워드 관리
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Button 
+                  onClick={() => setIsAddBlogOpen(true)}
+                  size="sm"
+                  className="w-full"
+                  data-testid="button-add-target"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  키워드 추가
+                </Button>
+                
+                <div className="flex flex-wrap gap-2 max-h-20 overflow-y-auto custom-scrollbar">
+                  {currentRankingData.map((item) => (
+                    <Badge 
+                      key={item.id} 
+                      variant="secondary" 
+                      className="flex items-center gap-1"
+                    >
+                      {item.keyword}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-4 w-4 p-0 hover:text-destructive"
+                        onClick={() => handleDeleteTarget(item.id)}
+                        data-testid={`button-remove-keyword-${item.id}`}
+                        disabled={deleteTargetMutation.isPending}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </Badge>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Settings */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-primary" />
+                  체크 설정
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground">디바이스</Label>
+                  <Select defaultValue="mobile">
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mobile">모바일</SelectItem>
+                      <SelectItem value="pc">PC</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">페이지 범위</Label>
+                  <div className="flex gap-2 mt-1">
+                    <Input type="number" placeholder="1" defaultValue="1" className="flex-1" />
+                    <span className="self-center text-muted-foreground">~</span>
+                    <Input type="number" placeholder="10" defaultValue="10" className="flex-1" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Schedule */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  체크 스케줄
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground">체크 주기</Label>
+                  <Select defaultValue="10m">
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10m">10분</SelectItem>
+                      <SelectItem value="30m">30분</SelectItem>
+                      <SelectItem value="1h">1시간</SelectItem>
+                      <SelectItem value="6h">6시간</SelectItem>
+                      <SelectItem value="12h">12시간</SelectItem>
+                      <SelectItem value="24h">24시간</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-muted-foreground">자동 체크</Label>
+                  <Switch defaultChecked />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Summary Stats */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-primary" />
+                  요약 통계
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-muted-foreground">추적 키워드</span>
+                  <span className="text-sm font-medium text-foreground">{currentRankingData.length}개</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-muted-foreground">평균 순위</span>
+                  <span className="text-sm font-medium text-green-500">11.7위</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-muted-foreground">오늘 변동</span>
+                  <span className="text-sm font-medium text-red-500">-1.3</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-muted-foreground">알림</span>
+                  <span className="text-sm font-medium text-yellow-500">2건</span>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Quick Actions */}
+          <div className="flex flex-wrap gap-4 items-center justify-between">
+            <div className="flex flex-wrap gap-3">
+              <StartAllChecksButton
+                onClick={() => {
+                  toast({
+                    title: "순위 체크 시작",
+                    description: "블로그 → 쇼핑 순으로 체크를 진행합니다.",
+                  });
+                }}
+              />
+              <Button variant="outline" className="flex items-center gap-2">
+                <Download className="w-4 h-4" />
+                결과 내보내기
+              </Button>
+              <Button variant="outline" className="flex items-center gap-2">
+                <History className="w-4 h-4" />
+                히스토리 보기
+              </Button>
             </div>
-            <div className="flex items-center gap-3">
-              {/* 키워드 검색 */}
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="키워드 검색..."
-                  value={keywordSearchTerm}
-                  onChange={(e) => setKeywordSearchTerm(e.target.value)}
-                  className="pl-10 w-48"
-                  data-testid="input-keyword-search-header"
+            <div className="flex gap-4 items-center">
+              <div className="flex items-center gap-3">
+                <Label className="text-sm text-muted-foreground">노출 필터:</Label>
+                <ExposureFilter
+                  value="all"
+                  onChange={(value) => {
+                    console.log("Filter changed:", value);
+                  }}
                 />
               </div>
-              
-              {/* 데이터베이스 관리 */}
-              <Link to="/database">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid="button-manage-database"
-                >
-                  <Database className="h-4 w-4 mr-2" />
-                  관리
-                </Button>
-              </Link>
-              
-              {/* 설정 아이콘 */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsSettingsSectionExpanded(!isSettingsSectionExpanded)}
-                data-testid="button-toggle-settings"
-              >
-                <Settings className="h-4 w-4" />
-              </Button>
-              
-              {/* 키워드 추가 */}
-              <Button
-                onClick={() => setIsAddBlogOpen(true)}
-                size="sm"
-                data-testid="button-add-keyword"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                키워드 추가
-              </Button>
-              
+              <div className="flex items-center gap-2">
+                <Label className="text-sm text-muted-foreground">정렬:</Label>
+                <Select defaultValue="recent">
+                  <SelectTrigger className="w-32">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="recent">최근 업데이트순</SelectItem>
+                    <SelectItem value="volume">조회량순</SelectItem>
+                    <SelectItem value="score">점수순</SelectItem>
+                    <SelectItem value="rank-asc">순위 높은순</SelectItem>
+                    <SelectItem value="rank-desc">순위 낮은순</SelectItem>
+                    <SelectItem value="change">변동 큰순</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* 설정 섹션 */}
-      {isSettingsSectionExpanded && (
-        <div className="border-b border-border bg-muted/20">
-          <div className="container mx-auto px-4 py-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              
-              {/* 빠른 액션 카드 */}
-              <div className="bg-card border border-border rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-4">
-                  <Users className="h-5 w-5 text-primary" />
-                  <h3 className="font-semibold text-foreground">빠른 액션</h3>
-                </div>
-                <div className="space-y-3">
-                  {/* 전체 순위 업데이트 */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={runAllChecks}
-                    disabled={isRunning}
-                    data-testid="button-update-all-ranks"
-                  >
-                    <TrendingUp className="h-4 w-4 mr-2" />
-                    전체 순위 업데이트
-                  </Button>
-                  
-                  {/* 일괄 상태 관리 */}
-                  <div className="flex gap-2">
-                    <Button
-                      variant="default"
-                      size="sm"
-                      className="flex-1"
-                      data-testid="button-activate-all"
-                    >
-                      모두 활성화
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      data-testid="button-deactivate-all"
-                    >
-                      모두 비활성화
-                    </Button>
-                  </div>
-                </div>
-              </div>
+          {/* Ranking Table */}
+          <DataTable
+            columns={columns}
+            data={currentRankingData}
+            title="블로그 순위 현황"
+            description={`총 ${currentRankingData.length}개 키워드`}
+            onRowClick={(row) => setSelectedRankingDetail(row)}
+          />
+        </TabsContent>
 
-              {/* 요약 통계 카드 */}
-              <div className="bg-card border border-border rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-4">
-                  <TrendingUp className="h-5 w-5 text-primary" />
-                  <h3 className="font-semibold text-foreground">요약 통계</h3>
-                </div>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <div className="text-muted-foreground">총 키워드</div>
-                    <div className="text-2xl font-bold text-foreground">{filteredData.length}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground">활성</div>
-                    <div className="text-2xl font-bold text-green-500">{filteredData.filter(item => item.active).length}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground">비활성</div>
-                    <div className="text-2xl font-bold text-red-500">{filteredData.filter(item => !item.active).length}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground">평균 순위</div>
-                    <div className="text-2xl font-bold text-foreground">
-                      {filteredData.length > 0 ? Math.round(filteredData.reduce((sum, item) => sum + item.rank, 0) / filteredData.length) : 0}
+        <TabsContent value="shopping" className="space-y-6">
+          <div className="text-center py-12">
+            <h3 className="text-lg font-semibold text-foreground mb-2">쇼핑몰 순위 체크</h3>
+            <p className="text-muted-foreground">쇼핑몰 순위 모니터링 기능이 곧 제공됩니다.</p>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="reviews" className="space-y-6">
+          <div className="text-center py-12">
+            <h3 className="text-lg font-semibold text-foreground mb-2">리뷰 랭킹 보드</h3>
+            <p className="text-muted-foreground">리뷰 순위 분석 기능이 곧 제공됩니다.</p>
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      {/* Detail Modal */}
+      <Dialog open={!!selectedRankingDetail} onOpenChange={() => setSelectedRankingDetail(null)}>
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              순위 상세 분석 - {selectedRankingDetail?.keyword}
+            </DialogTitle>
+          </DialogHeader>
+          
+          {selectedRankingDetail && (
+            <div className="space-y-6">
+              {/* Current Status Cards */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <Card className="bg-secondary/50">
+                  <CardContent className="pt-6">
+                    <div className="text-center">
+                      <div className="text-3xl font-bold text-foreground mb-2">
+                        {selectedRankingDetail.rank}위
+                      </div>
+                      <div className="text-sm text-muted-foreground mb-3">현재 순위</div>
+                      <div className="flex items-center justify-center gap-2">
+                        <RankChangeBadge change={selectedRankingDetail.change} />
+                        <span className={`font-medium ${
+                          selectedRankingDetail.change > 0 ? "text-green-500" :
+                          selectedRankingDetail.change < 0 ? "text-red-500" : "text-gray-500"
+                        }`}>
+                          {selectedRankingDetail.change > 0 ? "+" : ""}{selectedRankingDetail.change} (전일대비)
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              </div>
-              
-            </div>
-          </div>
-        </div>
-      )}
+                  </CardContent>
+                </Card>
 
-      {/* Tabs */}
-      <div className="container mx-auto px-4 py-2">
-        <Tabs value={selectedTab} onValueChange={setSelectedTab}>
-          <TabsList className="grid w-48 grid-cols-2">
-            <TabsTrigger value="blog" data-testid="tab-blog">블로그</TabsTrigger>
-            <TabsTrigger value="shop" data-testid="tab-shop">쇼핑</TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
-
-      {/* Controls */}
-      <div className="container mx-auto px-4 py-4">
-        <div className="flex items-center justify-between mb-4">
-          {/* Brand Tabs */}
-          <div className="flex gap-1">
-            {brands.map(brand => (
-              <button
-                key={brand}
-                onClick={() => setSelectedBrand(brand)}
-                className={`px-3 py-1.5 text-sm font-medium rounded transition-colors ${
-                  selectedBrand === brand
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                data-testid={`tab-brand-${brand}`}
-              >
-                {brand}
-              </button>
-            ))}
-          </div>
-
-          {/* Filter Controls */}
-          <div className="flex items-center gap-4">
-            {/* ON/OFF Filter */}
-            <div className="flex items-center gap-2">
-              <Signal className="h-4 w-4 text-muted-foreground" />
-              <Select value={viewMode} onValueChange={(value: "all" | "on" | "off") => setViewMode(value)}>
-                <SelectTrigger className="w-24 h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">다보기</SelectItem>
-                  <SelectItem value="on">ON만</SelectItem>
-                  <SelectItem value="off">OFF만</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Sort */}
-            <div className="flex items-center gap-2">
-              <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
-              <Select value={sortBy} onValueChange={setSortBy}>
-                <SelectTrigger className="w-32 h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="recent">최근순</SelectItem>
-                  <SelectItem value="volume">조회량순</SelectItem>
-                  <SelectItem value="score">점수순</SelectItem>
-                  <SelectItem value="rank">순위순</SelectItem>
-                  <SelectItem value="change">변동순</SelectItem>
-                  <SelectItem value="keyword">키워드순</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Batch Controls */}
-            {isRunning ? (
-              <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 min-w-[280px]">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
-                    <span className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                      순위 체크 중...
-                    </span>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCancel}
-                    className="h-7 text-xs"
-                    data-testid="button-cancel-checks"
-                  >
-                    취소
-                  </Button>
-                </div>
-                
-                <div className="space-y-2">
-                  <Progress 
-                    value={progress.total > 0 ? (progress.done / progress.total) * 100 : 0}
-                    className="w-full h-2"
-                  />
-                  <div className="flex justify-between text-xs text-blue-700 dark:text-blue-300">
-                    <span>{progress.text}</span>
-                    <span>{progress.done}/{progress.total} ({progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%)</span>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <Button
-                onClick={runAllChecks}
-                size="sm"
-                disabled={filteredData.length === 0}
-                data-testid="button-start-all-checks"
-              >
-                전체 체크 시작
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {/* Table */}
-        <div className="border border-border rounded-lg overflow-hidden">
-          {/* Table Header */}
-          <div className="grid grid-cols-10 gap-4 p-4 bg-muted/50 border-b border-border text-sm font-medium text-muted-foreground">
-            <div className="col-span-1">ON/OFF</div>
-            <div className="col-span-2">키워드</div>
-            <div className="col-span-1">조회량</div>
-            <div className="col-span-1">점수</div>
-            <div className="col-span-1">순위</div>
-            <div className="col-span-1">변동</div>
-            <div className="col-span-1">유지일</div>
-            <div className="col-span-1">마지막체크</div>
-            <div className="col-span-1">액션</div>
-          </div>
-
-          {/* Table Body */}
-          <div className="divide-y divide-border">
-            {filteredData.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">
-                {targetsLoading ? "로딩 중..." : "표시할 데이터가 없습니다."}
-              </div>
-            ) : (
-              filteredData.map((item, index) => (
-                <div
-                  key={item.id}
-                  className={`grid grid-cols-10 gap-4 p-4 text-sm hover:bg-muted/50 transition-colors ${
-                    index % 2 === 0 ? 'bg-background' : 'bg-muted/20'
-                  }`}
-                  data-testid={`row-keyword-${item.id}`}
-                >
-                  {/* ON/OFF */}
-                  <div className="col-span-1 flex items-center">
-                    <Switch
-                      checked={item.active}
-                      onCheckedChange={() => toggleKeywordActive(item.id)}
-                      className="data-[state=checked]:bg-primary"
-                      data-testid={`switch-${item.id}`}
-                    />
-                  </div>
-
-                  {/* 키워드 */}
-                  <div className="col-span-2">
-                    <div className="font-medium text-foreground">{item.keyword}</div>
-                    <div className="text-xs text-muted-foreground">{item.brand}</div>
-                  </div>
-
-                  {/* 조회량 */}
-                  <div className="col-span-1">
-                    <div className="text-sm text-muted-foreground">{formatNumber(item.volume)}</div>
-                  </div>
-
-                  {/* 점수 */}
-                  <div className="col-span-1">
-                    <div className="text-sm text-muted-foreground">{item.score}</div>
-                  </div>
-
-                  {/* 순위 */}
-                  <div className="col-span-1">
-                    <div className="font-bold text-lg text-foreground">{item.rank}</div>
-                  </div>
-
-                  {/* 변동 */}
-                  <div className="col-span-1">
-                    <div className={`flex items-center font-medium ${
-                      item.change > 0 ? 'text-red-500' : 
-                      item.change < 0 ? 'text-blue-500' : 
-                      'text-muted-foreground'
-                    }`}>
-                      {item.change > 0 && <TrendingUp className="h-3 w-3 mr-1" />}
-                      {item.change < 0 && <TrendingDown className="h-3 w-3 mr-1" />}
-                      {item.change === 0 && <Minus className="h-3 w-3 mr-1" />}
-                      {formatChange(item.change)}
+                <Card className="bg-secondary/50">
+                  <CardContent className="pt-6">
+                    <div className="text-center">
+                      <div className="text-3xl font-bold text-chart-1 mb-2">
+                        {101 - selectedRankingDetail.rank}
+                      </div>
+                      <div className="text-sm text-muted-foreground mb-3">순위 점수</div>
+                      <div className="text-xs text-muted-foreground">(101 - 순위)</div>
                     </div>
-                  </div>
+                  </CardContent>
+                </Card>
 
-                  {/* 유지일 */}
-                  <div className="col-span-1">
-                    <div className="text-sm text-muted-foreground">{item.streakDays}일</div>
-                  </div>
-
-                  {/* 마지막체크 */}
-                  <div className="col-span-1">
-                    <div className="text-sm text-muted-foreground">{item.lastCheck}</div>
-                  </div>
-
-                  {/* 액션 */}
-                  <div className="col-span-1">
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => window.open(item.url, '_blank')}
-                        data-testid={`button-visit-${item.id}`}
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleDeleteTarget(item.id)}
-                        data-testid={`button-delete-${item.id}`}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
+                <Card className="bg-secondary/50">
+                  <CardContent className="pt-6">
+                    <div className="text-center">
+                      <div className="text-3xl font-bold text-chart-3 mb-2">2.1</div>
+                      <div className="text-sm text-muted-foreground mb-3">7일 변동성</div>
+                      <div className="text-xs text-muted-foreground">평균 절대 변동</div>
                     </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
+                  </CardContent>
+                </Card>
+              </div>
 
-      {/* Add Tracked Target Dialog */}
+              {/* Trend Chart */}
+              <RankTrendChart 
+                data={detailTrendData} 
+                title="30일 순위 추이" 
+                showEvents 
+              />
+
+              {/* Additional Details */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Event Timeline */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg font-semibold flex items-center gap-2">
+                      <History className="w-5 h-5 text-primary" />
+                      이벤트 타임라인
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3 max-h-48 overflow-y-auto custom-scrollbar">
+                      <div className="flex items-start gap-3 p-3 bg-green-500/10 rounded-lg">
+                        <div className="w-2 h-2 bg-green-500 rounded-full mt-2"></div>
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-foreground">순위 상승</div>
+                          <div className="text-xs text-muted-foreground">11위 → 8위 (+3)</div>
+                          <div className="text-xs text-muted-foreground">2시간 전</div>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3 p-3 bg-blue-500/10 rounded-lg">
+                        <div className="w-2 h-2 bg-blue-500 rounded-full mt-2"></div>
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-foreground">신규 블로그 감지</div>
+                          <div className="text-xs text-muted-foreground">경쟁사 포스팅 증가</div>
+                          <div className="text-xs text-muted-foreground">6시간 전</div>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3 p-3 bg-yellow-500/10 rounded-lg">
+                        <div className="w-2 h-2 bg-yellow-500 rounded-full mt-2"></div>
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-foreground">알림 발송</div>
+                          <div className="text-xs text-muted-foreground">Top 10 진입 알림</div>
+                          <div className="text-xs text-muted-foreground">1일 전</div>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Competitor Comparison */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg font-semibold flex items-center gap-2">
+                      <BarChart3 className="w-5 h-5 text-primary" />
+                      경쟁사 현황
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between p-3 bg-card rounded-lg">
+                        <div>
+                          <div className="font-medium text-green-400">우리</div>
+                          <div className="text-xs text-muted-foreground">blog.naver.com/user123</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-semibold text-foreground">{selectedRankingDetail.rank}위</div>
+                          <div className="text-green-500 text-xs">+{selectedRankingDetail.change}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between p-3 bg-card rounded-lg">
+                        <div>
+                          <div className="font-medium text-foreground">경쟁사 A</div>
+                          <div className="text-xs text-muted-foreground">blog.naver.com/competitor1</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-semibold text-foreground">3위</div>
+                          <div className="text-gray-500 text-xs">-</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between p-3 bg-card rounded-lg">
+                        <div>
+                          <div className="font-medium text-foreground">경쟁사 B</div>
+                          <div className="text-xs text-muted-foreground">blog.naver.com/competitor2</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-semibold text-foreground">12위</div>
+                          <div className="text-red-500 text-xs">-2</div>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Manual Blog Entry Dialog */}
       <Dialog open={isAddBlogOpen} onOpenChange={setIsAddBlogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>키워드 추가</DialogTitle>
+            <DialogTitle>수동 블로그 입력</DialogTitle>
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               <FormField
                 control={form.control}
-                name="query"
+                name="keyword"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>키워드</FormLabel>
@@ -784,7 +703,7 @@ export default function Rank() {
                 name="url"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>대상 URL</FormLabel>
+                    <FormLabel>블로그 URL</FormLabel>
                     <FormControl>
                       <Input 
                         placeholder="https://blog.naver.com/..." 
@@ -799,17 +718,15 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="windowMin"
+                name="title"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>최소 순위</FormLabel>
+                    <FormLabel>블로그 제목</FormLabel>
                     <FormControl>
                       <Input 
-                        type="number" 
-                        placeholder="1" 
+                        placeholder="블로그 제목을 입력하세요" 
                         {...field}
-                        onChange={(e) => field.onChange(parseInt(e.target.value) || 1)}
-                        data-testid="input-window-min"
+                        data-testid="input-title"
                       />
                     </FormControl>
                     <FormMessage />
@@ -819,17 +736,17 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="windowMax"
+                name="rank"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>최대 순위</FormLabel>
+                    <FormLabel>순위 (선택)</FormLabel>
                     <FormControl>
                       <Input 
                         type="number" 
-                        placeholder="10" 
+                        placeholder="1-100" 
                         {...field}
-                        onChange={(e) => field.onChange(parseInt(e.target.value) || 10)}
-                        data-testid="input-window-max"
+                        onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
+                        data-testid="input-rank"
                       />
                     </FormControl>
                     <FormMessage />
@@ -837,6 +754,23 @@ export default function Rank() {
                 )}
               />
               
+              <FormField
+                control={form.control}
+                name="notes"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>특이사항 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="참고 사항을 입력하세요" 
+                        {...field}
+                        data-testid="input-notes"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
               
               <div className="flex gap-2 pt-4">
                 <Button
@@ -851,10 +785,10 @@ export default function Rank() {
                 <Button 
                   type="submit" 
                   className="flex-1"
-                  disabled={addTargetMutation.isPending}
+                  disabled={addBlogMutation.isPending}
                   data-testid="button-submit-target"
                 >
-                  {addTargetMutation.isPending ? "추가 중..." : "추가"}
+                  {addBlogMutation.isPending ? "추가 중..." : "추가"}
                 </Button>
               </div>
             </form>

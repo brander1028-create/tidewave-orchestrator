@@ -1038,20 +1038,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // 타겟 조회 (kind에 따라 blog 또는 shop 타겟)
-      let allTargets: any[] = [];
-      if (kind === 'shop') {
-        // Shop 타겟 조회 (queries 필드 포함)
-        const shopTargets = await storage.getProductTargets(owner);
-        allTargets = shopTargets.map(target => ({
-          ...target,
-          keywords: target.queries || [], // queries를 keywords로 매핑
-          title: target.url, // URL을 title로 사용
-        }));
-      } else {
-        // Blog 타겟 조회
-        allTargets = await storage.getBlogTargetsWithKeywords(owner);
-      }
+      // 블로그 타겟 조회 (owner-aware)
+      const allTargets = await storage.getBlogTargetsWithKeywords(owner);
       let filteredTargets = allTargets;
 
       // target_ids 필터 적용
@@ -1100,7 +1088,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       console.log(`[RankPlan] ${kind} 계획 조회: ${tasks.length}개 작업, 타겟 ${filteredTargets.length}개`);
-      console.log(`[DEBUG] All ${kind} targets:`, allTargets.map(t => ({ id: t.id, title: t.title || t.name, keywords: t.keywords })));
 
       res.json({
         total: tasks.length,
