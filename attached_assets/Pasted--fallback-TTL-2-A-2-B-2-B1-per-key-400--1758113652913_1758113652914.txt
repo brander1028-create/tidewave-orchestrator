@@ -1,0 +1,171 @@
+아래 패치는 이전에 합의한 규칙들(정규화, fallback 컷, TTL 재조회, 2-A/2-B/2-B1 상태머신, per-key 400 상한) 유지하면서, 새 규칙(“티어별 단일/조합”, “로컬/맛집 단일 금지”, “모바일 서치 stop sentinel”, “blogId 로그 감축”)을 추가해.
+
+A. 티어 정책 (1티어 단일, 2~4티어는 2어 조합만)
+A-1) 도구 함수 추가
+
+server/title/policy.ts
+
+// 정규화
+export const nrm = (s:string)=> s.normalize('NFKC').toLowerCase().replace(/[\s\-\.]/g,'').trim();
+
+// 2어 조합 여부(공백 기준)
+export const isBigram = (s:string)=> /\s/.test(s.trim());
+
+// 로컬 토큰 휴리스틱 (시/군/구/동/읍/면/리 + 광역/특별 + 도)
+const CITIES = /(서울|부산|인천|대구|대전|광주|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)(특별시|광역시|도)?$/;
+const LOCAL_TAIL = /[가-힣]{1,8}(시|군|구|동|읍|면|리)$/;
+export const isLocal = (w:string)=> CITIES.test(w) || LOCAL_TAIL.test(w);
+
+// 단일 금지 목록(의미 없는 단어)
+export const BAN_SINGLE = new Set(["맛집","정리","방법","추천","후기","테스트","여자","바르","및","과","와","의","이제","중인데","때인가"]);
+
+// 단일 금지인지 판단
+export const isBannedSingle = (w:string)=> BAN_SINGLE.has(w) || isLocal(w) || /^\d+$/.test(w);
+
+// “조합만 허용” 대상(= 로컬/맛집)
+export const requireBigram = (w:string)=> w==="맛집" || isLocal(w);
+
+A-2) 후보 생성 시 조합 우선/제한
+
+processPostTitleVFinal 내부(빅그램 생성 직전)
+
+// base 선정 후
+const base = pickMaxVolumeToken(pool) || pickLongest(toks);
+
+// [새] base 또는 대상 토큰이 “조합만 허용”이면 무조건 bigram 생성
+const mustPair = (w:string)=> requireBigram(w);
+const pairTargets = toks.filter(t => t !== base);
+
+// bigram 생성 상한 적용
+const bigrams = [];
+for (const t of pairTargets) {
+  // 로컬/맛집 단독 금지 → 반드시 결합
+  if (mustPair(base) || mustPair(t) || true) {
+    bigrams.push(`${base} ${t}`);
+    if (bigrams.length >= MAX_BIGRAMS_PER_BASE) break;
+  }
+}
+// 기존 expandBigrams 로직 쓰면 이 배열로 대체/병합
+
+A-3) 최종 티어 배치 규칙 강제
+
+Gate/점수 계산 후 gatedCandidates가 나오면 다음 단계로:
+
+// 1) 단일/조합 분리
+const singles = gatedCandidates.filter(c => !isBigram(c.text));
+const bigramsOnly = gatedCandidates.filter(c => isBigram(c.text));
+
+// 2) 1티어: 단일 중에서 고름 (단, 단일 금지어 제외)
+const singlePool = singles.filter(c => !isBannedSingle(c.text));
+const tier1 = singlePool.sort((a,b)=> (b.totalScore ?? 0) - (a.totalScore ?? 0))[0];
+
+// 3) 2~K티어: 전부 2어 조합에서만 고름
+const K = cfg.phase2?.tiersPerPost ?? 4;
+const need = Math.max(0, K - 1);
+const tier2toK = bigramsOnly
+  .filter((c, i, arr) => arr.findIndex(x => nrm(x.text)===nrm(c.text))===i)
+  .sort((a,b)=> (b.totalScore ?? 0) - (a.totalScore ?? 0))
+  .slice(0, need);
+
+// 4) 최종 shortlist (1티어 없으면 조합 상위 1개로 대체)
+let shortlist: Candidate[] = [];
+if (tier1) shortlist = [tier1, ...tier2toK];
+else shortlist = bigramsOnly.slice(0, K);   // 그래도 단일이 없으면 전부 조합
+
+// [기존] soft 최종 보정(볼륨/AdScore 최소조건) 한 번 더
+const MIN_VOL = 10, MIN_ADS = cfg.adscore?.SCORE_MIN ?? 0.35;
+const finalPool = shortlist.filter(k => (k.volume??0)>=MIN_VOL || (k.adScore??0)>=MIN_ADS);
+if (!finalPool.length) shortlist = [ (shortlist[0]) ? {...shortlist[0], rank:null} : null ].filter(Boolean) as Candidate[];
+else shortlist = finalPool;
+
+// 이후 shortlist 대상으로만 rank 호출 → 티어 저장
+
+
+결과
+• 1티어는 단일 1개 (금지 단일 제외)
+• 2~4티어는 무조건 2어 조합
+• ‘맛집’/로컬 단독은 반드시 조합으로만 등장
+
+B. Gate/TTL/정규화(이전 합의 유지, 핵심만 재명시)
+
+Gate 하드컷: source==="api_ok" && ad_depth>0 && ctr>0 만 통과(fallback/0-벡터 컷).
+AdScore 컷은 제거 – 최종 보정에서만 사용.
+
+DB 매칭키는 text_nrm. 조회/업서트/병합/맵 전부 nrm() 통일.
+
+TTL: 0-벡터 OR source≠api_ok 는 Fresh 아님 → 항상 재조회.
+
+SearchAds 400/413: per-key 최대 5회, 스킵 시 i += 1 로 전진, minimal 변형 한 번만.
+
+C. 모바일 네이버 랭킹 체크 — stop sentinel 적용
+
+serpScraper.checkKeywordRankingInMobileNaver (또는 모바일 검색 결과 크롤러)에 ‘끝’ 기준 추가:
+
+// 결과 리스트 iterate 중…
+const STOP_TEXTS = [
+  "검색결과 더보기",                                 // 더보기 버튼
+  "서치피드에서 더 다양한 콘텐츠를 탐색해보세요",     // 서치피드 안내
+];
+
+for (const node of resultNodes) {
+  const text = node.innerText || "";
+  // sentinel 발견 시 중단
+  if (STOP_TEXTS.some(t => text.includes(t))) break;
+
+  // …기존 블로그 카드/랭킹 추출 로직…
+}
+
+
+의미: 모바일 결과 상단 영역까지만 스캔하고, 서치피드 진입 전에서 종료 → 빠르고, 잡음 적고, PC 블로그 탭과 다른 UX에 맞춤.
+
+D. “Extracted blogId …” 로그 감축
+
+logger 유틸에 레이트리밋 추가 또는 간단 카운터:
+
+let blogIdLogCount = 0;
+function logBlogIdOnce(id:string, url:string){
+  blogIdLogCount++;
+  if (blogIdLogCount <= 10 || blogIdLogCount % 20 === 0) {
+    logger.debug(`Extracted blogId: ${id} from ${url}`);
+  }
+}
+// 사용부:
+logBlogIdOnce(extractedId, href);
+
+
+처음 10개만 상세 출력, 그 후 20개마다 1회.
+
+더 조절하려면 환경변수로 BLOGID_LOG_EVERY=50 같은 식.
+
+E. 맛집/로컬 단일 금지의 토큰화 레벨 보강
+
+extractTokens 교체(조사/숫자 컷 + 금지 단일 컷):
+
+export function extractTokens(title: string, banSingles: string[] = []): string[] {
+  const tails = /(은|는|이|가|을|를|에|에서|으로|로|과|와|의|및|도|만|까지|부터)$/;
+  return title.replace(/[^\p{L}\p{N}\s]/gu,' ')
+    .split(/\s+/)
+    .map(w => w.replace(tails,'').trim())
+    .filter(w =>
+      w.length>=2 &&
+      !banSingles.includes(w) &&
+      !/^\d+$/.test(w) &&
+      !(w==="맛집") &&        // 단일 금지
+      !isLocal(w)            // 단일 금지
+    );
+}
+
+
+후보 생성 단계에서부터 **단일 ‘맛집/로컬’**이 제거되어 조합 우선이 자연스럽게 작동.
+
+F. 점검 체크리스트 (적용 직후)
+
+ Gate에서 개별 로그가 cause=fallback|ad_depth=0|ctr=0처럼 남는지
+
+ 최종 티어: #1은 단일(금지 제외), #2~#K는 2어 조합만 나오는지
+
+ 모바일 랭크 체크 중간에 sentinel에서 중단되는지(속도 개선)
+
+ blogId 로그가 초반/샘플만 찍히는지
+
+ 같은 키워드에서 400/413 재시도가 최대 5회에서 끊기는지

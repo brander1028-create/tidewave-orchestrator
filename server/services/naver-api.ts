@@ -106,6 +106,16 @@ export class NaverApiService {
     }
   }
 
+  // Blog ID extraction logging rate limiter
+  private static blogIdLogCount = 0;
+  
+  private logBlogIdOnce(id: string, url: string) {
+    NaverApiService.blogIdLogCount++;
+    if (NaverApiService.blogIdLogCount <= 10 || NaverApiService.blogIdLogCount % 20 === 0) {
+      console.log(`📝 Extracted blogId: ${id} from ${url}`);
+    }
+  }
+
   // Extract blog ID from Naver blog URL (supports multiple formats)
   private extractBlogId(url: string): string | null {
     try {
@@ -125,7 +135,7 @@ export class NaverApiService {
       if (urlObj.pathname.includes('PostView.naver') || urlObj.pathname.includes('PostList.naver')) {
         const blogId = urlObj.searchParams.get('blogId');
         if (blogId) {
-          console.log(`📝 Extracted blogId from query: ${blogId} from ${url}`);
+          this.logBlogIdOnce(blogId, url);
           return blogId;
         }
       }
@@ -134,7 +144,7 @@ export class NaverApiService {
       const pathParts = urlObj.pathname.split('/').filter(Boolean);
       if (pathParts.length > 0 && pathParts[0] !== 'PostView.naver' && pathParts[0] !== 'PostList.naver') {
         const blogId = pathParts[0];
-        console.log(`📝 Extracted blogId from path: ${blogId} from ${url}`);
+        this.logBlogIdOnce(blogId, url);
         return blogId;
       }
       

@@ -8,6 +8,7 @@ import { serpScraper } from './serp-scraper';
 import { db } from '../db';
 import { postTierChecks, managedKeywords, serpJobs } from '../../shared/schema';
 import { nrm, expandBigrams } from '../utils/normalization';
+import { nrm as policyNrm, isBigram, isBannedSingle } from '../title/policy';
 import { inArray, eq } from 'drizzle-orm';
 
 // Import Phase2 engines (재사용)
@@ -441,8 +442,35 @@ export async function processPostTitleVFinal(
   
   console.log(`🎯 [최종 보정] ${finalCandidates.length}/${eligibleCandidates.length} candidates passed final filter`);
 
-  // Step 9: 티어 할당
-  const rawTiers = engine.assignTiers(finalCandidates, cfg);
+  // Step 8.7: ★ 티어 배치 규칙 강제 (1티어=단일, 2~K티어=2어 조합만)
+  
+  // 1) 단일/조합 분리
+  const singles = finalCandidates.filter(c => !isBigram(c.text));
+  const bigramsOnly = finalCandidates.filter(c => isBigram(c.text));
+  
+  // 2) 1티어: 단일 중에서 고름 (단, 단일 금지어 제외)
+  const singlePool = singles.filter(c => !isBannedSingle(c.text));
+  const tier1 = singlePool.sort((a, b) => (b.totalScore ?? 0) - (a.totalScore ?? 0))[0];
+  
+  // 3) 2~K티어: 전부 2어 조합에서만 고름
+  const need = Math.max(0, K - 1);
+  const tier2toK = bigramsOnly
+    .filter((c, i, arr) => arr.findIndex(x => policyNrm(x.text) === policyNrm(c.text)) === i)  // 중복 제거
+    .sort((a, b) => (b.totalScore ?? 0) - (a.totalScore ?? 0))
+    .slice(0, need);
+  
+  // 4) 최종 shortlist (1티어 없으면 조합 상위 1개로 대체)
+  let shortlist: typeof finalCandidates = [];
+  if (tier1) {
+    shortlist = [tier1, ...tier2toK];
+  } else {
+    shortlist = bigramsOnly.slice(0, K);   // 그래도 단일이 없으면 전부 조합
+  }
+  
+  console.log(`📊 [티어 정책] Singles: ${singles.length}, Bigrams: ${bigramsOnly.length}, Tier1: ${tier1 ? '1' : '0'}, Tier2-${K}: ${tier2toK.length}`);
+
+  // Step 9: 티어 할당 (shortlist 사용)
+  const rawTiers = engine.assignTiers(shortlist, cfg);
   
   // ★ Filter out empty/invalid tiers to fix empty tier issue
   const validTiers = filterValidTiers(rawTiers);
