@@ -3,10 +3,16 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { toast } from "@/hooks/use-toast";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import { 
   ArrowUpDown,
   Signal,
@@ -20,10 +26,15 @@ import {
   Search,
   Settings,
   Loader2,
-  Database
+  Database,
+  Plus,
+  FolderPlus,
+  Trash2
 } from "lucide-react";
 import { manualBlogApi, rankApi } from "@/lib/api";
 import { Link } from "wouter";
+import type { InsertBlogTarget } from "@shared/schema";
+import { insertBlogTargetSchema } from "@shared/schema";
 
 // Types
 interface BlogKeywordData {
@@ -41,7 +52,6 @@ interface BlogKeywordData {
   postDate: string;
   lastCheck: string;
   brand: string;
-  group: string;
 }
 
 interface Task {
@@ -140,7 +150,6 @@ const generateMockData = (targets: any[]): BlogKeywordData[] => {
     const changes = [3, -7, 1, -12, 5, -2, 8];
     const maintainDays = [14, 7, 28, 3, 21, 12, 35];
     const brands = ["브랜드A", "브랜드B", "브랜드A", "브랜드C", "브랜드A", "브랜드B", "브랜드A"];
-    const groups = ["그룹1", "그룹2", "그룹1", "그룹3", "그룹2", "그룹1", "그룹3"];
     
     const keyword = target.keywords?.[0] || target.queries?.[0] || target.query || target.title || `키워드 ${index + 1}`;
     
@@ -170,7 +179,6 @@ const generateMockData = (targets: any[]): BlogKeywordData[] => {
       postDate: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toLocaleDateString('ko-KR'),
       lastCheck: lastCheckTime.toISOString(), // ISO 문자열로 저장
       brand: brands[idNum % 7] || "브랜드A",
-      group: groups[idNum % 7] || "그룹1"
     };
   });
 };
@@ -180,11 +188,13 @@ export default function BlogRank() {
   const [selectedBrand, setSelectedBrand] = React.useState("전체");
   const [viewMode, setViewMode] = React.useState<"all" | "on" | "off">("all");
   const [sortBy, setSortBy] = React.useState("recent");
-  const [groups, setGroups] = React.useState(["그룹1", "그룹2", "그룹3"]);
   
   // 설정 섹션 확장/축소 상태
   const [isSettingsSectionExpanded, setIsSettingsSectionExpanded] = React.useState(false);
   const [keywordSearchTerm, setKeywordSearchTerm] = React.useState("");
+  
+  // 모달 상태
+  const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
   
   // 배치 실행 상태
   const [isRunning, setIsRunning] = React.useState(false);
@@ -193,6 +203,53 @@ export default function BlogRank() {
   const [abortController, setAbortController] = React.useState<AbortController | null>(null);
 
   const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  // 폼 설정
+  const blogForm = useForm<InsertBlogTarget>({
+    resolver: zodResolver(insertBlogTargetSchema),
+    defaultValues: {
+      title: "",
+      url: "",
+      queries: [],
+      owner: "system",
+    },
+  });
+
+  const onSubmitBlog = (data: InsertBlogTarget) => {
+    addBlogMutation.mutate(data);
+  };
+
+  // 키워드 추가 뮤테이션
+  const addBlogMutation = useMutation({
+    mutationFn: async (data: InsertBlogTarget) => {
+      const response = await fetch('/api/targets/blog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
+      setIsAddBlogOpen(false);
+      blogForm.reset();
+      toast({
+        title: "키워드 추가 완료",
+        description: "새 키워드가 성공적으로 추가되었습니다.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "키워드 추가 실패",
+        description: `오류: ${error.message}`,
+        variant: "destructive",
+      });
+    },
+  });
 
   // API calls
   const { data: trackedTargets = [], isLoading } = useQuery<any[]>({
@@ -215,8 +272,7 @@ export default function BlogRank() {
     // 키워드 검색 필터
     if (keywordSearchTerm.trim()) {
       filtered = filtered.filter(item => 
-        item.keyword.toLowerCase().includes(keywordSearchTerm.toLowerCase()) ||
-        item.group.toLowerCase().includes(keywordSearchTerm.toLowerCase())
+        item.keyword.toLowerCase().includes(keywordSearchTerm.toLowerCase())
       );
     }
     
@@ -409,7 +465,77 @@ export default function BlogRank() {
     });
   };
 
+  const toggleKeywordActive = async (id: string) => {
+    try {
+      // 낙관적 업데이트: 즉시 UI 반영
+      queryClient.setQueryData(['/api/targets/blog'], (oldData: any[] | undefined) => {
+        if (!oldData) return oldData;
+        return oldData.map(target => 
+          target.id === id ? { ...target, active: !target.active } : target
+        );
+      });
+      
+      const item = trackedTargets.find(target => target.id === id);
+      if (!item) {
+        throw new Error('키워드를 찾을 수 없습니다.');
+      }
+      
+      const response = await fetch(`/api/targets/blog/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ active: !item.active }),
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      // 성공 시 쿼리 캐시 무효화
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
+      
+      toast({
+        title: "상태 변경 완료",
+        description: `키워드가 ${!item.active ? '활성화' : '비활성화'}되었습니다.`,
+      });
+    } catch (error: any) {
+      // 오류 시 쿼리 캐시 무효화하여 실제 상태로 복원
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
+      
+      toast({
+        title: "상태 변경 실패",
+        description: `오류: ${error.message}`,
+        variant: "destructive",
+      });
+    }
+  };
 
+  const handleDeleteTarget = async (id: string) => {
+    try {
+      const response = await fetch(`/api/targets/blog/${id}`, {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      // 성공 시 쿼리 캐시 무효화
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
+      
+      toast({
+        title: "키워드 삭제 완료",
+        description: "키워드가 성공적으로 삭제되었습니다.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "키워드 삭제 실패",
+        description: `오류: ${error.message}`,
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -456,6 +582,16 @@ export default function BlogRank() {
                 <Settings className="h-4 w-4" />
               </Button>
               
+              {/* 키워드 추가 */}
+              <Button
+                onClick={() => setIsAddBlogOpen(true)}
+                size="sm"
+                data-testid="button-add-keyword"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                키워드 추가
+              </Button>
+              
             </div>
           </div>
         </div>
@@ -474,31 +610,36 @@ export default function BlogRank() {
                   <h3 className="font-semibold text-foreground">빠른 액션</h3>
                 </div>
                 <div className="space-y-3">
-                  {/* 순위 관리 링크 */}
-                  <Link to="/database">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      data-testid="button-manage-ranks"
-                    >
-                      <TrendingUp className="h-4 w-4 mr-2" />
-                      순위 데이터 관리
-                    </Button>
-                  </Link>
+                  {/* 전체 순위 업데이트 */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    data-testid="button-update-all-ranks"
+                  >
+                    <TrendingUp className="h-4 w-4 mr-2" />
+                    전체 순위 업데이트
+                  </Button>
                   
-                  {/* 데이터베이스 관리 링크 */}
-                  <Link to="/database">
+                  {/* 일괄 상태 관리 */}
+                  <div className="flex gap-2">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="flex-1"
+                      data-testid="button-activate-all"
+                    >
+                      모두 활성화
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
-                      className="w-full"
-                      data-testid="button-manage-keywords"
+                      className="flex-1"
+                      data-testid="button-deactivate-all"
                     >
-                      <Database className="h-4 w-4 mr-2" />
-                      키워드 상태 관리
+                      모두 비활성화
                     </Button>
-                  </Link>
+                  </div>
                 </div>
               </div>
 
@@ -511,9 +652,7 @@ export default function BlogRank() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <Label className="text-sm">자동 체크</Label>
-                    <Badge variant="default" data-testid="status-auto-check">
-                      활성화
-                    </Badge>
+                    <Switch defaultChecked data-testid="switch-auto-check" />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-sm">체크 간격</Label>
@@ -693,17 +832,14 @@ export default function BlogRank() {
                 </div>
               </div>
             ) : (
-              <Link to="/database">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={trackedTargets.length === 0}
-                  data-testid="button-manage-checks"
-                >
-                  <Database className="h-4 w-4 mr-2" />
-                  체크 관리
-                </Button>
-              </Link>
+              <Button
+                onClick={runAllChecks}
+                size="sm"
+                disabled={trackedTargets.length === 0}
+                data-testid="button-start-all-checks"
+              >
+                전체 체크 시작
+              </Button>
             )}
           </div>
         </div>
@@ -739,20 +875,17 @@ export default function BlogRank() {
               >
                 {/* ON/OFF */}
                 <div className="col-span-1 flex items-center">
-                  <Badge 
-                    variant={item.active ? "default" : "secondary"}
-                    data-testid={`status-${item.id}`}
-                  >
-                    {item.active ? "활성" : "비활성"}
-                  </Badge>
+                  <Switch
+                    checked={item.active}
+                    onCheckedChange={() => toggleKeywordActive(item.id)}
+                    className="data-[state=checked]:bg-primary"
+                    data-testid={`switch-${item.id}`}
+                  />
                 </div>
 
                 {/* 키워드 */}
                 <div className="col-span-1">
                   <div className="font-medium text-foreground">{item.keyword}</div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {item.group}
-                  </div>
                 </div>
 
                 {/* 브랜드 */}
@@ -836,10 +969,11 @@ export default function BlogRank() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0 text-muted-foreground hover:text-blue-600"
-                    data-testid={`button-view-analytics-${item.id}`}
+                    onClick={() => handleDeleteTarget(item.id)}
+                    className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                    data-testid={`button-remove-${item.id}`}
                   >
-                    <TrendingUp className="h-4 w-4" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
