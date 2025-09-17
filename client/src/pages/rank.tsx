@@ -65,17 +65,14 @@ interface RankingData {
   active: boolean;
 }
 
-// Form schema for tracked target
-const addTargetSchema = z.object({
-  query: z.string().min(1, "키워드를 입력해주세요"),
+// Form schema for keyword addition
+const addKeywordSchema = z.object({
+  keyword: z.string().min(1, "키워드를 입력해주세요"),
   url: z.string().url("올바른 URL을 입력해주세요"),
-  windowMin: z.number().min(1).default(1),
-  windowMax: z.number().min(1).default(10),
-  kind: z.enum(["blog", "shop"]).default("blog"),
-  owner: z.string().default("admin"),
+  notes: z.string().optional(),
 });
 
-type AddTargetForm = z.infer<typeof addTargetSchema>;
+type AddKeywordForm = z.infer<typeof addKeywordSchema>;
 
 // Format functions
 const formatNumber = (num: number): string => {
@@ -109,29 +106,26 @@ export default function Rank() {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
   
-  // Form for adding new targets
-  const form = useForm<AddTargetForm>({
-    resolver: zodResolver(addTargetSchema),
+  // Form for adding new keywords
+  const form = useForm<AddKeywordForm>({
+    resolver: zodResolver(addKeywordSchema),
     defaultValues: {
-      query: "",
+      keyword: "",
       url: "",
-      windowMin: 1,
-      windowMax: 10,
-      kind: selectedTab as "blog" | "shop",
-      owner: "admin",
+      notes: "",
     },
   });
   
-  // Add tracked target mutation  
-  const addTargetMutation = useMutation({
-    mutationFn: async (data: AddTargetForm) => {
+  // Add keyword mutation  
+  const addKeywordMutation = useMutation({
+    mutationFn: async (data: AddKeywordForm) => {
       return await targetsApi.create({
-        query: data.query,
+        query: data.keyword,
         url: data.url,
-        windowMin: data.windowMin,
-        windowMax: data.windowMax,
-        kind: data.kind,
-        owner: data.owner,
+        windowMin: 1, // 첫 페이지 시작
+        windowMax: 10, // 첫 페이지 끝
+        kind: selectedTab as "blog" | "shop",
+        owner: "admin",
         enabled: true,
       });
     },
@@ -259,8 +253,8 @@ export default function Rank() {
   }, [currentRankingData, keywordSearchTerm, selectedBrand, viewMode, sortBy]);
 
   // Handle form submission
-  const onSubmit = (data: AddTargetForm) => {
-    addTargetMutation.mutate(data);
+  const onSubmit = (data: AddKeywordForm) => {
+    addKeywordMutation.mutate(data);
   };
   
   // Handle target deletion
@@ -342,7 +336,7 @@ export default function Rank() {
       setProgress({ done: 0, total: plan.tasks.length, text: `${selectedTab === 'blog' ? '블로그' : '쇼핑'} 순위 체크를 시작합니다...` });
       
       // Convert plan tasks to scraping format
-      const scrapingTargets = plan.tasks.map(task => ({
+      const scrapingTargets = plan.tasks.map((task: { target_id: string; query: string; nickname: string }) => ({
         targetId: task.target_id,
         query: task.query,
         kind: selectedTab as 'blog' | 'shop',
@@ -753,7 +747,7 @@ export default function Rank() {
         </div>
       </div>
 
-      {/* Add Tracked Target Dialog */}
+      {/* Add Keyword Dialog */}
       <Dialog open={isAddBlogOpen} onOpenChange={setIsAddBlogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -763,7 +757,7 @@ export default function Rank() {
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               <FormField
                 control={form.control}
-                name="query"
+                name="keyword"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>키워드</FormLabel>
@@ -784,7 +778,7 @@ export default function Rank() {
                 name="url"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>대상 URL</FormLabel>
+                    <FormLabel>URL</FormLabel>
                     <FormControl>
                       <Input 
                         placeholder="https://blog.naver.com/..." 
@@ -799,17 +793,15 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="windowMin"
+                name="notes"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>최소 순위</FormLabel>
+                    <FormLabel>특이사항 (선택)</FormLabel>
                     <FormControl>
                       <Input 
-                        type="number" 
-                        placeholder="1" 
+                        placeholder="참고 사항을 입력하세요" 
                         {...field}
-                        onChange={(e) => field.onChange(parseInt(e.target.value) || 1)}
-                        data-testid="input-window-min"
+                        data-testid="input-notes"
                       />
                     </FormControl>
                     <FormMessage />
@@ -817,25 +809,6 @@ export default function Rank() {
                 )}
               />
               
-              <FormField
-                control={form.control}
-                name="windowMax"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>최대 순위</FormLabel>
-                    <FormControl>
-                      <Input 
-                        type="number" 
-                        placeholder="10" 
-                        {...field}
-                        onChange={(e) => field.onChange(parseInt(e.target.value) || 10)}
-                        data-testid="input-window-max"
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
               
               
               <div className="flex gap-2 pt-4">
@@ -851,10 +824,10 @@ export default function Rank() {
                 <Button 
                   type="submit" 
                   className="flex-1"
-                  disabled={addTargetMutation.isPending}
+                  disabled={addKeywordMutation.isPending}
                   data-testid="button-submit-target"
                 >
-                  {addTargetMutation.isPending ? "추가 중..." : "추가"}
+                  {addKeywordMutation.isPending ? "추가 중..." : "추가"}
                 </Button>
               </div>
             </form>
