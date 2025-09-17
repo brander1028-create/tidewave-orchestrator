@@ -20,9 +20,9 @@ export interface VFinalPipelineResult {
     volume: number | null;
     rank: number | null;
     score: number;
-    adScore?: number;
-    eligible?: boolean;
-    skipReason?: string;
+    adScore: number;
+    eligible: boolean;
+    skipReason: string | null;
   }>;
   stats: {
     candidatesGenerated: number;
@@ -350,7 +350,7 @@ export async function processPostTitleVFinal(
     }
   }
   
-  // 결과 준비
+  // 결과 준비 (표준 응답 포맷: {text, volume, rank, score, adScore, eligible, skipReason})
   const result: VFinalPipelineResult = {
     tiers: tiers.map(tier => ({
       tier: tier.tier,
@@ -358,9 +358,9 @@ export async function processPostTitleVFinal(
       volume: tier.candidate.volume ?? null,
       rank: tier.candidate.rank ?? null,
       score: tier.score,
-      adScore: tier.candidate.adScore,
-      eligible: tier.candidate.eligible,
-      skipReason: tier.candidate.skipReason,
+      adScore: tier.candidate.adScore ?? 0, // Required field
+      eligible: tier.candidate.eligible ?? true, // Required field
+      skipReason: tier.candidate.skipReason ?? null, // Nullable but required field
     })),
     stats,
   };
