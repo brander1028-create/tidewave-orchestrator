@@ -78,7 +78,7 @@ const MAX_BIGRAMS_PER_BASE = 12;  // base 조합 상한
  * extractTitleTokens - 제목에서 토큰 추출 (첨부 파일 개선안 적용)
  * 조사 제거, banSingles 제외, 로컬/맛집 단독 금지, 제목 토큰 상한 적용
  */
-function extractTitleTokens(title: string, cfg: any): string[] {
+export function extractTitleTokens(title: string, cfg: any): string[] {
   const maxTitleTokens = cfg.phase2?.maxTitleTokens || 6;
   const banSingles = new Set(cfg.phase2?.banSingles || ["맛집","정리","방법","추천","후기","여자","바르","및","과","와","의","이제","중인데","때인가"]);
   

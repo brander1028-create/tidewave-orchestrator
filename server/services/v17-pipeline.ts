@@ -9,10 +9,11 @@ import { db } from '../db';
 import { postTierChecks } from '../../shared/schema';
 import { autoEnrichFromTitle } from './auto-keyword-enrichment';
 
-// Import Phase2 engines
-// Phase2 engines
-import { engineRegistry } from '../phase2';
+// Import Phase2 types only (engines replaced with deterministic logic)
 import { Candidate, Tier } from '../phase2/types';
+
+// Import deterministic title token extraction from vFinal
+import { extractTitleTokens } from './vfinal-pipeline';
 
 /**
  * Decide whether to activate canary configuration based on ratio and keywords
@@ -126,24 +127,33 @@ export async function processPostTitleV17(
     }
   }
   
-  console.log(`⚙️ [v17 Pipeline] Config loaded - Engine: ${cfg.phase2.engine}, Gate: ${cfg.features.scoreFirstGate ? 'ON' : 'OFF'}${isCanaryTraffic ? ' [CANARY]' : ''}`);
+  console.log(`⚙️ [v17 Pipeline] Config loaded - Deterministic Mode, Gate: ${cfg.features.scoreFirstGate ? 'ON' : 'OFF'}${isCanaryTraffic ? ' [CANARY]' : ''}`);
   
-  // Step 2: Phase2 엔진으로 후보 생성
-  const engine = engineRegistry.get(cfg.phase2.engine);
+  // Step 2: ★ 결정론적 토큰 추출 (키워드 폭증 방지)
+  console.log(`🎯 [v17 Deterministic] Starting title token extraction...`);
   
-  if (!engine) {
-    throw new Error(`Unknown Phase2 engine: ${cfg.phase2.engine}`);
+  const toks = extractTitleTokens(title, cfg);
+  console.log(`📝 [v17] Extracted ${toks.length} tokens: ${toks.slice(0, 5).join(', ')}...`);
+  
+  if (toks.length === 0) {
+    console.log(`⚠️ [v17] No eligible tokens after filtering`);
+    return {
+      tiers: [],
+      stats: { candidatesGenerated: 0, preEnriched: 0, gateFiltered: 0, tiersAutoFilled: 0 }
+    };
   }
   
-  const ctx = { 
-    title, 
-    blogId,
-    postId: postId.toString(),
-    inputKeyword,
-    jobId 
-  };
-  const candidates = engine.generateCandidates(ctx, cfg);
-  console.log(`🔤 [v17 Pipeline] Generated ${candidates.length} candidates using ${cfg.phase2.engine} engine`);
+  // Convert tokens to candidates (deterministic, max 4 candidates)
+  const candidates: Candidate[] = toks.slice(0, 4).map(tok => ({
+    text: tok,
+    frequency: 1,
+    position: 0,
+    length: tok.length,
+    compound: false,
+    volume: 0
+  }));
+  
+  console.log(`🔤 [v17 Pipeline] Generated ${candidates.length} deterministic candidates (max 4 to prevent explosion)`);
   
   const stats = {
     candidatesGenerated: candidates.length,
@@ -228,12 +238,31 @@ export async function processPostTitleV17(
     console.log(`✅ [추가 키워드 발굴] 모든 키워드가 이미 DB에 있습니다`);
   }
   
-  // Step 4: Score-First Gate + Scoring
-  const enrichedCandidates = await engine.enrichAndScore(candidates, cfg);
+  // Step 4: ★ 결정론적 Gate + Scoring (Phase2 엔진 대신)
+  console.log(`🚫 [v17 Deterministic] Applying deterministic gate and scoring...`);
+  
+  // Simple scoring: volume-based with minimal adScore
+  const enrichedCandidates: Candidate[] = candidates.map(candidate => {
+    const vol = candidate.volume || 0;
+    const volScore = vol > 0 ? Math.log10(vol) * 25 : 0;
+    const adScore = 0; // No adScore in v17 deterministic mode
+    const totalScore = volScore;
+    
+    // Simple gate: only candidates with volume > 0 pass
+    const eligible = vol > 0;
+    
+    return {
+      ...candidate,
+      totalScore,
+      adScore,
+      eligible,
+      skipReason: eligible ? undefined : 'No volume data'
+    };
+  });
   
   // Count gate filtering
-  stats.gateFiltered = enrichedCandidates.filter(c => !c.eligible).length;
-  console.log(`🚫 [v17 Pipeline] Gate filtered ${stats.gateFiltered} candidates`);
+  stats.gateFiltered = enrichedCandidates.filter((c: Candidate) => !c.eligible).length;
+  console.log(`🚫 [v17 Pipeline] Gate filtered ${stats.gateFiltered} candidates (deterministic mode)`);
   
   // Step 5: Ranking checks
   console.log(`🔍 [v17 Pipeline] Checking SERP rankings for ${enrichedCandidates.length} candidates`);
@@ -258,20 +287,39 @@ export async function processPostTitleV17(
     });
   }
   
-  // Step 6: Tier assignment + Auto-fill
-  const tiers = engine.assignTiers(rankedCandidates, cfg);
+  // Step 6: ★ 결정론적 티어 할당 (Phase2 엔진 대신)
+  console.log(`🎯 [v17 Deterministic] Assigning tiers deterministically...`);
   
-  // Step 7: Auto-fill if enabled and needed  
+  // Filter only eligible candidates and sort by totalScore
+  const eligibleCandidates = rankedCandidates.filter(c => c.eligible);
+  const sortedCandidates = eligibleCandidates.sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+  
+  // Create deterministic tiers (max 4 to prevent explosion)
+  const maxTiers = Math.min(cfg.phase2?.tiersPerPost || 4, 4);
+  const tiers: Tier[] = sortedCandidates.slice(0, maxTiers).map((candidate, index) => ({
+    tier: index + 1,
+    candidate: candidate,
+    score: candidate.totalScore || 0
+  }));
+  
+  console.log(`🎯 [v17 Deterministic] Created ${tiers.length} deterministic tiers (max 4)`);
+  
+  // Step 7: Auto-fill if enabled and needed (★ 4개 제한 강제)
   let finalTiers = [...tiers];  // ✅ Create copy to avoid mutation
-  if (cfg.features.tierAutoFill && tiers.length < cfg.phase2.tiersPerPost) {
-    console.log(`🔧 [v17 Pipeline] Auto-filling tiers (${tiers.length}/${cfg.phase2.tiersPerPost})`);
+  const MAX_TIERS_HARD_CAP = 4; // ★ 키워드 폭증 방지를 위한 하드 캡
+  const targetTiers = Math.min(cfg.phase2.tiersPerPost || 4, MAX_TIERS_HARD_CAP);
+  
+  if (cfg.features.tierAutoFill && tiers.length < targetTiers) {
+    console.log(`🔧 [v17 Pipeline] Auto-filling tiers (${tiers.length}/${targetTiers}, hard cap: ${MAX_TIERS_HARD_CAP})`);
     
-    // Simple auto-fill: add remaining candidates as additional tiers
-    const usedTexts = new Set(tiers.map(t => t.candidate?.text).filter(Boolean));
-    const remainingCandidates = rankedCandidates.filter(c => !usedTexts.has(c.text));
+    // Simple auto-fill: add remaining ELIGIBLE candidates only (★ Gate 정책 준수)
+    const usedTexts = new Set(tiers.map((t: Tier) => t.candidate?.text).filter(Boolean));
+    const remainingCandidates = rankedCandidates.filter(c => 
+      !usedTexts.has(c.text) && c.eligible // ★ 적격 후보만 사용
+    );
     
-    // Fill remaining slots
-    while (finalTiers.length < cfg.phase2.tiersPerPost && remainingCandidates.length > 0) {
+    // Fill remaining slots (★ 하드 캡 준수)
+    while (finalTiers.length < targetTiers && remainingCandidates.length > 0) {
       const candidate = remainingCandidates.shift()!;
       finalTiers.push({
         tier: finalTiers.length + 1,
