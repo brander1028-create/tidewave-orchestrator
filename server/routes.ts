@@ -1331,8 +1331,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     console.log(`[BatchRankCheck:${requestId}] Starting batch rank check request`);
     
     try {
+      // v6 Security: Owner verification required
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ 
+          message: "권한이 없습니다 - x-role 헤더가 필요합니다",
+          requestId
+        });
+      }
+
       // Enhanced Zod validation with detailed logging
-      console.log(`[BatchRankCheck:${requestId}] Validating request body:`, JSON.stringify(req.body, null, 2));
+      console.log(`[BatchRankCheck:${requestId}] Owner: ${owner}, Validating request body:`, JSON.stringify(req.body, null, 2));
       const validation = batchScrapingSchema.safeParse(req.body);
       
       if (!validation.success) {
@@ -1345,7 +1354,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const { targets } = validation.data;
-      console.log(`[BatchRankCheck:${requestId}] Processing ${targets.length} targets`);
+      console.log(`[BatchRankCheck:${requestId}] Processing ${targets.length} targets for owner: ${owner}`);
 
       // Use blog scraper for blog targets, scraping service for shopping
       const blogTargets: any[] = [];
@@ -1379,32 +1388,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
 
             if (result.success && result.data) {
-              // Save to database with enhanced error handling
+              // Save to database with v6 insertRankSnapshot method
               try {
-                const rankData = {
+                const rankSnapshotData = {
                   targetId: targetConfig.targetId,
-                  kind: targetConfig.kind,
+                  kind: targetConfig.kind as 'blog' | 'shop',
                   query: targetConfig.query,
+                  rank: result.data.rank || null,
+                  page: result.data.page || null,
+                  position: result.data.position || null,
                   sort: targetConfig.sort || null,
-                  device: targetConfig.device,
-                  rank: result.data.rank,
-                  page: result.data.page,
-                  position: result.data.position,
-                  source: 'blog_scraper',
+                  device: targetConfig.device as 'pc' | 'mobile',
                   metadata: {
                     title: result.data.title,
                     url: result.data.url,
                     snippet: result.data.snippet,
                     date: result.data.date,
+                    source: 'blog_scraper',
                     ...result.data.metadata
                   }
                 };
 
-                await storage.insertRankData(rankData);
-                console.log(`[BatchRankCheck:${requestId}] Successfully saved blog data for target: ${targetConfig.targetId}`);
+                const savedSnapshot = await storage.insertRankSnapshot(owner, rankSnapshotData);
+                console.log(`[BatchRankCheck:${requestId}] Successfully saved blog data for target: ${targetConfig.targetId}, snapshot ID: ${savedSnapshot.id}`);
               } catch (dbError) {
                 console.error(`[BatchRankCheck:${requestId}] Database save failed for target: ${targetConfig.targetId}`, dbError);
-                // Continue processing even if DB save fails
+                // Add error to result for better tracking
+                result.error = `DB save failed: ${dbError instanceof Error ? dbError.message : String(dbError)}`;
               }
             }
             
@@ -1458,23 +1468,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
             
             if (result.success && result.data) {
               try {
-                const rankData = {
+                const rankSnapshotData = {
                   targetId: targetConfig.targetId,
-                  kind: targetConfig.kind,
+                  kind: targetConfig.kind as 'blog' | 'shop',
                   query: targetConfig.query,
-                  sort: targetConfig.sort || null,
-                  device: targetConfig.device,
                   rank: result.data.rank || null,
                   page: result.data.page || null,
                   position: result.data.position || null,
-                  source: 'playwright_scraping',
-                  metadata: result.data.metadata
+                  sort: targetConfig.sort || null,
+                  device: targetConfig.device as 'pc' | 'mobile',
+                  metadata: {
+                    source: 'playwright_scraping',
+                    ...result.data.metadata
+                  }
                 };
 
-                await storage.insertRankData(rankData);
-                console.log(`[BatchRankCheck:${requestId}] Successfully saved shop data for target: ${targetConfig.targetId}`);
+                const savedSnapshot = await storage.insertRankSnapshot(owner, rankSnapshotData);
+                console.log(`[BatchRankCheck:${requestId}] Successfully saved shop data for target: ${targetConfig.targetId}, snapshot ID: ${savedSnapshot.id}`);
               } catch (dbError) {
                 console.error(`[BatchRankCheck:${requestId}] Database save failed for shop target: ${targetConfig.targetId}`, dbError);
+                // Add error to result for better tracking
+                result.error = `DB save failed: ${dbError instanceof Error ? dbError.message : String(dbError)}`;
               }
             }
             
