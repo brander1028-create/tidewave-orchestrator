@@ -562,44 +562,7 @@ export default function BlogRank() {
   };
 
   return (
-    <div className="min-h-screen bg-background relative">
-      {/* 전체 체크 로딩 오버레이 */}
-      {isRunning && (
-        <div className="fixed inset-0 bg-blue-600/20 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div className="bg-card border border-border rounded-xl p-8 shadow-2xl min-w-[400px] max-w-md w-full mx-4">
-            <div className="text-center space-y-6">
-              <div className="flex items-center justify-center">
-                <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
-              </div>
-              
-              <div className="space-y-2">
-                <h3 className="text-lg font-semibold text-foreground">순위 체크 진행중</h3>
-                <p className="text-sm text-muted-foreground">{progress.text}</p>
-                
-                <div className="space-y-2 pt-2">
-                  <Progress 
-                    value={progress.total > 0 ? (progress.done / progress.total) * 100 : 0}
-                    className="w-full h-3"
-                  />
-                  <p className="text-xs text-muted-foreground text-center">
-                    {progress.done} / {progress.total} ({progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%)
-                  </p>
-                </div>
-              </div>
-              
-              <Button
-                variant="outline"
-                onClick={handleCancel}
-                className="w-full"
-                data-testid="button-cancel-overlay"
-              >
-                취소
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-      
+    <div className="min-h-screen bg-background">
       {/* Header */}
       <div className="border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto px-4 py-4">
@@ -860,18 +823,35 @@ export default function BlogRank() {
 
             {/* Batch Controls */}
             {isRunning ? (
-              <div className="flex items-center gap-2">
-                <div className="text-sm text-muted-foreground">
-                  {progress.text} ({progress.done}/{progress.total})
+              <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 min-w-[280px]">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                    <span className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                      순위 체크 중...
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancel}
+                    className="h-7 text-xs"
+                    data-testid="button-cancel-checks"
+                  >
+                    취소
+                  </Button>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCancel}
-                  data-testid="button-cancel-checks"
-                >
-                  취소
-                </Button>
+                
+                <div className="space-y-2">
+                  <Progress 
+                    value={progress.total > 0 ? (progress.done / progress.total) * 100 : 0}
+                    className="w-full h-2"
+                  />
+                  <div className="flex justify-between text-xs text-blue-700 dark:text-blue-300">
+                    <span>{progress.text}</span>
+                    <span>{progress.done}/{progress.total} ({progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%)</span>
+                  </div>
+                </div>
               </div>
             ) : (
               <Button
