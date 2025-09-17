@@ -82,30 +82,34 @@ export const scrapingApi = {
   }
 };
 
-// Rank monitoring API (mock fallback)
+// Rank monitoring API
 export const rankApi = {
-  // Get rank series data for a specific target
-  getSeries: async (targetId: string, range = "30d"): Promise<RankTimeSeries[]> => {
-    const response = await apiRequest("GET", `/api/mock/rank/series?target_id=${targetId}&range=${range}`);
+  // Get current ranking data for all tracked targets
+  getCurrent: async (kind = "blog") => {
+    const response = await apiRequest("GET", `/api/rank/current?kind=${kind}`);
     return response.json();
   },
 
-  // Get rank comparison data for multiple targets
-  getCompare: async (targetIds: string[], range = "30d"): Promise<RankTimeSeries[]> => {
-    const params = targetIds.map(id => `targets[]=${id}`).join('&');
-    const response = await apiRequest("GET", `/api/mock/rank/compare?${params}&range=${range}`);
-    return response.json();
-  },
+  // REMOVED: Mock endpoints commented out for "real DB only" usage
+  // getSeries: async (targetId: string, range = "30d"): Promise<RankTimeSeries[]> => {
+  //   const response = await apiRequest("GET", `/api/mock/rank/series?target_id=${targetId}&range=${range}`);
+  //   return response.json();
+  // },
 
-  // Get events for a target
-  getEvents: async (targetId?: string, range = "30d"): Promise<Event[]> => {
-    const params = new URLSearchParams();
-    if (targetId) params.append('target_id', targetId);
-    params.append('range', range);
-    
-    const response = await apiRequest("GET", `/api/mock/rank/events?${params.toString()}`);
-    return response.json();
-  },
+  // getCompare: async (targetIds: string[], range = "30d"): Promise<RankTimeSeries[]> => {
+  //   const params = targetIds.map(id => `targets[]=${id}`).join('&');
+  //   const response = await apiRequest("GET", `/api/mock/rank/compare?${params}&range=${range}`);
+  //   return response.json();
+  // },
+
+  // getEvents: async (targetId?: string, range = "30d"): Promise<Event[]> => {
+  //   const params = new URLSearchParams();
+  //   if (targetId) params.append('target_id', targetId);
+  //   params.append('range', range);
+  //   
+  //   const response = await apiRequest("GET", `/api/mock/rank/events?${params.toString()}`);
+  //   return response.json();
+  // },
 
   // v7.12.2: Get rank check plan (계획 조회) - 배열 직렬화 수정
   plan: async (params: { 
@@ -170,16 +174,15 @@ export const rankApi = {
     return response.json();
   },
 
-  // Start rank check for specific targets (legacy)
-  startCheck: async (targetIds: string[]) => {
-    return await apiRequest("POST", "/api/mock/rank/check", { targetIds });
-  },
+  // REMOVED: Mock endpoints commented out for "real DB only" usage
+  // startCheck: async (targetIds: string[]) => {
+  //   return await apiRequest("POST", "/api/mock/rank/check", { targetIds });
+  // },
 
-  // Get historical data for insights
-  getHistory: async (targetId: string, period: "7d" | "30d" | "90d" = "30d") => {
-    const response = await apiRequest("GET", `/api/mock/rank/history?target_id=${targetId}&period=${period}`);
-    return response.json();
-  }
+  // getHistory: async (targetId: string, period: "7d" | "30d" | "90d" = "30d") => {
+  //   const response = await apiRequest("GET", `/api/mock/rank/history?target_id=${targetId}&period=${period}`);
+  //   return response.json();
+  // }
 };
 
 // Alerts API

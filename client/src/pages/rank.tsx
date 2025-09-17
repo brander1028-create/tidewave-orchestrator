@@ -75,7 +75,8 @@ const addKeywordSchema = z.object({
 type AddKeywordForm = z.infer<typeof addKeywordSchema>;
 
 // Format functions
-const formatNumber = (num: number): string => {
+const formatNumber = (num: number | null | undefined): string => {
+  if (num === null || num === undefined) return '-';
   return new Intl.NumberFormat('ko-KR').format(num);
 };
 
@@ -85,7 +86,7 @@ const formatChange = (change: number): string => {
 };
 
 export default function Rank() {
-  const [selectedTab, setSelectedTab] = React.useState("blog");
+  const selectedTab = "blog"; // 블로그만 지원
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
   const [isSettingsSectionExpanded, setIsSettingsSectionExpanded] = React.useState(false);
@@ -168,42 +169,15 @@ export default function Rank() {
     },
   });
 
-  // Convert tracked targets to ranking data
-  const convertTargetsToRankingData = (targets: TrackedTarget[]): RankingData[] => {
-    return targets
-      .filter(target => target.kind === selectedTab)
-      .map((target, index) => {
-        // Use stable data based on target ID to avoid re-rendering
-        const idNum = parseInt(target.id?.slice(-1) || '0') || index;
-        const baseRank = [8, 15, 12, 20, 7, 25, 11][idNum % 7] || (idNum % 30) + 1;
-        const baseChange = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
-        const volume = [1200, 850, 2400, 560, 1800, 920, 1500][idNum % 7] || 1000;
-        const score = [85, 72, 91, 68, 88, 74, 82][idNum % 7] || 75;
-        const brands = ["브랜드A", "브랜드B", "브랜드C", "브랜드D"];
-        
-        return {
-          id: target.id || (index + 1).toString(),
-          keyword: target.query || `키워드 ${index + 1}`,
-          rank: baseRank,
-          change: baseChange,
-          page: Math.floor((baseRank - 1) / 10) + 1,
-          position: ((baseRank - 1) % 10) + 1,
-          url: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
-          trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
-          status: target.enabled ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
-          lastCheck: "5분 전",
-          exposed: baseRank <= 15, // 15위까지만 노출
-          streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3,
-          volume: volume,
-          score: score,
-          brand: brands[idNum % 4] || "브랜드A",
-          active: target.enabled || false
-        };
-      });
-  };
-
-  // Current ranking data based on tracked targets
-  const currentRankingData = convertTargetsToRankingData(trackedTargets);
+  // Fetch current ranking data from DB
+  const { data: currentRankingData = [], isLoading: rankingLoading } = useQuery<RankingData[]>({
+    queryKey: ['/api/rank/current', selectedTab],
+    queryFn: () => rankApi.getCurrent(selectedTab),
+    staleTime: 2 * 60 * 1000, // 2 minutes
+  });
+  
+  // 추적 중인 타겟 정보만 표시 (순위 데이터는 별도 API에서 가져올 예정)
+  const trackingTargets = trackedTargets.filter(target => target.kind === selectedTab);
 
   // Brands for filtering
   const brands = ["전체", ...Array.from(new Set(currentRankingData.map(item => item.brand)))];
@@ -310,7 +284,13 @@ export default function Rank() {
 
   // Run all checks function
   const runAllChecks = async () => {
-    if (filteredData.length === 0) return;
+    if (trackingTargets.length === 0) {
+      toast({
+        title: "체크할 항목 없음",
+        description: "추적 중인 키워드가 없습니다. 키워드를 먼저 추가해주세요.",
+      });
+      return;
+    }
     
     const controller = new AbortController();
     setAbortController(controller);
@@ -318,8 +298,19 @@ export default function Rank() {
     setProgress({ done: 0, total: 0, text: "순위 체크 계획을 가져오는 중..." });
     
     try {
+      // Get enabled tracking targets
+      const enabledTargets = trackingTargets.filter(target => target.enabled);
+      
+      if (enabledTargets.length === 0) {
+        toast({
+          title: "체크할 항목 없음",
+          description: "활성화된 키워드가 없습니다. 키워드를 활성화해주세요.",
+        });
+        return;
+      }
+      
       // Get plan first
-      const targetIds = filteredData.map(item => item.id);
+      const targetIds = enabledTargets.map(target => target.id);
       const plan = await rankApi.plan({
         kind: selectedTab,
         target_ids: targetIds
@@ -523,14 +514,13 @@ export default function Rank() {
         </div>
       )}
 
-      {/* Tabs */}
+      {/* Tabs - 블로그만 지원 */}
       <div className="container mx-auto px-4 py-2">
-        <Tabs value={selectedTab} onValueChange={setSelectedTab}>
-          <TabsList className="grid w-48 grid-cols-2">
-            <TabsTrigger value="blog" data-testid="tab-blog">블로그</TabsTrigger>
-            <TabsTrigger value="shop" data-testid="tab-shop">쇼핑</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="flex rounded-lg bg-muted p-1 w-48">
+          <button className="flex-1 px-3 py-2 text-sm font-medium rounded-md bg-background text-foreground shadow-sm">
+            블로그 순위
+          </button>
+        </div>
       </div>
 
       {/* Controls */}
@@ -625,7 +615,7 @@ export default function Rank() {
               <Button
                 onClick={runAllChecks}
                 size="sm"
-                disabled={filteredData.length === 0}
+                disabled={trackingTargets.filter(target => target.enabled).length === 0}
                 data-testid="button-start-all-checks"
               >
                 전체 체크 시작
@@ -676,8 +666,14 @@ export default function Rank() {
 
                   {/* 키워드 */}
                   <div className="col-span-2">
-                    <div className="font-medium text-foreground">{item.keyword}</div>
-                    <div className="text-xs text-muted-foreground">{item.brand}</div>
+                    <button
+                      onClick={() => setSelectedRankingDetail(item)}
+                      className="text-left hover:bg-accent hover:text-accent-foreground rounded p-1 transition-colors cursor-pointer"
+                      data-testid={`button-keyword-${item.id}`}
+                    >
+                      <div className="font-medium text-foreground hover:underline">{item.keyword}</div>
+                      <div className="text-xs text-muted-foreground">{item.brand}</div>
+                    </button>
                   </div>
 
                   {/* 조회량 */}
@@ -687,12 +683,12 @@ export default function Rank() {
 
                   {/* 점수 */}
                   <div className="col-span-1">
-                    <div className="text-sm text-muted-foreground">{item.score}</div>
+                    <div className="text-sm text-muted-foreground">{item.score ?? '-'}</div>
                   </div>
 
                   {/* 순위 */}
                   <div className="col-span-1">
-                    <div className="font-bold text-lg text-foreground">{item.rank}</div>
+                    <div className="font-bold text-lg text-foreground">{item.rank ?? '-'}</div>
                   </div>
 
                   {/* 변동 */}
@@ -746,6 +742,142 @@ export default function Rank() {
           </div>
         </div>
       </div>
+
+      {/* Keyword Detail Dialog */}
+      {selectedRankingDetail && (
+        <Dialog open={!!selectedRankingDetail} onOpenChange={() => setSelectedRankingDetail(null)}>
+          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <span>{selectedRankingDetail.keyword}</span>
+                <Badge variant="outline">{selectedRankingDetail.brand}</Badge>
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="space-y-6">
+              {/* Key Metrics */}
+              <div className="grid grid-cols-4 gap-4">
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className="text-2xl font-bold text-foreground">{selectedRankingDetail.rank ?? '-'}</div>
+                  <div className="text-sm text-muted-foreground">현재 순위</div>
+                </div>
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className="text-2xl font-bold text-foreground">{selectedRankingDetail.score ?? '-'}</div>
+                  <div className="text-sm text-muted-foreground">점수</div>
+                </div>
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className="text-2xl font-bold text-foreground">{formatNumber(selectedRankingDetail.volume)}</div>
+                  <div className="text-sm text-muted-foreground">조회량</div>
+                </div>
+                <div className="text-center p-4 bg-muted/50 rounded-lg">
+                  <div className={`text-2xl font-bold ${
+                    selectedRankingDetail.change > 0 ? 'text-red-500' : 
+                    selectedRankingDetail.change < 0 ? 'text-blue-500' : 
+                    'text-muted-foreground'
+                  }`}>
+                    {formatChange(selectedRankingDetail.change)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">변동</div>
+                </div>
+              </div>
+              
+              {/* Trend Chart */}
+              <div className="space-y-2">
+                <h3 className="text-lg font-semibold">10일 트렌드</h3>
+                <div className="h-64 w-full bg-muted/20 rounded-lg p-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={selectedRankingDetail.trend.map((rank, index) => ({
+                      day: `${index + 1}일전`,
+                      rank: rank,
+                    })).reverse()}>
+                      <XAxis dataKey="day" />
+                      <YAxis domain={[1, 100]} reversed />
+                      <Tooltip 
+                        formatter={(value) => [`${value}위`, '순위']}
+                        labelFormatter={(label) => `${label}`}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="rank" 
+                        stroke="hsl(var(--primary))" 
+                        strokeWidth={2}
+                        dot={{ r: 4 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              
+              {/* Additional Info */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <h4 className="font-medium mb-2">기본 정보</h4>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">페이지:</span>
+                      <span>{selectedRankingDetail.page}페이지</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">위치:</span>
+                      <span>{selectedRankingDetail.position}번째</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">연속 유지:</span>
+                      <span>{selectedRankingDetail.streakDays}일</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">마지막 체크:</span>
+                      <span>{selectedRankingDetail.lastCheck}</span>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-medium mb-2">상태</h4>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">활성:</span>
+                      <Badge variant={selectedRankingDetail.active ? "default" : "secondary"}>
+                        {selectedRankingDetail.active ? "ON" : "OFF"}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">노출 상태:</span>
+                      <Badge variant={selectedRankingDetail.exposed ? "default" : "secondary"}>
+                        {selectedRankingDetail.exposed ? "노출" : "미노출"}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">상태:</span>
+                      <Badge variant={
+                        selectedRankingDetail.status === "active" ? "default" :
+                        selectedRankingDetail.status === "warning" ? "secondary" : "destructive"
+                      }>
+                        {selectedRankingDetail.status === "active" ? "양호" :
+                         selectedRankingDetail.status === "warning" ? "주의" : "위험"}
+                      </Badge>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* URL */}
+              <div>
+                <h4 className="font-medium mb-2">URL</h4>
+                <div className="p-3 bg-muted/50 rounded-lg">
+                  <a 
+                    href={selectedRankingDetail.url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline break-all"
+                  >
+                    {selectedRankingDetail.url}
+                  </a>
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Add Keyword Dialog */}
       <Dialog open={isAddBlogOpen} onOpenChange={setIsAddBlogOpen}>

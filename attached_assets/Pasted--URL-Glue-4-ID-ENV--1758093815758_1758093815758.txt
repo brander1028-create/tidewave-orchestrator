@@ -1,0 +1,150 @@
+능은 단순(“키워드+URL → 몇 위?”)하지만, 지금은 ‘글루(Glue)’ 문제 4종(프로바이더/권한/ID/프론트 매핑) + 캡차/ENV 차이 때문에 한데 꼬여서 헤매는 겁니다. 핵심만 풀면 바로 굴러갑니다.
+
+왜 헤매냐 (현 상태 요약)
+
+프로바이더 불일치: 프론트가 구글 경로/스키마를 참조 → 네이버 값이 와도 0/placeholder로 렌더.
+
+권한 헤더 불일치(401): 서버는 x-role=owner|admin 요구, 클라 기본값이 system이라 차단.
+
+ID 불일치(Mock↔DB): 목록은 메모리(Mock) ID(target-1), 플랜은 DB ID를 기대 → “체크할 작업 없음”.
+
+UI 매핑 문제: 응답의 volume/score/rank를 안 읽고 과거 googleVolume·placeholder로 표기.
+(+ 보너스) 캡차/ENV: 모바일 네이버 SERP 스크랩 중 캡차, dev/prod 환경변수 상이.
+
+15분 패치 플랜 (순서 고정, 끝나면 바로 작동)
+1) 권한 헤더 통일 (프론트)
+
+client/src/lib/queryClient.ts 또는 공용 API 헬퍼에 기본 헤더 고정:
+
+export function apiRequest(path: string, opts: RequestInit = {}) {
+  const headers = new Headers(opts.headers || {});
+  if (!headers.has('x-role')) headers.set('x-role', 'admin');      // ✅ 통일
+  if (!headers.has('x-owner')) headers.set('x-owner', 'admin');
+  return fetch(path, { ...opts, headers });
+}
+
+2) 트래킹 소스 “DB 단일화” (서버/프론트 둘 다)
+
+서버 /api/tracked-targets 가 반드시 DB(tracked_targets) 에서만 읽게:
+
+// server/routes.ts (예시)
+r.get('/api/tracked-targets', async (req, res) => {
+  const rows = await db.select().from(tracked_targets).orderBy(desc(tracked_targets.created_at));
+  res.json({ ok: true, items: rows });
+});
+
+
+프론트 rank 페이지는 위 엔드포인트만 사용하고, 표의 ID는 row.id(DB PK) 를 들고 있게.
+
+3) Rank 계획/시작이 같은 ID를 쓰게
+
+클라 → 서버 전송 포맷 통일:
+
+// client/src/features/rank/api.ts
+export async function planRank(targetIds: string[]) {
+  return apiRequest('/api/rank/plan', {
+    method: 'POST',
+    body: JSON.stringify({ targetIds }), headers: { 'Content-Type': 'application/json' }
+  }).then(r => r.json());
+}
+
+export async function startRank(jobId: string) {
+  return apiRequest('/api/rank/start', {
+    method: 'POST',
+    body: JSON.stringify({ jobId }), headers: { 'Content-Type': 'application/json' }
+  }).then(r => r.json());
+}
+
+
+서버는 tracked_targets로만 플랜 생성:
+
+// server/routes.ts
+r.post('/api/rank/plan', async (req, res) => {
+  const { targetIds } = req.body as { targetIds: string[] };
+  const targets = await db.select().from(tracked_targets).where(inArray(tracked_targets.id, targetIds));
+  const job = await createJobAndTasksFromTargets(targets); // tasks.target_id = tracked_targets.id
+  res.json({ ok: true, jobId: job.id, planned: job.taskCount });
+});
+
+4) 네이버 전용 엔드포인트/스키마 고정
+
+서버: /api/serp/naver만 노출(구글 경로는 임시 비활성화), 응답 필수 필드:
+
+type SerpRow = { keyword: string; url: string; rank: number|null; volume: number; score: number; };
+return res.json({ ok: true, results: SerpRow[] });
+
+
+프론트: 표시는 row.volume / row.rank / row.score만 사용(placeholder 제거).
+
+5) “시작 버튼 눌러도 0건” 해결 (UI)
+
+선택된 행의 DB PK만 모아 planRank(selectedIds) 호출하도록 수정.
+
+convertTargetsToRankingData 같은 유틸에서 문자열 ID 변환/가공 금지(그대로 전달).
+
+6) DB 시드 & 스모크 테스트
+
+SQL(예시):
+
+INSERT INTO tracked_targets (id, owner, kind, query, url, window_min, window_max, enabled, created_at)
+VALUES
+  ('t1','admin','blog','홍삼스틱','https://blog.naver.com/test1',1,15,true,datetime('now')),
+  ('t2','admin','blog','건강보조식품','https://blog.naver.com/test2',1,15,true,datetime('now'));
+
+
+호출 시퀀스:
+
+GET /api/tracked-targets → items[0].id, items[1].id 확인
+
+POST /api/rank/plan body: {"targetIds":["t1","t2"]} → jobId 획득
+
+POST /api/rank/start body: {"jobId":"..."}
+
+GET /api/rank/result?jobId=... → rank/volume/score 확인, DB rank_results 테이블 적재 확인
+
+7) 점수/조회량 표시 0 고정값 제거
+
+컴포넌트에서 undefined를 0으로 포맷하던 부분 삭제:
+
+<span>조회량 {r.volume != null ? r.volume.toLocaleString() : '-'}</span>
+<span>점수 {Number.isFinite(r.score) ? r.score.toFixed(2) : '-'}</span>
+
+8) DEV 편의(권한 우회 & 프로바이더 고정)
+
+서버 미들웨어(개발 전용):
+
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, _res, next) => {
+    if (!req.headers['x-role']) req.headers['x-role'] = 'admin'; // dev 우회
+    next();
+  });
+}
+
+
+환경변수: VITE_SERP_PROVIDER=naver, 서버도 SEARCH_PROVIDER=naver 확인.
+
+“키워드+URL → 몇 위?”를 진짜로 하는 최소 랭커(의사코드)
+async function naverMobileRank(keyword: string, targetUrl: string, min=1, max=15) {
+  const serp = await fetchMobileNaverSERP(keyword);  // 모바일 결과 1페이지만
+  // serp = [{type:'blog', title, url, blogId, postId}, ...]
+  const idx = serp.findIndex(item => normalize(item.url) === normalize(targetUrl));
+  const rank = (idx >= 0 ? (idx + 1) : null);
+  const volume = await getSearchAdVolume(keyword);   // 캐시 우선
+  const score = calculateOverallScore({ rank, volume, compIdx: await getCompetitiveIndex(keyword) });
+  return { keyword, url: targetUrl, rank, volume, score };
+}
+
+
+주의: 네이버는 빈번한 요청에 캡차가 뜹니다. 개발 중엔 ① 요청 간 딜레이(랜덤 1.2~2.5s), ② 유저에이전트/뷰포트 고정, ③ 실패 시 재시도·백오프, ④ 가끔 수동 캡차 통과 후 쿠키 재사용을 권장.
+
+지금 당장 확인(2분 체크)
+
+ 네트워크 탭 요청 URL이 /api/serp/naver & /api/tracked-targets 인가?
+
+ POST /api/rank/plan의 targetIds가 DB PK 인가?
+
+ 응답 JSON에 volume/rank/score 실제 값이 보이고, UI가 그 필드를 바로 쓰나?
+
+ 401 사라졌는가(기본 x-role=admin 적용)?
+
+원하시면 요청/응답 JSON 캡처 보여주세요. 어디에서 값이 0으로 바뀌는지(엔드포인트/헤더/필드/ID) 정확히 짚어서 해당 파일의 정확한 라인을 제시해 드릴게요.

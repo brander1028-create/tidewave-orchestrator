@@ -708,6 +708,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get current ranking data for all tracked targets
+  app.get("/api/rank/current", async (req, res) => {
+    try {
+      const owner = req.headers['x-owner'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const { kind = "blog" } = req.query;
+      
+      // Get tracked targets for the owner
+      const trackedTargets = await storage.getTrackedTargets(owner);
+      const filteredTargets = trackedTargets.filter(target => target.kind === kind);
+      
+      const currentRankingData = [];
+      
+      // For each target, get the latest ranking data
+      for (const target of filteredTargets) {
+        try {
+          // Get latest rank data from snapshots (sorted by timestamp DESC)
+          const snapshots = await storage.getRankSnapshots(owner, target.id, kind as string, "7d");
+          
+          // Get the latest snapshot - snapshots should be sorted by timestamp DESC
+          const latestSnapshot = snapshots[0]; // Latest snapshot
+          
+          if (latestSnapshot) {
+            // Convert to RankingData format expected by the frontend
+            const rankingItem = {
+              id: target.id,
+              keyword: target.query,
+              rank: latestSnapshot.rank,
+              change: 0, // TODO: Calculate change from previous rank
+              page: latestSnapshot.page,
+              position: latestSnapshot.position,
+              url: target.url,
+              trend: [], // TODO: Calculate trend data
+              status: "active" as const,
+              lastCheck: latestSnapshot.timestamp.toISOString(),
+              exposed: latestSnapshot.rank <= target.windowMax, // Within monitoring window
+              streakDays: 1, // TODO: Calculate streak
+              volume: 1000, // Default volume
+              score: Math.max(0, 100 - (latestSnapshot.rank || 0)), // Score based on rank
+              brand: "내 블로그", // Default brand
+              active: target.enabled
+            };
+            currentRankingData.push(rankingItem);
+          } else {
+            // No ranking data yet - show target with no rank
+            const rankingItem = {
+              id: target.id,
+              keyword: target.query,
+              rank: null,
+              change: 0,
+              page: null,
+              position: null,
+              url: target.url,
+              trend: [],
+              status: "warning" as const,
+              lastCheck: new Date().toISOString(),
+              exposed: false,
+              streakDays: 0,
+              volume: 1000,
+              score: 0,
+              brand: "내 블로그",
+              active: target.enabled
+            };
+            currentRankingData.push(rankingItem);
+          }
+        } catch (error) {
+          console.error(`Error fetching rank data for target ${target.id}:`, error);
+        }
+      }
+      
+      res.json(currentRankingData);
+    } catch (error) {
+      res.status(500).json({ message: "현재 순위 데이터 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
   app.get("/api/rank/history/:targetId", async (req, res) => {
     try {
       const owner = req.headers['x-role'] as string;
