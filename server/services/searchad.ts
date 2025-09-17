@@ -1,5 +1,10 @@
+/**
+ * vFinal SearchAds API Client with 413/400 Defense System
+ * Features: 8→4→2→1 batch shrinking, variant reduction, AbortController timeout
+ */
 import crypto from 'crypto';
-import fetch from 'node-fetch';
+import fetch, { AbortError } from 'node-fetch';
+import { nrm, isZeroLike, toVariants } from '../utils/normalization';
 
 const BASE = 'https://api.naver.com';
 const PATH = '/keywordstool';
@@ -15,11 +20,6 @@ export type Vol = {
   aveMobileCpc?: number;
 };
 
-function sign(ts: string, method: 'GET'|'POST', path: string, secret: string) {
-  // Naver SearchAd: signature = HMAC-SHA256( `${ts}.${method}.${path}` )
-  return crypto.createHmac('sha256', secret).update(`${ts}.${method}.${path}`).digest('base64');
-}
-
 export type SearchAdStats = {
   requested: number;
   ok: number;
@@ -34,6 +34,108 @@ export type SearchAdResult = {
   reason?: string;
 };
 
+function sign(ts: string, method: 'GET'|'POST', path: string, secret: string): string {
+  return crypto.createHmac('sha256', secret).update(`${ts}.${method}.${path}`).digest('base64');
+}
+
+function buildHeaders(apiKey: string, secret: string, customer: string) {
+  const ts = Date.now().toString();
+  return {
+    'X-Timestamp': ts,
+    'X-API-KEY': apiKey,
+    'X-Customer': customer,
+    'X-Signature': sign(ts, 'GET', PATH, secret),
+  };
+}
+
+function normalizeKeywords(rawKeywords: string[]): string[] {
+  return Array.from(new Set(
+    rawKeywords
+      .map(k => k.trim())
+      .filter(k => k.length >= 2)
+  ));
+}
+
+function reduceVariants(keyword: string, minimalMode = false): string[] {
+  if (minimalMode) {
+    // vFinal: 400 error에서 variants 축소 - surface만 사용
+    return [keyword.trim()];
+  }
+  
+  const { variants } = toVariants(keyword);
+  return variants;
+}
+
+interface FetchBatchResult {
+  rows: any[];
+  status: number;
+  retryAfter?: number;
+}
+
+async function fetchBatch(
+  batch: string[], 
+  headers: Record<string, string>,
+  timeoutMs = 10000,
+  minimalVariants = false
+): Promise<FetchBatchResult> {
+  // vFinal: 필요시 variants 축소
+  const keywords = minimalVariants 
+    ? batch.map(k => reduceVariants(k, true)).flat()
+    : batch;
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const qs = new URLSearchParams({ 
+      hintKeywords: keywords.join(','), 
+      showDetail: '1' 
+    });
+    
+    const res = await fetch(`${BASE}${PATH}?${qs.toString()}`, { 
+      method: 'GET', 
+      headers,
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (res.status === 200) {
+      const json = await res.json() as any;
+      return {
+        rows: json.keywordList || [],
+        status: res.status
+      };
+    } else if (res.status === 429) {
+      // Extract retry-after from header or response body
+      const retryAfter = parseInt(
+        res.headers.get('Retry-After') || '1'
+      );
+      
+      return {
+        rows: [],
+        status: res.status,
+        retryAfter
+      };
+    } else {
+      return {
+        rows: [],
+        status: res.status
+      };
+    }
+    
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    
+    if (error instanceof AbortError || error.name === 'AbortError') {
+      throw new Error('Request timeout');
+    }
+    
+    // Network errors
+    throw error;
+  }
+}
+
 export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult> {
   let API_KEY = process.env.SEARCHAD_API_KEY!;
   const SECRET = process.env.SEARCHAD_SECRET_KEY!;
@@ -42,19 +144,20 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
   // Clean up API key if it has Korean text prefix
   if (API_KEY && API_KEY.includes('엑세스라이선스')) {
     API_KEY = API_KEY.replace(/^.*엑세스라이선스/, '').trim();
-    console.log(`🧹 Cleaned API key from Korean prefix, length: ${API_KEY.length}`);
+    console.log(`🧹 [vFinal] Cleaned API key, length: ${API_KEY.length}`);
   }
 
+  // Fallback mode for missing credentials
   if (!API_KEY || !SECRET || !CUSTOMER) {
-    console.log(`🔑 SearchAd API credentials not found, using fallback mode`);
-    console.log(`   - API_KEY: ${API_KEY ? 'present' : 'missing'} (length: ${API_KEY?.length || 0})`);
-    console.log(`   - SECRET: ${SECRET ? 'present' : 'missing'} (length: ${SECRET?.length || 0})`);
-    console.log(`   - CUSTOMER: ${CUSTOMER ? 'present' : 'missing'} (length: ${CUSTOMER?.length || 0})`);
+    console.log(`🔑 [vFinal] Missing credentials, using fallback mode`);
     
-    // Return fallback volumes (all 0)
+    // vFinal: 초기 fallback도 nrm 키 사용
     const fallbackVolumes: Record<string, Vol> = {};
     rawKeywords.forEach(k => {
-      fallbackVolumes[k.toLowerCase()] = { pc: 0, mobile: 0, total: 0 };
+      const normKey = nrm(k.trim());
+      if (normKey) {
+        fallbackVolumes[normKey] = { pc: 0, mobile: 0, total: 0 };
+      }
     });
     
     return { 
@@ -65,18 +168,31 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
     };
   }
 
-  // 중복/공백 정리, 너무 짧은 토큰 제거
-  const ks = Array.from(new Set(rawKeywords.map(k => k.trim()).filter(k => k.length >= 2)));
-  if (!ks.length) return { 
-    volumes: {}, 
-    mode: 'searchads', 
-    stats: { requested: 0, ok: 0, fail: 0, http: {} },
-    reason: 'No valid keywords provided'
-  };
+  // vFinal: Create normalized → surface mapping for variants generation
+  const surfaceByNorm = new Map<string, string>();
+  rawKeywords.forEach(s => {
+    const t = s.trim();
+    if (t.length >= 2) {
+      const nk = nrm(t);
+      if (nk && !surfaceByNorm.has(nk)) {
+        surfaceByNorm.set(nk, t);
+      }
+    }
+  });
+  const ks = Array.from(surfaceByNorm.keys());
+  
+  if (!ks.length) {
+    return { 
+      volumes: {}, 
+      mode: 'searchads', 
+      stats: { requested: 0, ok: 0, fail: 0, http: {} },
+      reason: 'No valid keywords provided'
+    };
+  }
 
-  console.log(`🔍 Fetching search volumes for ${ks.length} keywords: ${ks.slice(0, 3).join(', ')}...`);
+  console.log(`🔍 [vFinal] Processing ${ks.length} keywords: ${ks.slice(0, 3).join(', ')}...`);
 
-  // Phase 2: 적응형 청크 처리 (8→3 자동조절)
+  // vFinal: Adaptive batch processing with defense system
   const out: Record<string, Vol> = {};
   const stats: SearchAdStats = {
     requested: ks.length,
@@ -86,130 +202,149 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
   };
   
   let i = 0;
-  let chunkSize = 8; // 시작 청크 크기
-  const maxRetries = 2;
+  let batchSize = Math.min(8, ks.length);
+  const maxRetries = 3;
+  const retryCounts = new Map<number, number>(); // Track retries per batch index
   
   while (i < ks.length) {
-    const batch = ks.slice(i, i + chunkSize);
-    console.log(`📦 Processing batch ${Math.floor(i/chunkSize) + 1}: ${batch.length} keywords (chunk=${chunkSize})`);
+    const batch = ks.slice(i, i + batchSize);
+    console.log(`📦 [vFinal] Batch: ${batch.length} keywords (batchSize=${batchSize})`);
     
-    let retryCount = 0;
-    let success = false;
-    
-    while (retryCount <= maxRetries && !success) {
-      try {
-        const ts = Date.now().toString();
-        const sig = sign(ts, 'GET', PATH, SECRET);
-
-        const headers = {
-          'X-Timestamp': ts,
-          'X-API-KEY': API_KEY,
-          'X-Customer': CUSTOMER,
-          'X-Signature': sig,
-        };
+    try {
+      const headers = buildHeaders(API_KEY, SECRET, CUSTOMER);
+      // vFinal: variants from surface forms (not normalized)
+      const apiBatch = batch.map(nk => surfaceByNorm.get(nk) ?? nk);
+      const enhancedBatch = apiBatch.flatMap(s => toVariants(s).variants);
+      const result = await fetchBatch(enhancedBatch, headers, 10000);
+      
+      stats.http[result.status] = (stats.http[result.status] || 0) + 1;
+      
+      if (result.status === 200) {
+        // Success: process data and advance
+        console.log(`✅ [vFinal] Success: ${result.rows.length} rows`);
         
-        // ✅ 수정: URLSearchParams가 자동 인코딩하므로 이중 인코딩 방지
-        const qs = new URLSearchParams({ hintKeywords: batch.join(','), showDetail: '1' });
-        const res = await fetch(`${BASE}${PATH}?${qs.toString()}`, { method: 'GET', headers });
+        for (const row of result.rows) {
+          const normKey = nrm(String(row.relKeyword ?? row.keyword ?? ''));
+          if (!normKey) continue;
+          
+          const safeNumber = (val: any, defaultVal = 0) => {
+            const num = Number(val);
+            return isNaN(num) ? defaultVal : num;
+          };
+          
+          const pc = safeNumber(row.monthlyPcQcCnt);
+          const mobile = safeNumber(row.monthlyMobileQcCnt);
+          
+          out[normKey] = { 
+            pc, 
+            mobile, 
+            total: pc + mobile, 
+            compIdx: row.compIdx,
+            plAvgDepth: safeNumber(row.plAvgDepth),
+            plClickRate: safeNumber(row.plClickRate),
+            avePcCpc: safeNumber(row.avePcCpc),
+            aveMobileCpc: safeNumber(row.aveMobileCpc)
+          };
+        }
         
-        const status = res.status;
-        stats.http[status] = (stats.http[status] || 0) + 1;
+        stats.ok += batch.length;
+        i += batch.length;
         
-        if (status === 200) {
-          // ✅ 성공: 데이터 처리 후 전진
-          const json = await res.json() as any;
-          console.log(`✅ SearchAd API success for batch: ${json.keywordList?.length || 0} keywords`);
+        // Success: incrementally grow batch size (cap 8)
+        if (batchSize < 8) {
+          batchSize = Math.min(8, batchSize + 1);
+          console.log(`📈 [vFinal] Batch size increased to ${batchSize}`);
+        }
+        
+      } else if (result.status === 429) {
+        // Rate limit: wait and retry with bounded retries
+        const currentRetryCount = (retryCounts.get(i) || 0) + 1;
+        
+        if (currentRetryCount <= maxRetries) {
+          retryCounts.set(i, currentRetryCount);
+          const waitTime = (result.retryAfter || 1) * 1000 + Math.random() * 500;
+          console.log(`⏳ [vFinal] Rate limit ${currentRetryCount}/${maxRetries} - waiting ${waitTime}ms`);
           
-          for (const row of (json.keywordList ?? [])) {
-            const key = String(row.relKeyword ?? row.keyword ?? '').trim().toLowerCase();
-            
-            // ✅ 안전한 숫자 파싱: NaN 방지
-            const safeNumber = (val: any, defaultVal = 0) => {
-              const num = Number(val);
-              return isNaN(num) ? defaultVal : num;
-            };
-            
-            const pc = safeNumber(row.monthlyPcQcCnt);
-            const mobile = safeNumber(row.monthlyMobileQcCnt);
-            if (!key) continue;
-            out[key] = { 
-              pc, 
-              mobile, 
-              total: pc + mobile, 
-              compIdx: row.compIdx,
-              plAvgDepth: safeNumber(row.plAvgDepth),
-              plClickRate: safeNumber(row.plClickRate),
-              avePcCpc: safeNumber(row.avePcCpc),
-              aveMobileCpc: safeNumber(row.aveMobileCpc)
-            };
-          }
-          
-          stats.ok += batch.length;
-          i += batch.length;
-          success = true;
-          
-          // 성공 시 청크 크기 복원 (최대 10)
-          if (chunkSize < 10) {
-            chunkSize = Math.min(10, chunkSize + 1);
-            console.log(`📈 Chunk size increased to ${chunkSize}`);
-          }
-          
-        } else if (status === 429) {
-          // ⏳ 429: Retry-After 백오프 대기 후 재시도
-          const json = await res.json().catch(() => ({})) as any;
-          const retryAfter = parseInt((json as any)?.retryAfter || res.headers.get('Retry-After') || '1');
-          const waitTime = Math.floor(retryAfter * 1000 * 1.5 + Math.random() * 500);
-          
-          console.log(`⏳ 429 Rate limit - waiting ${waitTime}ms (retry ${retryCount + 1}/${maxRetries + 1})`);
           await new Promise(resolve => setTimeout(resolve, waitTime));
-          retryCount++;
-          
-          // ✅ 수정: maxRetries 초과 시 배치 건너뛰기 (무한 루프 방지)
-          if (retryCount > maxRetries) {
-            console.log(`❌ 429 Rate limit - max retries exceeded, skipping batch`);
-            stats.fail += batch.length;
-            i += batch.length;
-            success = true;
-          }
-          
-        } else if (status === 400) {
-          // 🔄 400: 청크 크기 반으로 줄여 재시도
-          const newChunkSize = Math.max(3, Math.floor(chunkSize / 2));
-          if (newChunkSize < chunkSize) {
-            chunkSize = newChunkSize;
-            console.log(`🔄 400 Bad Request - reducing chunk size to ${chunkSize}`);
-            retryCount = 0; // 청크 크기 변경 시 재시도 카운트 리셋
-          } else {
-            // 이미 최소 크기면 실패 처리
-            console.log(`❌ 400 Bad Request - chunk size already minimal (${chunkSize}), skipping batch`);
-            stats.fail += batch.length;
-            i += batch.length;
-            success = true; // 더 이상 재시도하지 않음
-          }
-          
+          continue; // Retry same batch without advancing i
         } else {
-          // ❌ 기타 에러: 실패 처리 후 전진
-          console.log(`❌ SearchAd API error: ${status} ${res.statusText}`);
+          console.log(`❌ [vFinal] Rate limit max retries exceeded, skipping batch`);
+          retryCounts.delete(i); // Clean up retry count
           stats.fail += batch.length;
           i += batch.length;
-          success = true;
         }
         
-      } catch (error) {
-        console.error(`❌ SearchAd API exception:`, error);
-        stats.http[500] = (stats.http[500] || 0) + 1;
-        retryCount++;
+      } else if (result.status === 413 || result.status === 400) {
+        // vFinal: 8→4→2→1 defense system
+        const oldBatchSize = batchSize;
+        batchSize = Math.max(1, Math.floor(batchSize / 2));
         
-        if (retryCount > maxRetries) {
-          stats.fail += batch.length;
-          i += batch.length;
-          success = true;
+        console.log(`🔄 [vFinal] ${result.status} error - reducing batch ${oldBatchSize}→${batchSize}`);
+        
+        if (batchSize === 1 && result.status === 400) {
+          console.log(`⚠️ [vFinal] Trying minimal variants for 400 error`);
+          
+          // Try with reduced variants using surface forms
+          try {
+            const minimalHeaders = buildHeaders(API_KEY, SECRET, CUSTOMER);
+            const minimalBatch = batch.map(nk => surfaceByNorm.get(nk) ?? nk);
+            const minimalResult = await fetchBatch(minimalBatch, minimalHeaders, 10000, true);
+            
+            if (minimalResult.status === 200) {
+              // Process minimal result same as success
+              console.log(`✅ [vFinal] Minimal variants success`);
+              
+              for (const row of minimalResult.rows) {
+                const normKey = nrm(String(row.relKeyword ?? row.keyword ?? ''));
+                if (normKey) {
+                  const safeNumber = (val: any, defaultVal = 0) => {
+                    const num = Number(val);
+                    return isNaN(num) ? defaultVal : num;
+                  };
+                  
+                  const pc = safeNumber(row.monthlyPcQcCnt);
+                  const mobile = safeNumber(row.monthlyMobileQcCnt);
+                  
+                  out[normKey] = { 
+                    pc, 
+                    mobile, 
+                    total: pc + mobile 
+                  };
+                }
+              }
+              
+              stats.ok += batch.length;
+            } else {
+              stats.fail += batch.length;
+            }
+            
+            i += batch.length; // Advance after minimal attempt
+            
+          } catch (minimalError) {
+            console.log(`❌ [vFinal] Minimal variants also failed`);
+            stats.fail += batch.length;
+            i += batch.length;
+          }
+          
         }
+        // Don't advance i if not at minimal batch size, try smaller batch
+        
+      } else {
+        // Other errors: fail and advance
+        console.log(`❌ [vFinal] Error ${result.status}, skipping batch`);
+        stats.fail += batch.length;
+        i += batch.length;
       }
+      
+    } catch (error: any) {
+      console.error(`❌ [vFinal] Exception:`, error);
+      stats.http[500] = (stats.http[500] || 0) + 1;
+      stats.fail += batch.length;
+      i += batch.length;
     }
   }
   
-  // Phase 2: 개선된 모드 판정 (ok===0→fallback, ok===requested && only2xx→searchads, 그 외 partial)
+  // vFinal: Mode determination
   const only2xx = Object.keys(stats.http).every(code => {
     const statusCode = parseInt(code);
     return statusCode >= 200 && statusCode < 300;
@@ -221,31 +356,29 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
   if (stats.ok === 0) {
     mode = 'fallback';
     reason = 'No successful API calls';
-    console.log(`🔄 SearchAd API failed completely, using fallback mode`);
-    console.log(`   📊 Stats: ${stats.ok}/${stats.requested} success rate: 0.0%`);
+    console.log(`🔄 [vFinal] Complete failure, fallback mode`);
     
-    // fallback 시 모든 키워드를 0 volume으로 반환
+    // vFinal: fallback도 nrm 키 사용
     const fallbackVolumes: Record<string, Vol> = {};
-    ks.forEach(k => {
-      fallbackVolumes[k.toLowerCase()] = { pc: 0, mobile: 0, total: 0 };
+    ks.forEach(nk => {
+      fallbackVolumes[nk] = { pc: 0, mobile: 0, total: 0 };
     });
     return { volumes: fallbackVolumes, mode, stats, reason };
     
   } else if (stats.ok === stats.requested && only2xx) {
     mode = 'searchads';
     reason = 'Full success with all 2xx responses';
-    console.log(`✅ SearchAd API full success - ${stats.ok}/${stats.requested} keywords (100% success rate)`);
+    console.log(`✅ [vFinal] Full success - ${stats.ok}/${stats.requested} (100%)`);
     
   } else {
     mode = 'partial';
     const successRate = (stats.ok / stats.requested * 100).toFixed(1);
-    reason = `Partial success: ${stats.ok}/${stats.requested} keywords (${successRate}%)`;
-    console.log(`⚠️ SearchAd API partial success - ${stats.ok}/${stats.requested} keywords (${successRate}% success rate)`);
+    reason = `Partial success: ${stats.ok}/${stats.requested} (${successRate}%)`;
+    console.log(`⚠️ [vFinal] Partial success - ${stats.ok}/${stats.requested} (${successRate}%)`);
   }
   
-  console.log(`📊 Final volumes collected: ${Object.keys(out).length} keywords using SearchAd API (${mode} mode)`);
-  console.log(`📈 Sample volumes: ${Object.entries(out).slice(0, 3).map(([k, v]) => `${k}:${v.total}`).join(', ')}`);
-  console.log(`📊 Final stats: requested=${stats.requested}, ok=${stats.ok}, fail=${stats.fail}, http=${JSON.stringify(stats.http)}`);
+  console.log(`📊 [vFinal] Final: ${Object.keys(out).length} volumes, mode=${mode}`);
+  console.log(`📈 [vFinal] Sample: ${Object.entries(out).slice(0, 3).map(([k, v]) => `${k}:${v.total}`).join(', ')}`);
   
   return { volumes: out, mode, stats, reason };
 }

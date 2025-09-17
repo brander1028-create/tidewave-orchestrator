@@ -1,0 +1,375 @@
+/**
+ * vFinal Pipeline: 제목 프리엔리치 + 빅그램 조합 + Gate 이후 적용
+ * 올바른 순서: 프리엔리치 → 선정 → 빅그램 확장 → 재프리엔리치 → 재선정 → Gate → 저장
+ */
+import { getAlgoConfig } from './algo-config';
+import { getVolumesWithHealth } from './externals-health';
+import { serpScraper } from './serp-scraper';
+import { db } from '../db';
+import { postTierChecks } from '../../shared/schema';
+import { nrm, expandBigrams } from '../utils/normalization';
+
+// Import Phase2 engines (재사용)
+import { engineRegistry } from '../phase2';
+import { Candidate, Tier } from '../phase2/types';
+
+export interface VFinalPipelineResult {
+  tiers: Array<{
+    tier: number;
+    text: string;
+    volume: number | null;
+    rank: number | null;
+    score: number;
+    adScore?: number;
+    eligible?: boolean;
+    skipReason?: string;
+  }>;
+  stats: {
+    candidatesGenerated: number;
+    preEnriched: number;
+    firstSelected: number;
+    bigramsExpanded: number;
+    reEnriched: number;
+    reSelected: number;
+    gateFiltered: number;
+    tiersAssigned: number;
+  };
+}
+
+/**
+ * pickTopK - 첫 번째 선정 로직
+ */
+function pickTopK(candidates: Candidate[], k: number = 4): Candidate[] {
+  return candidates
+    .filter(c => c.volume && c.volume > 0)
+    .sort((a, b) => (b.totalScore || b.volume || 0) - (a.totalScore || a.volume || 0))
+    .slice(0, k);
+}
+
+/**
+ * pickMaxVolumeToken - 최대 볼륨 토큰 선택
+ */
+function pickMaxVolumeToken(candidates: Candidate[]): string | null {
+  if (!candidates.length) return null;
+  
+  const maxVolumeCandidate = candidates
+    .filter(c => c.volume && c.volume > 0)
+    .sort((a, b) => (b.volume || 0) - (a.volume || 0))[0];
+    
+  return maxVolumeCandidate?.text || null;
+}
+
+/**
+ * pickLongest - 가장 긴 토큰 선택 (fallback)
+ */
+function pickLongest(tokens: string[]): string | null {
+  if (!tokens.length) return null;
+  return tokens.sort((a, b) => b.length - a.length)[0];
+}
+
+/**
+ * extractTokens - 제목에서 토큰 추출 (banSingles 제외)
+ */
+function extractTokens(title: string, banSingles: string[] = []): string[] {
+  const words = title
+    .split(/[\s\-_.,!?()]+/)
+    .map(w => w.trim())
+    .filter(w => w.length >= 2);
+    
+  // banSingles 제외
+  return words.filter(word => !banSingles.includes(word));
+}
+
+/**
+ * applyPostEnrichGate - vFinal Gate (프리엔리치 이후 적용)
+ */
+async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<Candidate[]> {
+  const gatedCandidates: Candidate[] = [];
+  
+  for (const candidate of candidates) {
+    let eligible = true;
+    let skipReason: string | undefined;
+    let adScore = 0;
+    
+    try {
+      // 광고 불가/지표 0 체크 (하드컷)
+      const volume = candidate.volume || 0;
+      const hasZeroMetrics = volume === 0;
+      
+      if (hasZeroMetrics) {
+        eligible = false;
+        skipReason = "Zero volume";
+      } else {
+        // AdScore 계산 (나중에 70:30 적용)
+        const { calculateAdScore } = await import('./adscore-engine');
+        
+        const metrics = {
+          volume,
+          competition: 0.5, // Mock for now
+          adDepth: 2,
+          cpc: 100
+        };
+        
+        const weights = {
+          volume: cfg.adscore?.wVolume || 0.4,
+          competition: cfg.adscore?.wCompetition || 0.3,
+          adDepth: cfg.adscore?.wAdDepth || 0.2,
+          cpc: cfg.adscore?.wCpc || 0.1
+        };
+        
+        const adScoreResult = calculateAdScore(metrics, weights);
+        adScore = adScoreResult.adScore;
+        
+        // Soft 모드에서는 eligible = true 유지
+        if (cfg.adscore?.mode === 'hard' && adScore < (cfg.adscore?.SCORE_MIN || 0.35)) {
+          eligible = false;
+          skipReason = `AdScore too low: ${adScore}`;
+        }
+      }
+    } catch (error) {
+      console.error(`❌ [vFinal Gate] Error evaluating "${candidate.text}":`, error);
+      // Fallback: allow candidate through
+      eligible = true;
+      skipReason = "Gate evaluation failed";
+    }
+    
+    gatedCandidates.push({
+      ...candidate,
+      eligible,
+      adScore,
+      skipReason
+    });
+  }
+  
+  return gatedCandidates;
+}
+
+/**
+ * calculateTotalScore - vFinal 점수 계산 (나중에 7:3으로 수정 예정)
+ */
+function calculateTotalScore(candidate: Candidate, cfg: any): number {
+  // volumeScale = min(100, log10(max(1, volume))*25)
+  const volume = candidate.volume || 1;
+  const volumeScale = Math.min(100, Math.log10(Math.max(1, volume)) * 25);
+  
+  // contentScore (내부 가중치)
+  const freq = candidate.frequency || 0;
+  const pos = 1 / Math.max(1, candidate.position || 1);
+  const len = Math.min(1, (candidate.length || 1) / 20);
+  const contentScore = 0.5 * freq + 0.3 * pos + 0.2 * len;
+  
+  // totalScore = 0.7*volumeScale + 0.3*contentScore
+  const volumeWeight = cfg.weights?.volume || 0.7;
+  const contentWeight = cfg.weights?.content || 0.3;
+  
+  const totalScore = volumeWeight * volumeScale + contentWeight * contentScore * 100;
+  return Math.round(totalScore * 100) / 100;
+}
+
+/**
+ * vFinal 완전 파이프라인
+ */
+export async function processPostTitleVFinal(
+  title: string,
+  jobId: string,
+  blogId: string,
+  postId: number,
+  inputKeyword: string
+): Promise<VFinalPipelineResult> {
+  console.log(`🚀 [vFinal Pipeline] Starting for title: "${title.substring(0, 50)}..."`);
+  
+  const cfg = await getAlgoConfig();
+  const K = cfg.phase2?.tiersPerPost || 4;
+  
+  const stats = {
+    candidatesGenerated: 0,
+    preEnriched: 0,
+    firstSelected: 0,
+    bigramsExpanded: 0,
+    reEnriched: 0,
+    reSelected: 0,
+    gateFiltered: 0,
+    tiersAssigned: 0,
+  };
+  
+  // Step 1: 제목→토큰 추출
+  const toks = extractTokens(title, cfg.phase2?.banSingles || []);
+  console.log(`📝 [vFinal] Extracted ${toks.length} tokens: ${toks.slice(0, 5).join(', ')}...`);
+  
+  // Step 2: Phase2 엔진으로 초기 후보 생성 (Gate 적용 안함!)
+  const engine = engineRegistry.get(cfg.phase2?.engine || 'lk');
+  if (!engine) {
+    throw new Error(`Unknown Phase2 engine: ${cfg.phase2?.engine}`);
+  }
+  
+  const ctx = { title, blogId, postId: postId.toString(), inputKeyword, jobId };
+  const rawCandidates = engine.generateCandidates(ctx, cfg);
+  stats.candidatesGenerated = rawCandidates.length;
+  
+  console.log(`🔤 [vFinal] Generated ${stats.candidatesGenerated} candidates`);
+  
+  // Step 3: 제목 토큰 프리엔리치 (DB→API→upsert→merge)
+  console.log(`📊 [vFinal] Pre-enriching tokens...`);
+  
+  const candidateTexts = rawCandidates.map(c => c.text);
+  const volumeData = await getVolumesWithHealth(db, candidateTexts);
+  
+  // Merge volumes back to candidates
+  rawCandidates.forEach(candidate => {
+    const normKey = nrm(candidate.text);
+    const volumeInfo = volumeData.volumes[normKey];
+    
+    if (volumeInfo && volumeInfo.total > 0) {
+      candidate.volume = volumeInfo.total;
+      stats.preEnriched++;
+      console.log(`   📊 [Pre-enrich] "${candidate.text}" → volume ${volumeInfo.total}`);
+    }
+  });
+  
+  console.log(`✅ [vFinal] Pre-enriched ${stats.preEnriched}/${stats.candidatesGenerated} candidates`);
+  
+  // Step 4: 1차 선정
+  let pool = [...rawCandidates];
+  let topK = pickTopK(pool, K);
+  stats.firstSelected = topK.length;
+  
+  console.log(`🎯 [vFinal] First selection: ${stats.firstSelected} candidates`);
+  
+  // Step 5: 전부 비었거나 부족하면 → 빅그램 확장
+  if (!topK.length || topK.every(t => !t.text)) {
+    console.log(`🔧 [vFinal] Expanding with bigrams...`);
+    
+    // base + 나머지로 빅그램 생성
+    const base = pickMaxVolumeToken(pool) || pickLongest(toks);
+    if (base) {
+      const bigrams = expandBigrams(base, toks);
+      stats.bigramsExpanded = bigrams.length;
+      
+      console.log(`📈 [vFinal] Generated ${stats.bigramsExpanded} bigrams with base "${base}"`);
+      
+      // 빅그램 프리엔리치
+      const bigramTexts = bigrams.map(b => b.surface);
+      const bigramVolumeData = await getVolumesWithHealth(db, bigramTexts);
+      
+      // 빅그램을 후보로 추가
+      const bigramCandidates: Candidate[] = bigrams.map(bigram => ({
+        text: bigram.surface,
+        frequency: 1,
+        position: 0,
+        length: bigram.surface.length,
+        compound: true,
+        volume: 0
+      }));
+      
+      // 볼륨 병합
+      bigramCandidates.forEach(candidate => {
+        const normKey = nrm(candidate.text);
+        const volumeInfo = bigramVolumeData.volumes[normKey];
+        
+        if (volumeInfo && volumeInfo.total > 0) {
+          candidate.volume = volumeInfo.total;
+          stats.reEnriched++;
+          console.log(`   📊 [Re-enrich] "${candidate.text}" → volume ${volumeInfo.total}`);
+        }
+      });
+      
+      // 풀에 추가하고 재선정
+      pool = [...rawCandidates, ...bigramCandidates];
+      topK = pickTopK(pool, K);
+      stats.reSelected = topK.length;
+      
+      console.log(`🎯 [vFinal] Re-selected: ${stats.reSelected} candidates after bigram expansion`);
+    }
+  }
+  
+  // Step 6: Gate (프리엔리치 이후 적용!) - vFinal 핵심!
+  console.log(`🚫 [vFinal] Applying post-enrich gate...`);
+  const gatedCandidates = await applyPostEnrichGate(topK, cfg);
+  stats.gateFiltered = gatedCandidates.filter(c => !c.eligible).length;
+  
+  console.log(`🚫 [vFinal] Gate filtered ${stats.gateFiltered}/${topK.length} candidates`);
+  
+  // Step 7: 점수 계산
+  gatedCandidates.forEach(candidate => {
+    candidate.totalScore = calculateTotalScore(candidate, cfg);
+  });
+  
+  // Step 8: 랭크 체크
+  console.log(`🔍 [vFinal] Checking SERP rankings...`);
+  
+  for (const candidate of gatedCandidates) {
+    if (candidate.eligible) {
+      try {
+        candidate.rank = await serpScraper.checkKeywordRankingInMobileNaver(
+          candidate.text, 
+          `https://blog.naver.com/${blogId}`
+        );
+        console.log(`   📊 [Rank Check] "${candidate.text}" → rank ${candidate.rank || 'NA'}`);
+      } catch (error) {
+        console.error(`   ❌ [Rank Check] Failed for "${candidate.text}":`, error);
+      }
+    }
+  }
+  
+  // Step 9: 티어 할당
+  const tiers = engine.assignTiers(gatedCandidates, cfg);
+  stats.tiersAssigned = tiers.length;
+  
+  console.log(`🏆 [vFinal] Assigned ${stats.tiersAssigned} tiers`);
+  
+  // Step 10: 저장 (postTierChecks)
+  console.log(`💾 [vFinal] Saving ${tiers.length} tiers to database`);
+  
+  for (const tier of tiers) {
+    const candidate = tier.candidate;
+    if (!candidate || !candidate.text) continue;
+    
+    const normalizedText = nrm(candidate.text);
+    const isRelated = nrm(inputKeyword).includes(normalizedText) ||
+                     title.toLowerCase().includes(candidate.text.toLowerCase());
+    
+    try {
+      await db.insert(postTierChecks).values({
+        jobId,
+        inputKeyword,
+        blogId,
+        postId: String(postId),
+        postTitle: title,
+        tier: tier.tier,
+        textSurface: candidate.text,
+        textNrm: normalizedText,
+        volume: candidate.volume ?? null,
+        rank: candidate.rank,
+        score: tier.score,
+        related: isRelated,
+        eligible: candidate.eligible ?? true,
+        adscore: candidate.adScore,
+        skipReason: candidate.skipReason,
+      });
+      
+      console.log(`   💾 [Tier ${tier.tier}] "${candidate.text}" → score ${tier.score}, rank ${candidate.rank || 'NA'}, eligible ${candidate.eligible}`);
+    } catch (insertError) {
+      console.error(`❌ [vFinal] Insert failed for tier ${tier.tier}:`, insertError);
+    }
+  }
+  
+  // 결과 준비
+  const result: VFinalPipelineResult = {
+    tiers: tiers.map(tier => ({
+      tier: tier.tier,
+      text: tier.candidate.text,
+      volume: tier.candidate.volume ?? null,
+      rank: tier.candidate.rank ?? null,
+      score: tier.score,
+      adScore: tier.candidate.adScore,
+      eligible: tier.candidate.eligible,
+      skipReason: tier.candidate.skipReason,
+    })),
+    stats,
+  };
+  
+  console.log(`✅ [vFinal Pipeline] Completed - Generated ${result.tiers.length} tiers`);
+  console.log(`📊 [vFinal Stats] Generated:${stats.candidatesGenerated}, PreEnriched:${stats.preEnriched}, FirstSelected:${stats.firstSelected}, BigramsExpanded:${stats.bigramsExpanded}, ReEnriched:${stats.reEnriched}, ReSelected:${stats.reSelected}, GateFiltered:${stats.gateFiltered}, TiersAssigned:${stats.tiersAssigned}`);
+  
+  return result;
+}
