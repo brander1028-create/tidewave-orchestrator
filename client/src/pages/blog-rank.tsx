@@ -22,7 +22,8 @@ import {
   ChevronUp,
   ChevronDown,
   Search,
-  Trash2
+  Trash2,
+  Settings
 } from "lucide-react";
 import { targetsApi, manualBlogApi, rankApi } from "@/lib/api";
 import { useForm } from "react-hook-form";
@@ -202,8 +203,8 @@ export default function BlogRank() {
   const [sortBy, setSortBy] = React.useState("recent");
   const [groups, setGroups] = React.useState(["그룹1", "그룹2", "그룹3"]);
   
-  // 키워드 관리 섹션 확장/축소 상태
-  const [isKeywordSectionExpanded, setIsKeywordSectionExpanded] = React.useState(false);
+  // 설정 섹션 확장/축소 상태
+  const [isSettingsSectionExpanded, setIsSettingsSectionExpanded] = React.useState(false);
   const [keywordSearchTerm, setKeywordSearchTerm] = React.useState("");
   
   // 배치 실행 상태
@@ -569,44 +570,41 @@ export default function BlogRank() {
               <p className="text-sm text-muted-foreground">네이버 블로그 SERP 순위 모니터링 및 인사이트 분석</p>
             </div>
             <div className="flex gap-3">
-              {!isKeywordSectionExpanded && (
-                <Button
-                  onClick={() => setIsKeywordSectionExpanded(true)}
-                  size="sm"
-                  data-testid="button-expand-keyword-section"
-                >
-                  <Plus className="h-4 w-4 mr-2" />
-                  키워드 추가
-                </Button>
-              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsSettingsSectionExpanded(!isSettingsSectionExpanded)}
+                data-testid="button-toggle-settings"
+              >
+                <Settings className="h-4 w-4" />
+              </Button>
+              <Button
+                onClick={() => setIsAddBlogOpen(true)}
+                size="sm"
+                data-testid="button-add-keyword"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                키워드 추가
+              </Button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 확장 가능한 키워드 관리 섹션 */}
-      {isKeywordSectionExpanded && (
+      {/* 설정 섹션 */}
+      {isSettingsSectionExpanded && (
         <div className="border-b border-border bg-muted/20">
-          <div className="container mx-auto px-4 py-4">
-            <div className="space-y-4">
-              {/* 제목과 축소 버튼 */}
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-foreground">키워드 관리</h2>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIsKeywordSectionExpanded(false)}
-                  data-testid="button-collapse-keyword-section"
-                >
-                  <ChevronUp className="h-4 w-4 mr-2" />
-                  축소하기
-                </Button>
-              </div>
+          <div className="container mx-auto px-4 py-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              {/* 기능 버튼들 */}
-              <div className="flex items-center gap-4">
-                {/* 키워드 검색 */}
-                <div className="flex-1 max-w-md">
+              {/* 키워드 관리 카드 */}
+              <div className="bg-card border border-border rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <Search className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-foreground">키워드 관리</h3>
+                </div>
+                <div className="space-y-3">
+                  {/* 키워드 검색 */}
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
@@ -617,29 +615,125 @@ export default function BlogRank() {
                       data-testid="input-keyword-search"
                     />
                   </div>
+                  {/* 버튼 그룹 */}
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsCreateGroupOpen(true)}
+                      className="flex-1"
+                      data-testid="button-create-group"
+                    >
+                      <FolderPlus className="h-4 w-4 mr-2" />
+                      그룹 만들기
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => setIsAddBlogOpen(true)}
+                      className="flex-1"
+                      data-testid="button-add-keyword-settings"
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      키워드 추가
+                    </Button>
+                  </div>
                 </div>
-                
-                {/* 그룹 만들기 */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsCreateGroupOpen(true)}
-                  data-testid="button-create-group"
-                >
-                  <FolderPlus className="h-4 w-4 mr-2" />
-                  그룹 만들기
-                </Button>
-                
-                {/* 키워드 추가 */}
-                <Button
-                  onClick={() => setIsAddBlogOpen(true)}
-                  size="sm"
-                  data-testid="button-add-keyword"
-                >
-                  <Plus className="h-4 w-4 mr-2" />
-                  키워드 추가
-                </Button>
               </div>
+
+              {/* 체크 설정 카드 */}
+              <div className="bg-card border border-border rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <Signal className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-foreground">체크 설정</h3>
+                </div>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">자동 체크</Label>
+                    <Switch defaultChecked data-testid="switch-auto-check" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm">체크 간격</Label>
+                    <Select defaultValue="10">
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="5">5분</SelectItem>
+                        <SelectItem value="10">10분</SelectItem>
+                        <SelectItem value="30">30분</SelectItem>
+                        <SelectItem value="60">1시간</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+
+              {/* 체크 스케줄 카드 */}
+              <div className="bg-card border border-border rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <ArrowUpDown className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-foreground">체크 스케줄</h3>
+                </div>
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <Label className="text-sm">시작 시간</Label>
+                    <Select defaultValue="09">
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="09">09:00</SelectItem>
+                        <SelectItem value="12">12:00</SelectItem>
+                        <SelectItem value="15">15:00</SelectItem>
+                        <SelectItem value="18">18:00</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm">종료 시간</Label>
+                    <Select defaultValue="18">
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="15">15:00</SelectItem>
+                        <SelectItem value="18">18:00</SelectItem>
+                        <SelectItem value="21">21:00</SelectItem>
+                        <SelectItem value="24">24:00</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+
+              {/* 요약 통계 카드 */}
+              <div className="bg-card border border-border rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <TrendingUp className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-foreground">요약 통계</h3>
+                </div>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <div className="text-muted-foreground">총 키워드</div>
+                    <div className="text-2xl font-bold text-foreground">{filteredData.length}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">활성</div>
+                    <div className="text-2xl font-bold text-green-500">{filteredData.filter(item => item.active).length}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">비활성</div>
+                    <div className="text-2xl font-bold text-red-500">{filteredData.filter(item => !item.active).length}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">평균 순위</div>
+                    <div className="text-2xl font-bold text-foreground">
+                      {filteredData.length > 0 ? Math.round(filteredData.reduce((sum, item) => sum + item.rank, 0) / filteredData.length) : 0}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
             </div>
           </div>
         </div>
