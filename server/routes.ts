@@ -296,9 +296,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
             useV17Assembly: true
           });
           
-          // ★ Robust error handling with fallback
-          v17Promise.then(() => {
+          // ★ Robust error handling with fallback + 완료 상태 설정
+          v17Promise.then(async () => {
             console.log('✅ [v17] fast-path finished successfully');
+            // ★ 핵심 수정: Job 상태를 'completed'로 설정
+            await storage.updateSerpJob(job.id, { 
+              status: 'completed', 
+              progress: 100, 
+              currentStep: 'completed',
+              currentStepDetail: '분석 완료',
+              completedSteps: 3
+            });
+            console.log('✅ [v17] Job status updated to completed');
           }).catch(async (error) => {
             console.error('[SAFE-FALLBACK] v17 failed → legacy', error);
             // Fallback to legacy processing (using new module to avoid circular imports)

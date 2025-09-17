@@ -234,6 +234,13 @@ export async function processPostTitleV17(
     const isRelated = inputKeyword.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '').includes(normalizedText) ||
                      title.toLowerCase().includes(candidate.text.toLowerCase());
     
+    // NaN 안전 처리 함수 (DB integer 삽입 에러 방지)
+    const safeParseNumber = (value: any): number | null => {
+      if (value === null || value === undefined) return null;
+      const parsed = Number(value);
+      return isNaN(parsed) ? null : parsed;
+    };
+
     try {
       const [insertResult] = await db.insert(postTierChecks).values({
         jobId,
@@ -244,13 +251,13 @@ export async function processPostTitleV17(
         tier: tier.tier,
         textSurface: candidate.text,
         textNrm: normalizedText,
-        volume: candidate.volume,
-        rank: candidate.rank,
-        score: tier.score,
+        volume: safeParseNumber(candidate.volume), // ✅ NaN 안전 처리
+        rank: safeParseNumber(candidate.rank), // ✅ NaN 안전 처리
+        score: safeParseNumber(tier.score) || 0, // ✅ NaN 안전 처리 (score는 non-null)
         related: isRelated,
         // v17 추가: Gate 정보
         eligible: candidate.eligible ?? true,
-        adscore: candidate.adScore, // ✅ Lowercase column name
+        adscore: safeParseNumber(candidate.adScore), // ✅ NaN 안전 처리
         skipReason: candidate.skipReason,
       }).returning({ id: postTierChecks.id });
       
