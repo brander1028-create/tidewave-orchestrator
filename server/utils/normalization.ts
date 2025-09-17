@@ -31,22 +31,21 @@ export function toVariants(keyword: string): { surface: string; variants: string
 }
 
 /**
- * Zero-like 판정 함수 (vFinal 기준)
+ * Zero-like 판정 함수 (vFinal 개선 - volume 중심)
  */
 export function isZeroLike(entry: any): boolean {
   if (!entry) return true;
   
-  const volume = entry.volume ?? 0;
-  const ctr = entry.ctr ?? 0;
-  const competition = entry.competition ?? 0;
+  const volume = entry.volume ?? entry.total ?? 0;
   
-  return volume === 0 && ctr === 0 && competition === 0;
+  // vFinal: volume이 0이거나 매우 작은 값(< 10)이면 zero-like로 판정
+  return volume < 10;
 }
 
 /**
- * Fresh 판정 함수 (zero-like는 Fresh 아님)
+ * Fresh 판정 함수 (vFinal - 30일 TTL, zero-like는 Fresh 아님)
  */
-export function isFresh(entry: any, ttlMs: number = 24 * 60 * 60 * 1000): boolean {
+export function isFresh(entry: any, ttlMs: number = 30 * 24 * 60 * 60 * 1000): boolean {
   if (!entry || isZeroLike(entry)) return false;
   
   const age = Date.now() - (entry.updated_at ? new Date(entry.updated_at).getTime() : 0);
