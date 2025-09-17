@@ -1,0 +1,205 @@
+SearchAds 413/400 방어 — 배치 1까지, 변형 최소화
+
+새 파일 추가: server/services/searchads-robust.ts
+
+// server/services/searchads-robust.ts
+import { searchAds } from "./searchads";       // 기존 클라이언트(호출기) import
+import { logger } from "../logger";
+
+export function variantsFor(surface: string) {
+  const ns = surface.replace(/\s+/g, "");
+  const arr = [surface, ns];
+  if (surface.length >= 12) arr.push(surface.replace(/\s+/g, "-"));
+  return arr;
+}
+
+function is413(e:any){ return (e?.message||"").includes("413"); }
+function is400(e:any){ return (e?.message||"").includes("400"); }
+
+/** 413/400 에서 배치 1까지 줄이고, 변형도 최소화해 끝까지 밀어붙이는 bulk */
+export async function robustBulkVolumes(
+  keywords: string[],
+  opts?: { logPrefix?: string; minimalVariant?: boolean }
+){
+  let i = 0, batch = Math.min(8, Math.max(1, keywords.length));
+  const MIN = 1;
+  const res: any[] = [];
+  let minimal = !!opts?.minimalVariant;
+
+  while (i < keywords.length) {
+    const slice = keywords.slice(i, i + batch);
+    const payload = minimal ? slice : slice.flatMap(variantsFor);
+
+    try {
+      const rows = await searchAds.bulk(payload);   // 기존 bulk 호출기
+      res.push(...rows);
+      i += batch;
+      // 성공하면 배치 상향(너무 높지 않게)
+      if (batch < 8) batch = Math.min(8, batch + 1);
+      minimal = false;                              // 다음 시도는 정상 변형
+    } catch (e:any) {
+      logger.warn(`[robustBulk] ${opts?.logPrefix||""} ${e?.message||e}`);
+      if (is413(e) || is400(e)) {
+        if (batch > MIN) { batch = Math.max(MIN, Math.floor(batch/2)); continue; }
+        // 배치가 이미 1인데도 400 → 변형 최소화로 재시도
+        if (!minimal) { minimal = true; continue; }
+        // 그래도 실패 시 이 키워드는 partial 실패로 넘어감
+        i += 1; minimal = false;
+      } else {
+        throw e;
+      }
+    }
+  }
+  return res;
+}
+
+
+사용처 수정: preEnrichKeywords 등 SearchAds 호출부에서 searchAds.bulk(...) 대신 robustBulkVolumes(...) 사용.
+
+- const api = await searchAds.bulk(batchKeywords);
++ const api = await robustBulkVolumes(batchKeywords, { logPrefix: "[vFinal]" });
+
+패치 2) “0 캐시 Fresh” 금지 — TTL Fresh 판정 수정 + 옵션 정리
+
+수정: server/store/keywords.ts (혹은 keywordsRepo의 TTL 로직이 있는 곳)
+
+- export function isFresh(entry: any, ttlMs: number, now: number) {
+-   return (now - entry.updated_at) < ttlMs;
+- }
++ const isZeroLike = (e:any)=> (e?.volume??0)===0 && (e?.ctr??0)===0 && (e?.competition??0)===0;
++ export function isFresh(entry: any, ttlMs: number, now: number) {
++   if (!entry?.updated_at) return false;
++   if (isZeroLike(entry)) return false;                 // ★ 0-벡터는 Fresh 취급 금지
++   return (now - new Date(entry.updated_at).getTime()) < ttlMs;
++ }
+
+
+(선택) 과거 0 데이터 한 번 정리:
+
+UPDATE keywords
+SET volume=NULL, ctr=NULL, competition=NULL, cpc=NULL
+WHERE (volume=0 OR ctr=0 OR competition=0) AND updated_at < NOW() - INTERVAL '1 day';
+
+패치 3) 제목 파이프라인 순서 고정 — preEnrich→base→bigrams→preEnrich→Gate→TopK→rank
+
+새 파일 추가: server/title/bigram-expander.ts
+
+// server/title/bigram-expander.ts
+export function extractTokens(title: string, banSingles: string[] = []) {
+  return title
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .map(t=> t.replace(/(은|는|이|가|을|를|에|에서|으로|로|와|과|도|만|까지|부터|의)$/,""))
+    .filter(t=> t && t.length>=2 && !banSingles.includes(t));
+}
+
+export function expandBigrams(base: string, tokens: string[]) {
+  const seen = new Set<string>(), out: { surface:string }[] = [];
+  for (const t of tokens) {
+    if (t===base) continue;
+    const s = `${base} ${t}`;
+    if (!seen.has(s)) { out.push({surface:s}); seen.add(s); }
+  }
+  return out;
+}
+
+
+파이프라인 수정: (제목→티어 선정 구간; 예시: server/services/vfinal-pipeline.ts 내 processPostTitleVFinal)
+
++ import { extractTokens, expandBigrams } from "../title/bigram-expander";
++ import { robustBulkVolumes } from "../services/searchads-robust";
++ import { variantsFor } from "../services/searchads-robust";
+
+  async function processPostTitleVFinal(ctx){ // pseudo: 기존 함수
+-   // (이전) candidates 추출 → Gate → 선정...
++   // 0) 제목 토큰
++   const toks = extractTokens(ctx.title, cfg.banSingles ?? ["정리","방법","추천","후기","테스트","여자","바르"]);
++   // 1) 제목 단어 preEnrich (DB→API→upsert→merge)
++   await preEnrichKeywords(
++     toks.map(t => ({ surface:t, variants: variantsFor(t) })),
++     { forceZeroRefresh: true, robust: true }
++   );
++   let pool = await keywordsRepo.mergeFromDB(toks);
++   // 2) 1차 선정
++   let topK = pickTopK(pool, cfg); // 서버 점수(0.7*volumeScale+0.3*adScore)
++   // 3) 전부 비었거나 약하면 → base+빅그램 확장
++   if (!topK.length || topK.every(t=>!t.text)) {
++     const base = (await keywordsRepo.pickMaxVolumeToken(pool)) ?? toks.sort((a,b)=>b.length-a.length)[0];
++     const pairs = expandBigrams(base, toks).map(p => ({ surface: p.surface, variants: variantsFor(p.surface) }));
++     // 조합 preEnrich
++     await preEnrichKeywords(pairs, { forceZeroRefresh:true, robust:true });
++     pool = await keywordsRepo.mergeFromDB([...toks, ...pairs.map(p=>p.surface)]);
++     topK = pickTopK(pool, cfg);
++   }
++   // 4) Gate (preEnrich **이후** 적용) — 제목 단계는 soft 권장
++   const eligible = topK.filter(k => k.ad_eligible !== false && !((k.ctr??0)===0 && (k.competition??0)===0));
++   // 5) 랭크 (eligible만)
++   const tiers = await rankEligible(eligible.slice(0, cfg.phase2.tiersPerPost));
++   // 6) 저장/조립
++   await storage.finishSerpJob(ctx.jobId, assembleResults(ctx.jobId, tiers, cfg));
+  }
+
+패치 4) 게이트 완화 — ‘vol<thr’ 하드컷 제거(제목 단계는 soft)
+
+수정: server/phase2/types.ts 또는 Gate 함수 정의 위치
+
+-export function checkGateEligibility(cand, cfg){
+-  if ((cand.volume??0) < cfg.adscore.VOL_MIN) return { ok:false, reason:"vol<thr" };
+-  if (cand.ad_eligible === false || ((cand.ctr??0)===0 && (cand.competition??0)===0)) return { ok:false, reason:"ineligible" };
+-  if (cfg.adscore.mode==="hard" && cand.adScore < cfg.adscore.SCORE_MIN) return { ok:false, reason:"score<thr" };
+-  return { ok:true };
+-}
++export function checkGateEligibility(cand, cfg){
++  // 광고불가 or 지표0은 하드 컷
++  if (cand.ad_eligible === false || ((cand.ctr??0)===0 && (cand.competition??0)===0))
++    return { ok:false, reason:"ineligible" };
++  // 제목 단계는 soft 권장: vol<thr 하드컷 제거, score 기준은 mode==="hard"에서만
++  if (cfg.adscore?.mode==="hard" && (cand.adScore ?? 0) < (cfg.adscore.SCORE_MIN ?? 0.55))
++    return { ok:false, reason:"score<thr" };
++  return { ok:true };
++}
+
+패치 5) 저장 FK 에러(23503) — 실제 jobId만 저장, 테스트는 스킵
+
+수정: server/services/vfinal-pipeline.ts (로그에 329라인 insert 실패 지점)
+
+- await keywordsRepo.insertTierCheck({ job_id: "test-job-001", ...row });
++ const jobId = ctx?.jobId || row?.job_id;
++ if (!jobId) {
++   logger.warn("[vFinal] No jobId — skip post_tier_checks insert (TEST mode)");
++ } else {
++   await keywordsRepo.insertTierCheck({ job_id: jobId, ...row });
++ }
+
+
+또는 라우트 핸들러에서 vFinal 테스트 엔드포인트는 post_tier_checks 저장을 하지 않도록 분기.
+
+패치 6) 응답 조립/표시 체결 — 서버 점수 바인딩 + 레거시 finalStats.tiers
+
+수정: server/pipeline/assemble.ts (혹은 결과 조립 함수)
+
+- tier.score = tier.adscore ?? 0;
++ tier.score   = tier.totalScore ?? tier.score ?? tier.adScore ?? 0;  // 서버 계산 값 우선
++ tier.adScore = tier.adScore ?? tier.gateScore ?? null;
+
+  payload.summaryByKeyword = buildSummaryByKeywordFromTiers(tiers, cfg);
+- payload.finalStats = legacyStats;
++ payload.finalStats = { ...legacyStats, tiers };  // ★ 레거시 화면도 렌더 가능
+
+
+프론트 매핑(칩 표기):
+
+- const pts = tier.adscore ?? 0;
++ const pts = tier.score ?? tier.adScore ?? 0;
+
+빠른 검증(딱 5개)
+
+게이트 로그에서 vol<thr 사라지고, soft 모드에서는 통과/정렬 참여가 늘어남.
+
+빅그램(예: 경주 펜션/경주 여행)에 volume 숫자 표시(– 감소), 413/400이어도 일부 성공 계속 누적.
+
+TopK가 매 포스트 1~K개 채워짐(빈 티어 사라짐).
+
+post_tier_checks에 실제 job_id로 행 생성(FK 에러 없음).
+
+결과 JSON summaryByKeyword[*].blogs[*].posts[*].tiers[*]와 finalStats.tiers[*]에 {text, volume, rank, score, adScore, eligible} 모두 채워짐.

@@ -128,29 +128,24 @@ export function calculateAdScore(
 }
 
 /**
- * Score-First Gate 체크
+ * Score-First Gate 체크 (vFinal 완화 버전)
  */
 export function checkGateEligibility(
   metrics: KeywordMetrics,
   adScore: number,
-  thresholds: AdScoreThresholds = DEFAULT_THRESHOLDS
+  thresholds: AdScoreThresholds = DEFAULT_THRESHOLDS,
+  mode: 'soft' | 'hard' = 'soft'
 ): { eligible: boolean; skipReason?: string } {
   
-  // 각 임계치 체크
-  if (adScore < thresholds.scoreMin) {
+  // 광고불가 or 지표0은 하드 컷 (CTR=0, competition=0 등)
+  if ((metrics.competition ?? 0) === 0 && (metrics.adDepth ?? 0) === 0) {
+    return { eligible: false, skipReason: "ineligible" };
+  }
+  
+  // 제목 단계는 soft 권장: vol<thr 하드컷 제거
+  // score 기준은 mode==="hard"에서만
+  if (mode === "hard" && (adScore ?? 0) < (thresholds.scoreMin ?? 0.55)) {
     return { eligible: false, skipReason: "score<thr" };
-  }
-  
-  if (metrics.volume < thresholds.volumeMin) {
-    return { eligible: false, skipReason: "vol<thr" };
-  }
-  
-  if (metrics.adDepth < thresholds.adDepthMin) {
-    return { eligible: false, skipReason: "addepth<thr" };
-  }
-  
-  if (metrics.cpc < thresholds.cpcMin) {
-    return { eligible: false, skipReason: "cpc<thr" };
   }
 
   return { eligible: true };
