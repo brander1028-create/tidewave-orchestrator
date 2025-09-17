@@ -2689,11 +2689,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // v7.13.1: 서버 자동 보강 기능
       const { blogUrl, keywordText, title, brand, groupName, active } = validation.data;
       
-      // 1. URL 캐노니컬 변환 (m.blog.naver.com → blog.naver.com)
+      // 1. v7.13.1 URL 정규화 고도화
       let canonicalUrl = blogUrl;
-      if (blogUrl.includes('m.blog.naver.com')) {
-        canonicalUrl = blogUrl.replace('m.blog.naver.com', 'blog.naver.com');
+      
+      // http → https 통일
+      canonicalUrl = canonicalUrl.replace(/^http:/, 'https:');
+      
+      // 모바일 → 데스크톱 변환
+      canonicalUrl = canonicalUrl.replace('m.blog.naver.com', 'blog.naver.com');
+      
+      // PostView.naver 쿼리형 → 표준형 변환
+      // PostView.naver?blogId=nickname&logNo=12345 → blog.naver.com/nickname/12345
+      const postViewMatch = canonicalUrl.match(/PostView\.naver.*[?&]blogId=([^&]+).*[&?]logNo=(\d+)/);
+      if (postViewMatch) {
+        const [, blogId, logNo] = postViewMatch;
+        canonicalUrl = `https://blog.naver.com/${blogId}/${logNo}`;
       }
+      
+      // 쿼리/해시/트레일링 슬래시 제거
+      canonicalUrl = canonicalUrl.split('?')[0].split('#')[0].replace(/\/$/, '');
       
       // 2. 닉네임과 postId 추출 (blog.naver.com/<nickname>/<postId>)
       let nickname = 'unknown';
@@ -2708,14 +2722,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 4. URL 정규화
       const blogUrlNorm = canonicalUrl.toLowerCase().trim();
       
-      // 5. 제목 자동 수집 (선택사항, 실패해도 등록 성공)
+      // 5. v7.13.1 제목 자동 수집 (선택사항, 실패해도 등록 성공)
       let finalTitle = title;
-      if (!title && canonicalUrl.includes('blog.naver.com')) {
+      
+      // 보안: SSRF 방지를 위한 hostname 검증
+      let isValidNaverBlog = false;
+      try {
+        const urlObj = new URL(canonicalUrl);
+        isValidNaverBlog = urlObj.hostname === 'blog.naver.com';
+      } catch {
+        isValidNaverBlog = false;
+      }
+      
+      if (!title && isValidNaverBlog) {
         try {
-          // TODO: 3초 타임아웃으로 메타데이터 수집 (다음 작업에서 구현)
-          console.log(`[v7.13.1] 제목 자동 수집 예정: ${canonicalUrl}`);
+          console.log(`[v7.13.1] 제목 자동 수집 시작: ${canonicalUrl}`);
+          
+          // 3초 타임아웃으로 HTTP 요청 (호환성 개선)
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout after 3s')), 3000)
+          );
+          
+          const fetchPromise = fetch(canonicalUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; v7.13.1 title collector)',
+            },
+          });
+          
+          const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+          
+          if (response.ok) {
+            const html = await response.text();
+            const cheerio = await import('cheerio');
+            const $ = cheerio.load(html);
+            
+            // og:title → <title> → 기본값 순서로 시도
+            finalTitle = $('meta[property="og:title"]').attr('content') ||
+                        $('title').text() ||
+                        null;
+                        
+            if (finalTitle) {
+              finalTitle = finalTitle.trim();
+              console.log(`[v7.13.1] 제목 자동 수집 성공: "${finalTitle}"`);
+            } else {
+              console.log(`[v7.13.1] 제목 메타데이터 없음`);
+            }
+          }
         } catch (error) {
-          console.log(`[v7.13.1] 제목 수집 실패 (계속 진행): ${error}`);
+          console.log(`[v7.13.1] 제목 수집 실패 (계속 진행): ${error instanceof Error ? error.message : error}`);
         }
       }
       

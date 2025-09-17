@@ -620,7 +620,10 @@ export const insertBlogKeywordTargetSchema = createInsertSchema(blogKeywordTarge
 }).extend({
   keywordText: z.string().min(1, "키워드를 입력하세요").max(100, "키워드는 100자 이내여야 합니다"),
   blogUrl: z.string().url("올바른 URL을 입력하세요"),
-  title: z.string().min(1).optional().nullable().transform(val => val || null), // v7.13.1: null 허용, 자동 채움
+  title: z.preprocess(
+    (val) => val === "" ? null : val, // 빈 문자열을 null로 전처리
+    z.string().min(1).optional().nullable().transform(val => val || null)
+  ), // v7.13.1: null 허용, 자동 채움, 외부 클라이언트 호환
   brand: z.string().optional(), // v7.13.1: 브랜드 옵션
   groupName: z.string().optional(), // v7.13.1: 그룹 옵션 (SQL 키워드 충돌 방지)  
   active: z.boolean().default(true), // v7.13.1: 기본 활성화
