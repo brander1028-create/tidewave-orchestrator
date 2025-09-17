@@ -114,6 +114,9 @@ export async function getVolumesWithHealth(
           console.log(`↗️ calling calculateOverallScore for "${text}": vol=${raw_volume}, comp=${comp_score}, ad=${ad_depth}, cpc=${est_cpc_krw || 0}`);
           const score = await calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
           
+          // ★ 패치1: 대체치(fallback) 식별
+          const isApiOk = raw_volume > 0 && ad_depth > 0 && (est_cpc_source !== 'estimated' || est_cpc_krw !== 100);
+          
           keywordsToUpsert.push({
             text,
             raw_volume,
@@ -121,7 +124,7 @@ export async function getVolumesWithHealth(
             grade,
             commerciality: Math.min(100, Math.round((raw_volume / 1000) * 10)),
             difficulty: Math.min(100, Math.round((raw_volume / 500) * 8)),
-            source: 'searchads',
+            source: isApiOk ? 'api_ok' : 'fallback',          // ★ 대체치 식별
             comp_idx,
             comp_score,
             ad_depth,

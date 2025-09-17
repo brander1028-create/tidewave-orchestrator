@@ -48,6 +48,10 @@ export function isZeroLike(entry: any): boolean {
 export function isFresh(entry: any, ttlMs: number = 30 * 24 * 60 * 60 * 1000): boolean {
   if (!entry || isZeroLike(entry)) return false;
   
+  // ★ 패치4: 대체치는 Fresh 아님 (재조회 허용)
+  const isFallback = entry?.source && entry.source !== "api_ok";
+  if (isFallback) return false;   // 대체치는 다음 실행 때 반드시 재조회
+  
   const age = Date.now() - (entry.updated_at ? new Date(entry.updated_at).getTime() : 0);
   return age < ttlMs;
 }

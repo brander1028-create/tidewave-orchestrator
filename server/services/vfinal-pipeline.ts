@@ -6,8 +6,9 @@ import { getAlgoConfig } from './algo-config';
 import { getVolumesWithHealth } from './externals-health';
 import { serpScraper } from './serp-scraper';
 import { db } from '../db';
-import { postTierChecks } from '../../shared/schema';
+import { postTierChecks, managedKeywords } from '../../shared/schema';
 import { nrm, expandBigrams } from '../utils/normalization';
+import { inArray } from 'drizzle-orm';
 
 // Import Phase2 engines (재사용)
 import { engineRegistry } from '../phase2';
@@ -90,6 +91,20 @@ function extractTokens(title: string, banSingles: string[] = []): string[] {
 async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<Candidate[]> {
   const gatedCandidates: Candidate[] = [];
   
+  // DB에서 키워드 정보 직접 조회 (상업성 체크용)
+  const keywordTexts = candidates.map(c => c.text);
+  const existingKeywords = await db.select({
+    text: managedKeywords.text,
+    source: managedKeywords.source,
+    ad_depth: managedKeywords.ad_depth,
+    est_cpc_krw: managedKeywords.est_cpc_krw,
+    volume: managedKeywords.volume
+  })
+    .from(managedKeywords)
+    .where(inArray(managedKeywords.text, keywordTexts));
+  
+  const dbMap = new Map(existingKeywords.map(kw => [kw.text, kw]));
+  
   // 3) Gate 정책(제목 단계는 soft) + 연결어 컷
   const BAN_SINGLES = new Set(["정리","방법","추천","후기","테스트","여자","바르","및","과","와","의","이제","중인데","때인가"]);
   
@@ -104,17 +119,20 @@ async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<C
         eligible = false;
         skipReason = "ban";
       } else {
-        // 광고 불가/지표 0 체크 (ineligible) 
-        const volume = candidate.volume || 0;
-        const competition = 0.5; // Mock 수정 - 타입 오류 해결
-        const ctr = 0; // Mock 수정 - 타입 오류 해결  
-        const adDepth = 2; // Mock - 타입 오류 해결
+        // ★ 패치2: 상업성 없음 하드컷
+        const dbInfo = dbMap.get(candidate.text);
+        const isNoCommerce = dbInfo && (
+          dbInfo.source !== 'api_ok' || 
+          (dbInfo.ad_depth ?? 0) <= 0 || 
+          (dbInfo.est_cpc_krw ?? 0) === 0
+        );
         
-        const ineligible = false; // Mock 값이므로 ineligible 체크 비활성화
-        if (ineligible) {
+        if (isNoCommerce) {
           eligible = false;
           skipReason = "ineligible";
         } else {
+          // AdScore 계산용 volume 설정
+          const volume = candidate.volume || 0;
           // 제목 단계: vol<thr 하드컷 제거! (volume 조건 없음)
           // AdScore 계산 (나중에 70:30 적용)
           const { calculateAdScore } = await import('./adscore-engine');
@@ -329,8 +347,45 @@ export async function processPostTitleVFinal(
     }
   }
   
+  // Step 8.5: ★ 패치3: 최종 선정 직전 보정 (상업성 기반 필터링)
+  const MIN_VOL = 10;
+  const MIN_ADS = cfg.adscore?.SCORE_MIN ?? 0.35;
+  
+  // 상업성 있는 키워드만 최종 풀에 선정
+  const eligibleCandidates = gatedCandidates.filter(c => c.eligible);
+  
+  // 배치 DB 쿼리 (개별 쿼리 대신)
+  const finalCandidateTexts = eligibleCandidates.map(c => c.text);
+  const existingDbInfo = finalCandidateTexts.length > 0 ? await db.select({
+    text: managedKeywords.text,
+    source: managedKeywords.source,
+    ad_depth: managedKeywords.ad_depth,
+    est_cpc_krw: managedKeywords.est_cpc_krw
+  })
+    .from(managedKeywords)
+    .where(inArray(managedKeywords.text, finalCandidateTexts)) : [];
+  
+  const dbMap = new Map(existingDbInfo.map(info => [info.text, info]));
+  
+  const finalPool = eligibleCandidates.filter(k => {
+    const dbInfo = dbMap.get(k.text);
+    const hasCommerce = dbInfo?.source === "api_ok" && 
+                       (dbInfo?.ad_depth ?? 0) > 0 && 
+                       (dbInfo?.est_cpc_krw ?? 0) > 0;
+    const meetsThreshold = (k.volume ?? 0) >= MIN_VOL || (k.adScore ?? 0) >= MIN_ADS;
+    
+    return hasCommerce && meetsThreshold;
+  });
+  
+  // soft gate: finalPool이 비어있으면 eligible 중 최고점 1개라도 넘김
+  const finalCandidates = finalPool.length > 0 ? 
+    finalPool : 
+    eligibleCandidates.slice(0, 1).map(k => ({...k, rank: null}));
+  
+  console.log(`🎯 [최종 보정] ${finalCandidates.length}/${eligibleCandidates.length} candidates passed final filter`);
+
   // Step 9: 티어 할당
-  const tiers = engine.assignTiers(gatedCandidates, cfg);
+  const tiers = engine.assignTiers(finalCandidates, cfg);
   stats.tiersAssigned = tiers.length;
   
   console.log(`🏆 [vFinal] Assigned ${stats.tiersAssigned} tiers`);

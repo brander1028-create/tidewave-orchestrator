@@ -1,0 +1,88 @@
+CPC=100,
+
+AD 0(= adDepth 0),
+
+comp=60 같은 값들은 **정상 API 수치가 아니라 “대체치(fallback)”**일 확률이 매우 높아요.
+
+왜 이런 숫자가 나오냐
+
+SearchAds 호출이 413/400로 실패하면 지금 파이프라인이 부분 성공/실패를 허용하면서 몇 가지 히우리스틱 값을 씁니다.
+
+competition=60 → “중간값” 대체치
+
+cpc=100 → 소액 기본치(정규화 후 0.05로 보이는 이유)
+
+adDepth=0 → 광고 슬롯 탐지 실패(=광고 없음으로 간주)
+
+이 값들은 DB에 upsert되긴 하지만 source=api_ok가 아니라 source=fallback/partial로 보는 게 맞습니다. 즉 “실제 상업성 지표가 없는 상태”예요.
+
+그러면 어떻게 처리?
+
+네 말대로, 조합도 하지 말고, 최종 선정에서도 빼는 게 정답입니다. “조회량이 있더라도 광고지표가 사실상 0이면 상업성 없음”으로 본다.
+
+아래 4줄만 넣으면 깔끔히 정리됩니다.
+
+1) 저장 시 플래그 남기기(대체치 식별)
+
+pre-enrich/upsert 시:
+
+await keywordsRepo.upsert(apiRows.map(r => ({
+  ...r,
+  source: r.fromApi ? "api_ok" : "fallback",          // ★
+  ad_eligible: r.adDepth > 0 && (r.ctr??0) > 0        // 광고 가능 플래그
+})));
+
+
+0·60·100 같은 히우리스틱으로 채운 경우:
+
+await keywordsRepo.upsert([{ text_nrm, competition:60, cpc:100, adDepth:0, source:"fallback", ad_eligible:false }]);
+
+2) Gate에서 “상업성 없음” 하드컷
+
+(제목 단계 soft여도 상업성 없음은 무조건 컷)
+
+const NO_COMMERCE = (k:any)=> k.source!=="api_ok" || k.adDepth<=0 || (k.ctr??0)===0;
+
+if (NO_COMMERCE(cand)) return reject("ineligible");   // ★ 조합/선정/랭크 모두 제외
+
+3) 최종 선정 직전 보정(혹시 통과해도 막기)
+const MIN_VOL = 10, MIN_ADS = cfg.adscore?.SCORE_MIN ?? 0.35;
+
+const finalPool = sorted.filter(k =>
+  k.source==="api_ok" && k.adDepth>0 && (k.ctr??0)>0 && (
+    (k.volume??0) >= MIN_VOL || (k.adScore??0) >= MIN_ADS
+  )
+);
+
+const topK = (finalPool.length ? finalPool : sorted.slice(0,1).map(k=>({...k, rank:null})))
+               .slice(0, cfg.phase2.tiersPerPost);
+
+4) TTL 판정에서 “대체치”는 Fresh 아님
+
+대체치가 박힌 항목은 다음 실행 때 반드시 재조회되게:
+
+const isZeroLike = e => (e.volume??0)===0 && (e.ctr??0)===0 && (e.competition??0)===0;
+const isFallback = e => e?.source && e.source!=="api_ok";
+
+isFresh = (e, ttlMs, now) => {
+  if (!e?.updated_at) return false;
+  if (isZeroLike(e) || isFallback(e)) return false;   // ★ 재조회 허용
+  return (now - new Date(e.updated_at).getTime()) < ttlMs;
+};
+
+요약 답변
+
+CPC=100/AD 0은 DB 없음이 아니라 API 실패로 들어간 대체치라고 보면 맞습니다.
+
+이런 키워드는 경쟁성/상업성 없음으로 보고 조합 생성 금지 + 선정/랭크 제외가 맞습니다.
+
+위 4개 패치로:
+
+대체치 식별,
+
+Gate 하드컷,
+
+최종 보정,
+
+다음 실행 때 반드시 재조회,
+까지 보장됩니다.
