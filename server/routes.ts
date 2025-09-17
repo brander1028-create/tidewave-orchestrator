@@ -317,8 +317,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
       } else {
-        // ★ v16 레거시 파이프라인 (강제 실행)
-        console.log('🔧 [LEGACY FORCE] Starting v16 pipeline - bypassing all v17 code');
+        // v16 레거시 파이프라인
         processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
           enableLKMode,
           preferCompound,
