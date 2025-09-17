@@ -1046,7 +1046,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         allTargets = shopTargets.map(target => ({
           ...target,
           keywords: target.queries || [], // queries를 keywords로 매핑
-          title: target.name || target.url, // name을 title로 매핑
+          title: target.url, // URL을 title로 사용
         }));
       } else {
         // Blog 타겟 조회
