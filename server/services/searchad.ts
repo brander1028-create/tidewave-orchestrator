@@ -122,18 +122,25 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
           
           for (const row of (json.keywordList ?? [])) {
             const key = String(row.relKeyword ?? row.keyword ?? '').trim().toLowerCase();
-            const pc = Number(row.monthlyPcQcCnt ?? 0);
-            const mobile = Number(row.monthlyMobileQcCnt ?? 0);
+            
+            // ✅ 안전한 숫자 파싱: NaN 방지
+            const safeNumber = (val: any, defaultVal = 0) => {
+              const num = Number(val);
+              return isNaN(num) ? defaultVal : num;
+            };
+            
+            const pc = safeNumber(row.monthlyPcQcCnt);
+            const mobile = safeNumber(row.monthlyMobileQcCnt);
             if (!key) continue;
             out[key] = { 
               pc, 
               mobile, 
               total: pc + mobile, 
               compIdx: row.compIdx,
-              plAvgDepth: Number(row.plAvgDepth ?? 0),
-              plClickRate: Number(row.plClickRate ?? 0),
-              avePcCpc: Number(row.avePcCpc ?? 0),
-              aveMobileCpc: Number(row.aveMobileCpc ?? 0)
+              plAvgDepth: safeNumber(row.plAvgDepth),
+              plClickRate: safeNumber(row.plClickRate),
+              avePcCpc: safeNumber(row.avePcCpc),
+              aveMobileCpc: safeNumber(row.aveMobileCpc)
             };
           }
           
