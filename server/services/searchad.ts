@@ -192,6 +192,10 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
 
   console.log(`🔍 [vFinal] Processing ${ks.length} keywords: ${ks.slice(0, 3).join(', ')}...`);
 
+  // 1) 키 정규화 (표면형 하나로 묶기)
+  const baseKey = (s:string)=> s.normalize('NFKC')
+    .toLowerCase().replace(/[\s\-\.]/g,'').trim();
+
   // vFinal: Adaptive batch processing with defense system
   const out: Record<string, Vol> = {};
   const stats: SearchAdStats = {
@@ -203,8 +207,17 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
   
   let i = 0;
   let batchSize = Math.min(8, ks.length);
+  let minimal = false;
   const maxRetries = 3;
   const retryCounts = new Map<number, number>(); // Track retries per batch index
+  
+  // 2) per-key 시도 카운터(반드시 while 루프 바깥에!)
+  const tries: Record<string, number> = {};
+  const MAX_ATTEMPTS_PER_KEY = 5;
+  
+  function markPartialFail(key: string) {
+    console.warn(`[vFinal] SKIP "${key}" after ${MAX_ATTEMPTS_PER_KEY} attempts`);
+  }
   
   while (i < ks.length) {
     const batch = ks.slice(i, i + batchSize);
@@ -214,7 +227,8 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
       const headers = buildHeaders(API_KEY, SECRET, CUSTOMER);
       // vFinal: variants from surface forms (not normalized)
       const apiBatch = batch.map(nk => surfaceByNorm.get(nk) ?? nk);
-      const enhancedBatch = apiBatch.flatMap(s => toVariants(s).variants);
+      // minimal=false면 variants, true면 base surface만
+      const enhancedBatch = minimal ? apiBatch : apiBatch.flatMap(s => toVariants(s).variants);
       const result = await fetchBatch(enhancedBatch, headers, 10000);
       
       stats.http[result.status] = (stats.http[result.status] || 0) + 1;
@@ -248,11 +262,11 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
         }
         
         stats.ok += batch.length;
-        i += batch.length;
+        i += batch.length; minimal = false;                // 성공 → 다음 묶음
         
-        // Success: incrementally grow batch size (cap 8)
+        // Success: incrementally grow batch size (cap 8)  
         if (batchSize < 8) {
-          batchSize = Math.min(8, batchSize + 1);
+          batchSize++;                     // 완만한 상향
           console.log(`📈 [vFinal] Batch size increased to ${batchSize}`);
         }
         
@@ -275,59 +289,38 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
         }
         
       } else if (result.status === 413 || result.status === 400) {
-        // vFinal: 8→4→2→1 defense system
-        const oldBatchSize = batchSize;
-        batchSize = Math.max(1, Math.floor(batchSize / 2));
+        console.log(`🔄 [vFinal] ${result.status} error - reducing batch ${batchSize}→${Math.max(1, Math.floor(batchSize/2))}`);
         
-        console.log(`🔄 [vFinal] ${result.status} error - reducing batch ${oldBatchSize}→${batchSize}`);
-        
-        if (batchSize === 1 && result.status === 400) {
-          console.log(`⚠️ [vFinal] Trying minimal variants for 400 error`);
-          
-          // Try with reduced variants using surface forms
-          try {
-            const minimalHeaders = buildHeaders(API_KEY, SECRET, CUSTOMER);
-            const minimalBatch = batch.map(nk => surfaceByNorm.get(nk) ?? nk);
-            const minimalResult = await fetchBatch(minimalBatch, minimalHeaders, 10000, true);
-            
-            if (minimalResult.status === 200) {
-              // Process minimal result same as success
-              console.log(`✅ [vFinal] Minimal variants success`);
-              
-              for (const row of minimalResult.rows) {
-                const normKey = nrm(String(row.relKeyword ?? row.keyword ?? ''));
-                if (normKey) {
-                  const safeNumber = (val: any, defaultVal = 0) => {
-                    const num = Number(val);
-                    return isNaN(num) ? defaultVal : num;
-                  };
-                  
-                  const pc = safeNumber(row.monthlyPcQcCnt);
-                  const mobile = safeNumber(row.monthlyMobileQcCnt);
-                  
-                  out[normKey] = { 
-                    pc, 
-                    mobile, 
-                    total: pc + mobile 
-                  };
-                }
-              }
-              
-              stats.ok += batch.length;
-            } else {
-              stats.fail += batch.length;
-            }
-            
-            i += batch.length; // Advance after minimal attempt
-            
-          } catch (minimalError) {
-            console.log(`❌ [vFinal] Minimal variants also failed`);
-            stats.fail += batch.length;
-            i += batch.length;
-          }
-          
+        // 배치 줄이기
+        if (batchSize > 1) { 
+          batchSize = Math.max(1, Math.floor(batchSize / 2)); 
+          continue; 
         }
-        // Don't advance i if not at minimal batch size, try smaller batch
+
+        // 배치=1인데도 400/413 → 이 키워드 묶음의 대표키로 시도 횟수 누적
+        const surfaces = batch.map(nk => surfaceByNorm.get(nk) ?? nk);
+        const key = baseKey(surfaces[0]);
+        tries[key] = (tries[key] || 0) + 1;
+
+        if (tries[key] >= MAX_ATTEMPTS_PER_KEY) { // ★ 같은 키 5회 넘으면 스킵
+          markPartialFail(key); 
+          i += batchSize; 
+          minimal = false; 
+          continue;
+        }
+
+        // 아직 5회 미만 → minimal 변형으로 한 번 더만 시도
+        if (!minimal) {
+          console.log(`⚠️ [vFinal] Trying minimal variants for 400 error`);
+          minimal = true; 
+          continue;
+        } else {
+          // minimal도 실패했으면 이 키워드는 넘어감
+          console.log(`❌ [vFinal] Minimal variants also failed, skipping`);
+          stats.fail += batch.length;
+          i += batchSize;
+          minimal = false;
+        }
         
       } else {
         // Other errors: fail and advance

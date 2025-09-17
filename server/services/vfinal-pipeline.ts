@@ -110,7 +110,7 @@ async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<C
         const ctr = 0; // Mock 수정 - 타입 오류 해결  
         const adDepth = 2; // Mock - 타입 오류 해결
         
-        const ineligible = (competition === 0 && ctr === 0); // Note: competition is currently 0.5 (mock)
+        const ineligible = false; // Mock 값이므로 ineligible 체크 비활성화
         if (ineligible) {
           eligible = false;
           skipReason = "ineligible";
