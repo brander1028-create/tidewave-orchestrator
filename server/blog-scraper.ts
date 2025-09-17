@@ -1,5 +1,6 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
+import pLimit from 'p-limit';
 
 export interface BlogScrapingResult {
   success: boolean;
@@ -25,55 +26,202 @@ export interface BlogScrapingConfig {
 }
 
 export class NaverBlogScraper {
-  private userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  // 동시성 제한 (최대 3개 동시 요청)
+  private concurrencyLimit = pLimit(3);
   
-  private getHeaders() {
-    return {
-      'User-Agent': this.userAgent,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'Cache-Control': 'max-age=0',
-      'DNT': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
-      'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'Referer': 'https://www.naver.com/',
-    };
+  // User Agent 개선 (모바일과 PC 분리)
+  private userAgents = {
+    mobile: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  };
+  
+  /**
+   * UTF-8 정규화 (인코딩은 URLSearchParams가 처리)
+   */
+  private normalizeQuery(query: string): string {
+    // Unicode 정규화 (NFC 형식으로 통일)
+    return query.normalize('NFC');
   }
 
   /**
-   * 네이버 블로그 검색 결과를 스크래핑합니다
+   * 네이버 블로그 URL 통합 정규화 (blog.naver.com과 m.blog.naver.com 통일)
+   */
+  private unifyNaverBlogUrl(url: string): string {
+    try {
+      if (!url || !url.includes('blog.naver.com')) {
+        return url;
+      }
+
+      let cleanUrl = url;
+      
+      // m.blog.naver.com을 blog.naver.com으로 통일
+      if (cleanUrl.includes('m.blog.naver.com')) {
+        cleanUrl = cleanUrl.replace('m.blog.naver.com', 'blog.naver.com');
+      }
+      
+      // HTTP를 HTTPS로 변경
+      if (cleanUrl.startsWith('http://')) {
+        cleanUrl = cleanUrl.replace('http://', 'https://');
+      }
+      
+      // URL 파싱 및 필수 파라미터만 유지
+      const urlObj = new URL(cleanUrl);
+      const allowedParams = ['blogId', 'logNo', 'parentCategoryNo', 'categoryNo'];
+      const searchParams = new URLSearchParams();
+      
+      allowedParams.forEach(param => {
+        if (urlObj.searchParams.has(param)) {
+          searchParams.set(param, urlObj.searchParams.get(param)!);
+        }
+      });
+      
+      const baseUrl = `https://blog.naver.com${urlObj.pathname}`;
+      return searchParams.toString() ? `${baseUrl}?${searchParams}` : baseUrl;
+    } catch (e) {
+      console.warn('[BlogScraper] URL 통합 정규화 실패:', e);
+      return url;
+    }
+  }
+
+  /**
+   * 지수 백오프 재시도 함수 (429/5xx 에러 대응)
+   */
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    maxRetries = 3,
+    baseDelayMs = 1000
+  ): Promise<T> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error as Error;
+        
+        // 마지막 시도면 에러 던지기
+        if (attempt === maxRetries) {
+          throw lastError;
+        }
+        
+        // 재시도 가능한 에러인지 확인
+        const shouldRetry = this.shouldRetryError(error);
+        if (!shouldRetry) {
+          throw lastError;
+        }
+        
+        // 지수 백오프 지연
+        const delayMs = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
+        console.log(`[BlogScraper] 재시도 ${attempt + 1}/${maxRetries} (${delayMs.toFixed(0)}ms 후)`);
+        
+        await this.sleep(delayMs);
+      }
+    }
+    
+    throw lastError;
+  }
+
+  /**
+   * 재시도 가능한 에러 판단
+   */
+  private shouldRetryError(error: any): boolean {
+    if (error.response) {
+      const status = error.response.status;
+      // 429 (Too Many Requests), 5xx 서버 에러
+      return status === 429 || (status >= 500 && status < 600);
+    }
+    
+    if (error.code) {
+      // 네트워크 관련 에러
+      return ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(error.code);
+    }
+    
+    return false;
+  }
+
+  /**
+   * 지연 함수
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 디바이스별 최적화된 헤더 반환
+   */
+  private getHeaders(device: 'pc' | 'mobile' = 'pc') {
+    const baseHeaders = {
+      'User-Agent': this.userAgents[device],
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.1', // 한국어 우선순위 높임
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Cache-Control': 'no-cache', // 캐시 무효화로 최신 결과 확보
+      'Pragma': 'no-cache',
+      'DNT': '1',
+      'Referer': 'https://www.naver.com/',
+    };
+
+    // 디바이스별 추가 헤더
+    if (device === 'mobile') {
+      return {
+        ...baseHeaders,
+        'sec-ch-ua-mobile': '?1',
+        'Viewport-Width': '390',
+        'sec-ch-viewport-width': '390'
+      };
+    } else {
+      return {
+        ...baseHeaders,
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"'
+      };
+    }
+  }
+
+  /**
+   * 네이버 블로그 검색 결과를 스크래핑합니다 (동시성 제한 적용)
    */
   async scrapeNaverBlog(config: BlogScrapingConfig): Promise<BlogScrapingResult> {
+    return this.concurrencyLimit(async () => {
+      return this.scrapeNaverBlogInternal(config);
+    });
+  }
+
+  /**
+   * 내부 스크래핑 로직 (재시도 적용)
+   */
+  private async scrapeNaverBlogInternal(config: BlogScrapingConfig): Promise<BlogScrapingResult> {
     try {
       const { query, targetUrl, device = 'pc', maxPages = 3 } = config;
 
-      // 네이버 블로그 검색 URL 구성
+      // UTF-8 정규화된 검색 URL 구성
       const searchUrl = this.buildSearchUrl(query, device);
       
       console.log(`[BlogScraper] 네이버 블로그 검색: ${query} (${device})`);
       
-      // HTTP 요청으로 검색 결과 페이지 가져오기 (enhanced headers to prevent 403)
-      const response = await axios.get(searchUrl, {
-        headers: this.getHeaders(),
-        timeout: 15000, // Increased timeout
-        maxRedirects: 5,
-        validateStatus: (status) => status < 500, // Don't throw on 4xx errors
+      // 재시도 로직이 적용된 HTTP 요청
+      const response = await this.withRetry(async () => {
+        return axios.get(searchUrl, {
+          headers: this.getHeaders(device),
+          timeout: 15000,
+          maxRedirects: 5,
+          validateStatus: (status) => status >= 200 && status < 300 // 2xx만 성공으로 처리하여 429 에러가 재시도되도록 함
+        });
       });
 
       if (response.status !== 200) {
         throw new Error(`HTTP ${response.status}: 네이버 검색 페이지 접근 실패`);
       }
 
-      // HTML 파싱
+      // HTML 파싱 (디바이스 타입 전달)
       const $ = cheerio.load(response.data);
-      const results = this.parseSearchResults($);
+      const results = this.parseSearchResults($, device);
 
       if (results.length === 0) {
         return {
@@ -111,7 +259,9 @@ export class NaverBlogScraper {
         // 다음 페이지들도 검색 (최대 maxPages까지)
         for (let page = 2; page <= maxPages; page++) {
           try {
-            const nextPageResults = await this.scrapeNextPage(query, device, page);
+            const nextPageResults = await this.concurrencyLimit(async () => {
+              return this.scrapeNextPage(query, device, page);
+            });
             const targetInNextPage = nextPageResults.find(r => 
               r.url.includes(targetUrl) || 
               targetUrl.includes(r.url.split('?')[0])
@@ -167,21 +317,29 @@ export class NaverBlogScraper {
   }
 
   /**
-   * 네이버 블로그 검색 URL 구성
+   * 네이버 블로그 검색 URL 구성 (UTF-8 정규화 적용)
    */
   private buildSearchUrl(query: string, device: 'pc' | 'mobile', start = 1): string {
-    const encodedQuery = encodeURIComponent(query);
+    const normalizedQuery = this.normalizeQuery(query);
     const baseUrl = device === 'mobile' 
       ? 'https://m.search.naver.com/search.naver'
       : 'https://search.naver.com/search.naver';
     
-    return `${baseUrl}?where=post&query=${encodedQuery}&start=${start}`;
+    // 추가 파라미터로 블로그 결과 품질 개선
+    const params = new URLSearchParams({
+      where: 'post',
+      query: normalizedQuery, // UTF-8 정규화된 쿼리 사용 (URLSearchParams가 자동 인코딩)
+      start: start.toString(),
+      display: '10' // 명시적 결과 개수
+    });
+    
+    return `${baseUrl}?${params.toString()}`;
   }
 
   /**
-   * 검색 결과 HTML을 파싱하여 블로그 정보 추출
+   * 검색 결과 HTML을 파싱하여 블로그 정보 추출 (개선된 셀렉터)
    */
-  private parseSearchResults($: cheerio.CheerioAPI) {
+  private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc') {
     const results: Array<{
       rank: number;
       page: number;
@@ -192,86 +350,151 @@ export class NaverBlogScraper {
       date: string;
     }> = [];
 
-    // PC 버전 셀렉터
-    $('.lst_total .bx').each((index, element) => {
-      try {
-        const $el = $(element);
-        
-        // 광고 제외 (첫 번째는 보통 광고)
-        if (index === 0 && $el.find('.ad').length > 0) {
-          return; // continue
-        }
-
-        const titleEl = $el.find('.title_link, .api_txt_lines.total_tit');
-        const title = titleEl.text().trim();
-        const url = titleEl.attr('href') || '';
-        
-        if (!title || !url) return; // continue
-
-        const snippet = $el.find('.dsc_txt_wrap, .api_txt_lines.dsc_txt_wrap').text().trim();
-        const date = $el.find('.date, .sub_time.sub_txt').text().trim();
-
-        results.push({
-          rank: results.length + 1, // 실제 순위 (광고 제외)
-          page: 1,
-          position: results.length + 1,
-          title,
-          url: this.cleanUrl(url),
-          snippet,
-          date
-        });
-      } catch (e) {
-        console.warn('[BlogScraper] 결과 파싱 오류:', e);
-      }
-    });
-
-    // 모바일 버전 셀렉터 (PC 버전이 안 되는 경우)
-    if (results.length === 0) {
-      $('.lst_total .item, .content_wrap .item').each((index, element) => {
+    // 디바이스별 개선된 셀렉터 사용
+    const selectors = this.getImprovedSelectors(device);
+    
+    // 메인 결과 미어 시도
+    selectors.containers.forEach(containerSelector => {
+      $(containerSelector).each((index, element) => {
         try {
           const $el = $(element);
           
-          const titleEl = $el.find('.title_link, .tit');
-          const title = titleEl.text().trim();
-          const url = titleEl.attr('href') || '';
-          
-          if (!title || !url) return;
+          // 광고 및 비로그 컨텐츠 제외
+          if (this.shouldSkipElement($el)) {
+            return;
+          }
 
-          const snippet = $el.find('.dsc, .sub_txt').text().trim();
-          const date = $el.find('.date, .time').text().trim();
-
-          results.push({
-            rank: results.length + 1,
-            page: 1,
-            position: results.length + 1,
-            title,
-            url: this.cleanUrl(url),
-            snippet,
-            date
-          });
+          const parsedResult = this.parseSearchItem($el, selectors);
+          if (parsedResult) {
+            results.push({
+              ...parsedResult,
+              rank: results.length + 1,
+              page: 1,
+              position: results.length + 1,
+              url: this.unifyNaverBlogUrl(parsedResult.url)
+            });
+          }
         } catch (e) {
-          console.warn('[BlogScraper] 모바일 결과 파싱 오류:', e);
+          console.warn(`[BlogScraper] 결과 파싱 오류 (${containerSelector}):`, e);
         }
       });
-    }
+      
+      // 결과가 있으면 다음 셀렉터를 시도하지 않음
+      if (results.length > 0) {
+        return false; // break out of forEach
+      }
+    });
 
     console.log(`[BlogScraper] 파싱된 결과 수: ${results.length}`);
     return results;
   }
 
   /**
-   * 다음 페이지 스크래핑
+   * 개선된 셀렉터 설정 반환
+   */
+  private getImprovedSelectors(device: 'pc' | 'mobile') {
+    if (device === 'mobile') {
+      return {
+        containers: [
+          '.lst_total .bx', // 기본 결과
+          '.api_subject_bx', // API 결과
+          '.list_total .item', // 모바일 결과
+          '.content_wrap .item' // 백업 셀렉터
+        ],
+        title: ['.title_link', '.api_txt_lines.total_tit', '.tit', '.total_tit'],
+        snippet: ['.dsc_txt_wrap', '.api_txt_lines.dsc_txt_wrap', '.dsc', '.sub_txt'],
+        date: ['.date', '.sub_time.sub_txt', '.time', '.sub_time']
+      };
+    } else {
+      return {
+        containers: [
+          '.lst_total .bx', // PC 기본
+          '.api_subject_bx', // API 결과  
+          '.blog_list .item', // 블로그 리스트
+          '.total_wrap .total_group' // 백업 셀렉터
+        ],
+        title: ['.title_link', '.api_txt_lines.total_tit', '.total_tit'],
+        snippet: ['.dsc_txt_wrap', '.api_txt_lines.dsc_txt_wrap', '.api_txt_lines'],
+        date: ['.date', '.sub_time.sub_txt', '.sub_time']
+      };
+    }
+  }
+
+  /**
+   * 요소를 건너뛰어야 할지 판단
+   */
+  private shouldSkipElement($el: cheerio.Cheerio<any>): boolean {
+    // 광고 제외
+    if ($el.find('.ad, .api_ad_area, .adv').length > 0) {
+      return true;
+    }
+    
+    // 비로그 컨텐츠 제외 (예: 카페, 뉴스 등)
+    if ($el.find('.cafe, .news, .kin').length > 0) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * 개별 결과 아이템 파싱
+   */
+  private parseSearchItem($el: cheerio.Cheerio<any>, selectors: any) {
+    let title = '';
+    let url = '';
+    let snippet = '';
+    let date = '';
+    
+    // 제목과 URL 추출
+    for (const titleSelector of selectors.title) {
+      const titleEl = $el.find(titleSelector);
+      if (titleEl.length > 0) {
+        title = titleEl.text().trim();
+        url = titleEl.attr('href') || '';
+        if (title && url) break;
+      }
+    }
+    
+    // 기본 요구사항 채크
+    if (!title || !url) return null;
+    
+    // 스니펙 추출
+    for (const snippetSelector of selectors.snippet) {
+      const snippetEl = $el.find(snippetSelector);
+      if (snippetEl.length > 0) {
+        snippet = snippetEl.text().trim();
+        if (snippet) break;
+      }
+    }
+    
+    // 날짜 추출
+    for (const dateSelector of selectors.date) {
+      const dateEl = $el.find(dateSelector);
+      if (dateEl.length > 0) {
+        date = dateEl.text().trim();
+        if (date) break;
+      }
+    }
+    
+    return { title, url, snippet, date };
+  }
+
+  /**
+   * 다음 페이지 스크래핑 (개선된 재시도 로직 적용)
    */
   private async scrapeNextPage(query: string, device: 'pc' | 'mobile', page: number) {
-    const start = (page - 1) * 10 + 1; // 네이버는 10개씩 페이징
+    const start = (page - 1) * 10 + 1;
     const searchUrl = this.buildSearchUrl(query, device, start);
     
     console.log(`[BlogScraper] 페이지 ${page} 스크래핑 중...`);
     
-    const response = await axios.get(searchUrl, {
-      headers: this.getHeaders(),
-      timeout: 15000,
-      validateStatus: (status) => status < 500
+    const response = await this.withRetry(async () => {
+      return axios.get(searchUrl, {
+        headers: this.getHeaders(device),
+        timeout: 15000,
+        validateStatus: (status) => status >= 200 && status < 300 // 2xx만 성공으로 처리하여 429 에러가 재시도되도록 함
+      });
     });
 
     if (response.status !== 200) {
@@ -279,9 +502,8 @@ export class NaverBlogScraper {
     }
 
     const $ = cheerio.load(response.data);
-    const results = this.parseSearchResults($);
+    const results = this.parseSearchResults($, device);
     
-    // 페이지 번호에 따라 순위 조정
     return results.map(r => ({
       ...r,
       rank: r.rank + (page - 1) * 10,
@@ -291,70 +513,32 @@ export class NaverBlogScraper {
   }
 
   /**
-   * URL 정리 (네이버 리다이렉트 URL 처리 및 정규화)
+   * URL 정리 (레거시 지원, 통합 정규화 함수 사용)
    */
   private cleanUrl(url: string): string {
     try {
-      // Empty or invalid URLs
       if (!url || typeof url !== 'string') {
         return '';
       }
 
-      // Already clean direct URLs
-      if (url.startsWith('https://blog.naver.com/') && !url.includes('Redirect')) {
-        return this.normalizeNaverBlogUrl(url);
-      }
-
-      // Handle Naver redirect URLs
+      // 네이버 리다이렉트 URL 처리
       if (url.includes('blog.naver.com') && url.includes('Redirect=Log')) {
         const urlObj = new URL(url);
         const redirectUrl = urlObj.searchParams.get('url');
         if (redirectUrl) {
           const decodedUrl = decodeURIComponent(redirectUrl);
-          return this.normalizeNaverBlogUrl(decodedUrl);
+          return this.unifyNaverBlogUrl(decodedUrl);
         }
       }
 
-      // Handle other Naver blog URL patterns
+      // 네이버 블로그 URL이면 통합 정규화
       if (url.includes('blog.naver.com')) {
-        return this.normalizeNaverBlogUrl(url);
-      }
-      
-      // Ensure HTTPS for blog.naver.com URLs
-      if (url.includes('blog.naver.com') && url.startsWith('http://')) {
-        url = url.replace('http://', 'https://');
+        return this.unifyNaverBlogUrl(url);
       }
 
       return url;
     } catch (e) {
-      console.warn('[BlogScraper] URL cleaning failed:', e);
-      return url;
-    }
-  }
-
-  /**
-   * Normalize Naver blog URLs to prevent 403 errors
-   */
-  private normalizeNaverBlogUrl(url: string): string {
-    try {
-      // Remove tracking parameters that might cause 403s
-      const urlObj = new URL(url);
-      
-      // Keep only essential parameters for Naver blog URLs
-      const allowedParams = ['blogId', 'logNo', 'parentCategoryNo', 'categoryNo'];
-      const searchParams = new URLSearchParams();
-      
-      allowedParams.forEach(param => {
-        if (urlObj.searchParams.has(param)) {
-          searchParams.set(param, urlObj.searchParams.get(param)!);
-        }
-      });
-      
-      // Reconstruct clean URL
-      const cleanUrl = `${urlObj.protocol}//${urlObj.hostname}${urlObj.pathname}`;
-      return searchParams.toString() ? `${cleanUrl}?${searchParams}` : cleanUrl;
-    } catch (e) {
-      console.warn('[BlogScraper] URL normalization failed:', e);
+      console.warn('[BlogScraper] URL 정리 실패:', e);
       return url;
     }
   }

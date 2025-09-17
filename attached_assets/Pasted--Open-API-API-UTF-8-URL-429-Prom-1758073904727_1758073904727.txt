@@ -1,0 +1,193 @@
+네이버 Open API·검색광고 API는 “인코딩/헤더/쿼터/동시성”에서 가장 많이 터집니다. UTF-8 정규화+URL 인코딩, 헤더 정확도, 429 대비 백오프/재시도, Promise.allSettled로 부분 성공 허용, 결과 캐시가 핵심입니다.
+
+빠른 브리핑
+
+오류 패턴: 500처럼 보이지만 실은 동기 검증 실패(파라미터·인코딩·스키마), 429(쿼터 초과), 혹은 리다이렉트/URL 정규화 실패가 다수.
+
+바이브 코딩 시 필수: 스키마 검증(zod) → 요청 래퍼(재시도/백오프/로깅) → 동시성 제한 → 결과 캐시 → 진행률 표시.
+
+자주 하는 실수 & 방지 체크리스트
+1) 인코딩/정규화
+
+[실수] 한글 쿼리 미인코딩: ?query=홍삼 스틱 → 공백/한글 때문에 400/500.
+
+[해법]
+
+항상 UTF-8로 처리하고 encodeURIComponent(query) 적용.
+
+정규화: 블로그/포스트 URL은 다음 중 하나로 통일
+blog.naver.com/{id}/{postId} ↔ m.blog.naver.com/{id}/{postId} ↔ PostView.naver?blogId=...&logNo=...
+→ 내부적으로 blogId + logNo 키로 단일 canonical 생성.
+
+// URL 정규화 예시
+export function normalizeNaverBlogUrl(u: string) {
+  const url = new URL(u);
+  // m.blog.naver.com / blog.naver.com / post.naver.com 모두 처리
+  if (url.hostname.endsWith('naver.com')) {
+    // PostView 쿼리에서 blogId/logNo 추출
+    const blogId = url.searchParams.get('blogId') ?? url.pathname.split('/')[1];
+    const logNo = url.searchParams.get('logNo') ?? url.pathname.split('/')[2];
+    if (blogId && logNo) return `https://m.blog.naver.com/${blogId}/${logNo}`;
+  }
+  return u;
+}
+
+2) 헤더/자격 증명
+
+[실수] Open API에서 X-Naver-Client-Id, X-Naver-Client-Secret 누락/오타.
+
+[실수] 검색광고 API와 Open API를 혼동(검색광고는 HMAC 서명, 타임스탬프, Customer ID 필요).
+
+[해법] 두 계열을 분리:
+
+Open API(블로그/뉴스/백과 등): X-Naver-Client-Id, X-Naver-Client-Secret 헤더.
+
+검색광고 API(검색량/키워드): X-Timestamp, X-API-KEY, X-Customer, X-Signature(HMAC-SHA256) 필수. 시계 오차±5분 내.
+
+3) 쿼터/429/시간 제한
+
+[실수] 배치에서 동시 50~100건 날려 429/timeout 연쇄.
+
+[해법]
+
+동시성 제한(예: p-limit(5~8)), 지수 백오프+지터, 429·5xx 재시도.
+
+캐시/DB로 재조회 방지(검색량은 일 1회, SERP는 키워드×타겟 기준 주기·변경 시만).
+
+start/display 파라미터(예: Open API display<=100, start<=1000) 초과 주의.
+
+import axios from "axios";
+const api = axios.create({ timeout: 10000 });
+
+function sleep(ms:number){ return new Promise(r=>setTimeout(r,ms)); }
+
+async function withRetry<T>(fn:()=>Promise<T>, max=4){
+  let d=300;
+  for(let i=0;i<max;i++){
+    try { return await fn(); }
+    catch(e:any){
+      const status = e?.response?.status;
+      if (status===429 || (status>=500 && status<600)) { // 재시도
+        await sleep(d + Math.floor(Math.random()*150));
+        d*=2; continue;
+      }
+      throw e; // 동기/클라 오류는 즉시 실패
+    }
+  }
+  throw new Error("RetryExhausted");
+}
+
+4) 동기적 실패(지금 겪는 유형)
+
+[실수] 컨트롤러에서 파라미터 Zod 검증 없이 바로 서비스 호출 → 40~90ms 내 500.
+
+[해법] safeParse로 입력을 **400(검증 실패)**로 정리하고, 배치는 Promise.allSettled로 부분 성공 허용.
+
+import { z } from "zod";
+const BatchSchema = z.object({
+  items: z.array(z.object({
+    keyword: z.string().min(1),
+    targetUrl: z.string().url(),
+  })).min(1)
+});
+
+app.post("/api/scraping/batch-rank-check", async (req,res)=>{
+  const v = BatchSchema.safeParse(req.body);
+  if (!v.success) return res.status(400).json({error:"INVALID_INPUT", issues:v.error.issues});
+
+  const results = await Promise.allSettled(
+    v.data.items.map(doRankCheck) // 내부에서 withRetry 사용
+  );
+  const ok = results.filter(r=>r.status==="fulfilled").map(r=>(r as any).value);
+  const fail = results.filter(r=>r.status==="rejected").map(r=>(r as any).reason?.message ?? "ERR");
+  res.json({ okCount: ok.length, failCount: fail.length, ok, fail });
+});
+
+5) SERP 스크래핑 특수성(모바일)
+
+[실수] PC UA로 모바일 SERP를 긁음 → 레이아웃/셀렉터 불일치.
+
+[실수] 지역/언어 헤더 미지정 → 결과 편차/리디렉트.
+
+[해법]
+
+모바일 UA(Android Chrome) + Accept-Language: ko-KR,ko;q=0.9 + 리다이렉트 허용.
+
+속도 제한(키워드×타겟 1초당 1~3회) & 랜덤 지연.
+
+HTML 파서 업데이트를 대비해 데이터 추출은 CSS 셀렉터 다중 후보 + 스냅샷 로깅.
+
+6) 페이지네이션/경계값
+
+[실수] Open API display를 100 초과 또는 start+display > 1000.
+
+[해법] 분할 페이지네이션: 100단위 요청 후 중간 저장(업서트).
+
+7) 캐싱/중복 방지
+
+[실수] 같은 키워드 반복 호출 → 쿼터 낭비.
+
+[해법] 키(keyword+date)로 일일 캐시, SERP는 keyword+targetCanonical로 변화 감지(해시 비교).
+
+8) 로깅/관측성
+
+[실수] 500만 보고 원인 상실.
+
+[해법] 요청ID(traceId), 입력 해시, 동시성/대기시간/재시도 횟수, 최종 UA/URL을 구조화 로그로 남김.
+배치 응답은 성공/실패 목록과 사유를 UI에 바로 보여줌(사용자 선호: % 진행률).
+
+추천 아키텍처(실전용 미니 블록)
+
+요청 래퍼(재시도/백오프/429핸들링) – 위 withRetry.
+
+Open API 클라이언트
+
+async function naverOpenApiSearchBlog(query:string, cid:string, csec:string, start=1, display=30){
+  const url = `https://openapi.naver.com/v1/search/blog.json?query=${encodeURIComponent(query)}&start=${start}&display=${display}`;
+  return withRetry(async ()=> api.get(url, {
+    headers: { "X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec }
+  }).then(r=>r.data));
+}
+
+
+동시성 제한 & 진행률
+
+import pLimit from "p-limit";
+const limit = pLimit(6);
+
+async function runBatch(items: Array<{keyword:string,targetUrl:string}>, onProgress:(ok:number,total:number)=>void){
+  let ok=0; const total = items.length;
+  const tasks = items.map(it=>limit(async ()=>{
+    const res = await doRankCheck(it); // 내부 withRetry
+    ok++; onProgress(ok, total);
+    return res;
+  }));
+  return Promise.allSettled(tasks);
+}
+
+
+스키마 검증(zod) → 부분 성공 허용(allSettled) → 결과 업서트(DB) → 캐시 키/TTL
+
+블로그/순위 가져오기 “운영 규칙”
+
+블로그 타겟 추가: 저장 시점에 URL 정규화 + 존재 확인.
+
+검색량: 검색광고 API에서 하루 1회 크롤링+캐시(야간 배치 권장).
+
+SERP 순위: 키워드×타겟 단위로 변경 감지형 실행(마지막 순위가 바뀐 경우만 재측정) + 알림 스로틀.
+
+UI: 버튼 클릭 시 스피너 + “(키워드/타겟) n/m, 73%” 즉시 표시(사용자 선호 반영).
+
+리스크/대안
+
+TOS/차단 리스크: 과도한 스크래핑은 차단 가능 → 속도 제한·랜덤 지연·헤더 일관·캐시로 회피.
+
+레이아웃 변경: 셀렉터 깨지면 즉시 실패 → 여러 후보 셀렉터와 샘플 HTML 스냅샷 저장으로 핫픽스.
+
+다음 액션(제가 바로 적용)
+
+batch-rank-check 엔드포인트에 Zod 검증 + allSettled + 상세 로깅 패치.
+
+요청 래퍼/동시성 제한/백오프 유틸 추가 후 Open API·SERP에 공용 적용.
+
+URL 정규화 유틸 도입 및 DB 캐시 키 전환(blogId+logNo).
