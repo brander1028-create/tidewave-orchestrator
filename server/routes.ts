@@ -2653,6 +2653,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // v7.13.1 메타데이터 API - URL 미리보기 기능
+  app.get("/api/metadata", async (req, res) => {
+    try {
+      const { url } = req.query;
+      if (!url || typeof url !== 'string') {
+        return res.status(400).json({ message: "URL 파라미터가 필요합니다" });
+      }
+      
+      // 보안: SSRF 방지를 위한 hostname 검증
+      let isValidNaverBlog = false;
+      let canonicalUrl = url;
+      
+      try {
+        // URL 정규화 (POST 엔드포인트와 동일한 로직)
+        canonicalUrl = canonicalUrl.replace(/^http:/, 'https:');
+        canonicalUrl = canonicalUrl.replace('m.blog.naver.com', 'blog.naver.com');
+        
+        const postViewMatch = canonicalUrl.match(/PostView\.naver.*[?&]blogId=([^&]+).*[&?]logNo=(\d+)/);
+        if (postViewMatch) {
+          const [, blogId, logNo] = postViewMatch;
+          canonicalUrl = `https://blog.naver.com/${blogId}/${logNo}`;
+        }
+        
+        canonicalUrl = canonicalUrl.split('?')[0].split('#')[0].replace(/\/$/, '');
+        
+        const urlObj = new URL(canonicalUrl);
+        isValidNaverBlog = urlObj.hostname === 'blog.naver.com';
+      } catch {
+        return res.status(400).json({ message: "유효하지 않은 URL입니다" });
+      }
+      
+      if (!isValidNaverBlog) {
+        return res.status(400).json({ message: "네이버 블로그 URL만 지원됩니다" });
+      }
+      
+      // 닉네임 추출
+      let nickname = 'unknown';
+      const urlMatch = canonicalUrl.match(/blog\.naver\.com\/([^\/]+)\/(\d+)/);
+      if (urlMatch) {
+        nickname = urlMatch[1];
+      }
+      
+      // 제목 자동 수집 (3초 타임아웃)
+      let title = null;
+      try {
+        console.log(`[v7.13.1 API] 메타데이터 수집 시작: ${canonicalUrl}`);
+        
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout after 3s')), 3000)
+        );
+        
+        const fetchPromise = fetch(canonicalUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; v7.13.1 metadata collector)',
+          },
+        });
+        
+        const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+        
+        if (response.ok) {
+          const html = await response.text();
+          const cheerio = await import('cheerio');
+          const $ = cheerio.load(html);
+          
+          title = $('meta[property="og:title"]').attr('content') ||
+                  $('title').text() ||
+                  null;
+                  
+          if (title) {
+            title = title.trim();
+            console.log(`[v7.13.1 API] 메타데이터 수집 성공: "${title}"`);
+          }
+        }
+      } catch (error) {
+        console.log(`[v7.13.1 API] 메타데이터 수집 실패: ${error instanceof Error ? error.message : error}`);
+      }
+      
+      // 메타데이터 응답
+      res.json({
+        url: canonicalUrl,
+        nickname,
+        title,
+        success: true
+      });
+      
+    } catch (error) {
+      res.status(500).json({ message: "메타데이터 수집에 실패했습니다", error: String(error) });
+    }
+  });
+
   // v7.13 Blog-Keyword Pairs APIs - 1:1 매핑 통합 관리
   app.get("/api/pairs", async (req, res) => {
     try {
