@@ -90,10 +90,11 @@ const getVolumeColor = (volume: number | null) => {
   return "bg-yellow-100 text-yellow-800";
 };
 
+// ✅ 수정: 0-1 범위 점수에 맞게 색상 임계값 조정
 const getScoreColor = (score: number) => {
-  if (score >= 80) return "bg-emerald-100 text-emerald-800 font-medium";
-  if (score >= 60) return "bg-blue-100 text-blue-800";
-  if (score >= 40) return "bg-yellow-100 text-yellow-800";
+  if (score >= 0.8) return "bg-emerald-100 text-emerald-800 font-medium";
+  if (score >= 0.6) return "bg-blue-100 text-blue-800";
+  if (score >= 0.4) return "bg-yellow-100 text-yellow-800";
   return "bg-red-100 text-red-800";
 };
 
@@ -102,6 +103,50 @@ const getRankColor = (rank: number | null) => {
   if (rank <= 3) return "bg-emerald-100 text-emerald-800 font-medium";
   if (rank <= 10) return "bg-blue-100 text-blue-800";
   return "bg-red-100 text-red-800";
+};
+
+// ✅ 수정: 서버의 권위 있는 tier와 점수 정보 추출 (재계산 없음)
+const getTierInfo = (keywordData: any) => {
+  // keywordData.blogs에서 최고 점수와 tier 정보 추출
+  let bestTier = 4; // 기본값
+  let bestScore = 0;
+  
+  if (keywordData.blogs && keywordData.blogs.length > 0) {
+    for (const blog of keywordData.blogs) {
+      if (blog.posts && blog.posts.length > 0) {
+        for (const post of blog.posts) {
+          if (post.tiers && post.tiers.length > 0) {
+            for (const tier of post.tiers) {
+              // ✅ 서버 제공 점수 그대로 사용 (이미 7:3 가중치 적용됨)
+              if (tier.score > bestScore) {
+                bestScore = tier.score;
+                bestTier = tier.tier || 4;
+              }
+            }
+          }
+        }
+      }
+      // topKeywords에서도 확인
+      if (blog.topKeywords && blog.topKeywords.length > 0) {
+        for (const kw of blog.topKeywords) {
+          if (kw.score > bestScore) {
+            bestScore = kw.score;
+          }
+        }
+      }
+    }
+  }
+  
+  // ✅ 안전장치: 점수를 0-1 범위로 제한
+  const clampedScore = Math.max(0, Math.min(1, bestScore));
+  if (bestScore !== clampedScore) {
+    console.warn(`Score ${bestScore} clamped to ${clampedScore} for keyword ${keywordData.keyword}`);
+  }
+  
+  return {
+    tier: bestTier,
+    combinedScore: clampedScore // 서버의 권위 있는 점수 사용
+  };
 };
 
 export default function ResultsPage() {
@@ -358,6 +403,52 @@ export default function ResultsPage() {
           )}
         </div>
 
+        {/* Tier별 키워드 요약 - 스크린샷 스타일 */}
+        {results.summaryByKeyword && results.summaryByKeyword.length > 0 && (
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle className="text-xl font-bold">키워드 티어별 분석 결과</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {results.summaryByKeyword.map((keywordData, index) => {
+                // ✅ 수정: 실제 tier 정보 계산 (7:3 가중치 기반)
+                const tierInfo = getTierInfo(keywordData);
+                
+                return (
+                  <div key={keywordData.keyword} className="flex items-center justify-between py-3 border-b last:border-b-0">
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="bg-blue-50 font-medium">
+                          {tierInfo.tier}티어:
+                        </Badge>
+                        <span className="font-semibold text-lg">{keywordData.keyword}</span>
+                      </div>
+                      
+                      <div className="flex items-center gap-3">
+                        <Badge className={getVolumeColor(keywordData.searchVolume)}>
+                          조회량 {fmtVol(keywordData.searchVolume)}
+                        </Badge>
+                        
+                        <Badge className={getScoreColor(tierInfo.combinedScore)}>
+                          점수 {tierInfo.combinedScore.toFixed(6)}pts
+                        </Badge>
+                        
+                        <Badge variant="outline" className="bg-gray-50">
+                          손익 미확인
+                        </Badge>
+                      </div>
+                    </div>
+                    
+                    <div className="text-sm text-gray-500">
+                      NEW {keywordData.newBlogs}/{keywordData.totalBlogs} · Phase2 {keywordData.phase2ExposedNew}
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        )}
+
         {/* Keyword Summary Cards - v8 Design */}
         <div className="space-y-4" data-testid="keyword-summary-list">
           {results.summaryByKeyword && results.summaryByKeyword.length > 0 ? (
@@ -380,7 +471,16 @@ export default function ResultsPage() {
                         <div className="flex items-center gap-4">
                           <h3 className="text-lg font-semibold">{keywordData.keyword}</h3>
                           <Badge className={getVolumeColor(keywordData.searchVolume)}>
-                            검색량 {fmtVol(keywordData.searchVolume)}
+                            조회량 {fmtVol(keywordData.searchVolume)}
+                          </Badge>
+                          {/* 추가된 점수 정보 */}
+                          {keywordData.blogs && keywordData.blogs.length > 0 && keywordData.blogs[0].topKeywords && keywordData.blogs[0].topKeywords.length > 0 && (
+                            <Badge className={getScoreColor(keywordData.blogs[0].topKeywords[0].score || 0)}>
+                              점수 {(keywordData.blogs[0].topKeywords[0].score || 0).toFixed(6)}pts
+                            </Badge>
+                          )}
+                          <Badge variant="outline" className="bg-gray-50">
+                            손익 미확인
                           </Badge>
                         </div>
                         <Button variant="outline" size="sm" onClick={() => {
