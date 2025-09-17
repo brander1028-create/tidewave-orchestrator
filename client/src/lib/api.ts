@@ -406,3 +406,36 @@ export const exportApi = {
     return response.blob();
   }
 };
+
+// v7.13 Blog-Keyword Pairs API - 1:1 매핑 통합 관리
+export const blogKeywordPairsApi = {
+  // Get all blog-keyword pairs
+  getAll: async (owner?: string): Promise<any[]> => {
+    const params = owner ? `?owner=${owner}` : '';
+    const response = await apiRequest("GET", `/api/pairs${params}`);
+    return response.json();
+  },
+
+  // Get single pair by ID
+  getById: async (id: string): Promise<any> => {
+    const response = await apiRequest("GET", `/api/pairs/${id}`);
+    return response.json();
+  },
+
+  // Create new blog-keyword pair
+  create: async (pair: any): Promise<any> => {
+    const response = await apiRequest("POST", "/api/pairs", pair);
+    return response.json();
+  },
+
+  // Update existing pair
+  update: async (id: string, updates: any): Promise<any> => {
+    const response = await apiRequest("PATCH", `/api/pairs/${id}`, updates);
+    return response.json();
+  },
+
+  // Delete pair
+  remove: async (id: string): Promise<void> => {
+    await apiRequest("DELETE", `/api/pairs/${id}`);
+  }
+};

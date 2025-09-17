@@ -22,7 +22,10 @@ import {
   insertRollingAlertSchema,
   insertDashboardSettingsSchema,
   // v7 키워드 매핑 API 스키마
-  targetKeywordsManageSchema
+  targetKeywordsManageSchema,
+  // v7.13 블로그-키워드 페어 스키마
+  insertBlogKeywordTargetSchema,
+  updateBlogKeywordTargetSchema
 } from "@shared/schema";
 import { naverBlogScraper } from "./blog-scraper";
 import { z } from "zod";
@@ -2428,6 +2431,113 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(settings);
     } catch (error) {
       res.status(500).json({ message: "대시보드 설정 저장에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v7.13 Blog-Keyword Pairs APIs - 1:1 매핑 통합 관리
+  app.get("/api/pairs", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const targets = await storage.getBlogKeywordTargets(owner);
+      res.json(targets);
+    } catch (error) {
+      res.status(500).json({ message: "블로그-키워드 페어 조회에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.post("/api/pairs", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validation = insertBlogKeywordTargetSchema.safeParse({
+        ...req.body,
+        owner
+      });
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "유효하지 않은 페어 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.createBlogKeywordTarget(validation.data);
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "블로그-키워드 페어 생성에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.patch("/api/pairs/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const validation = updateBlogKeywordTargetSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "유효하지 않은 페어 데이터입니다",
+          errors: validation.error.errors
+        });
+      }
+      
+      const target = await storage.updateBlogKeywordTargetByOwner(owner, id, validation.data);
+      if (!target) {
+        return res.status(404).json({ message: "페어를 찾을 수 없습니다" });
+      }
+      
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "블로그-키워드 페어 수정에 실패했습니다", error: String(error) });
+    }
+  });
+
+  app.delete("/api/pairs/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const owner = req.headers['x-role'] as string;
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const deleted = await storage.deleteBlogKeywordTargetByOwner(owner, id);
+      if (!deleted) {
+        return res.status(404).json({ message: "페어를 찾을 수 없습니다" });
+      }
+      
+      res.json({ message: "블로그-키워드 페어가 삭제되었습니다" });
+    } catch (error) {
+      res.status(500).json({ message: "블로그-키워드 페어 삭제에 실패했습니다", error: String(error) });
+    }
+  });
+
+  // v7.13 Owner-aware 보안 API들
+  app.get("/api/pairs/:id", async (req, res) => {
+    try {
+      const owner = req.headers['x-role'] as string;
+      const { id } = req.params;
+      
+      if (!owner) {
+        return res.status(401).json({ message: "권한이 없습니다" });
+      }
+      
+      const target = await storage.getBlogKeywordTargetById(owner, id);
+      if (!target) {
+        return res.status(404).json({ message: "페어를 찾을 수 없습니다" });
+      }
+      
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ message: "블로그-키워드 페어 조회에 실패했습니다", error: String(error) });
     }
   });
 

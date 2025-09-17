@@ -24,6 +24,8 @@ import {
   // v7 대시보드 타입들
   type RollingAlert, type InsertRollingAlert,
   type DashboardSettings, type InsertDashboardSettings,
+  // v7.13 통합 블로그-키워드 매핑
+  type BlogKeywordTarget, type InsertBlogKeywordTarget,
   rankTimeSeries,
   metricTimeSeries,
   events,
@@ -49,7 +51,9 @@ import {
   collectionState,
   // v7 대시보드 테이블들
   rollingAlerts,
-  dashboardSettings
+  dashboardSettings,
+  // v7.13 통합 테이블
+  blogKeywordTargets
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { db } from "./db";
@@ -123,6 +127,17 @@ export interface IStorage {
 
   // v6 Review State (신규 리뷰 감지) - Owner-aware methods for security
   getReviewState(owner: string, productKey: string): Promise<ReviewState | null>;
+
+  // v7.13 Blog-Keyword Pairs (1:1 매핑 통합 관리)
+  getBlogKeywordTargets(owner?: string): Promise<BlogKeywordTarget[]>;
+  createBlogKeywordTarget(data: InsertBlogKeywordTarget): Promise<BlogKeywordTarget>;
+  updateBlogKeywordTarget(id: string, updates: Partial<BlogKeywordTarget>): Promise<BlogKeywordTarget>;
+  deleteBlogKeywordTarget(id: string): Promise<void>;
+  getBlogKeywordTarget(id: string): Promise<BlogKeywordTarget | null>;
+  // Owner-aware methods for security
+  getBlogKeywordTargetById(owner: string, id: string): Promise<BlogKeywordTarget | null>;
+  updateBlogKeywordTargetByOwner(owner: string, id: string, updates: Partial<BlogKeywordTarget>): Promise<BlogKeywordTarget | null>;
+  deleteBlogKeywordTargetByOwner(owner: string, id: string): Promise<boolean>;
   updateReviewState(owner: string, data: InsertReviewState): Promise<ReviewState>;
   
   // v7 Group CRUD operations (키워드 그룹 관리) - Owner-aware methods for security
@@ -811,7 +826,9 @@ export class DatabaseStorage implements IStorage {
       page: rankSnapshots.page,
       position: rankSnapshots.position,
       source: rankSnapshots.source,
-      metadata: rankSnapshots.metadata
+      metadata: rankSnapshots.metadata,
+      pairId: rankSnapshots.pairId,
+      exposed: rankSnapshots.exposed
     })
     .from(rankSnapshots)
     .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
@@ -859,7 +876,9 @@ export class DatabaseStorage implements IStorage {
       page: rankSnapshots.page,
       position: rankSnapshots.position,
       source: rankSnapshots.source,
-      metadata: rankSnapshots.metadata
+      metadata: rankSnapshots.metadata,
+      pairId: rankSnapshots.pairId,
+      exposed: rankSnapshots.exposed
     })
     .from(rankSnapshots)
     .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
@@ -908,7 +927,9 @@ export class DatabaseStorage implements IStorage {
         page: rankSnapshots.page,
         position: rankSnapshots.position,
         source: rankSnapshots.source,
-        metadata: rankSnapshots.metadata
+        metadata: rankSnapshots.metadata,
+        pairId: rankSnapshots.pairId,
+        exposed: rankSnapshots.exposed
       })
       .from(rankSnapshots)
       .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
@@ -1539,6 +1560,87 @@ export class DatabaseStorage implements IStorage {
 
     return result;
   }
+
+  // v7.13 Blog-Keyword Targets (1:1 매핑 통합 관리)
+  async getBlogKeywordTargets(owner?: string): Promise<BlogKeywordTarget[]> {
+    const conditions = [];
+    if (owner) {
+      conditions.push(eq(blogKeywordTargets.owner, owner));
+    }
+
+    return await db.select()
+      .from(blogKeywordTargets)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(blogKeywordTargets.createdAt));
+  }
+
+  async createBlogKeywordTarget(data: InsertBlogKeywordTarget): Promise<BlogKeywordTarget> {
+    const [result] = await db.insert(blogKeywordTargets)
+      .values(data as any)
+      .returning();
+    return result;
+  }
+
+  async updateBlogKeywordTarget(id: string, updates: Partial<BlogKeywordTarget>): Promise<BlogKeywordTarget> {
+    const [result] = await db.update(blogKeywordTargets)
+      .set(updates)
+      .where(eq(blogKeywordTargets.id, id))
+      .returning();
+    return result;
+  }
+
+  async deleteBlogKeywordTarget(id: string): Promise<void> {
+    await db.delete(blogKeywordTargets)
+      .where(eq(blogKeywordTargets.id, id));
+  }
+
+  async getBlogKeywordTarget(id: string): Promise<BlogKeywordTarget | null> {
+    const [result] = await db.select()
+      .from(blogKeywordTargets)
+      .where(eq(blogKeywordTargets.id, id))
+      .limit(1);
+    return result || null;
+  }
+
+  // Owner-aware methods for security
+  async getBlogKeywordTargetById(owner: string, id: string): Promise<BlogKeywordTarget | null> {
+    const [result] = await db.select()
+      .from(blogKeywordTargets)
+      .where(and(
+        eq(blogKeywordTargets.id, id),
+        eq(blogKeywordTargets.owner, owner)
+      ))
+      .limit(1);
+    return result || null;
+  }
+
+  async updateBlogKeywordTargetByOwner(owner: string, id: string, updates: Partial<BlogKeywordTarget>): Promise<BlogKeywordTarget | null> {
+    try {
+      const [result] = await db.update(blogKeywordTargets)
+        .set(updates)
+        .where(and(
+          eq(blogKeywordTargets.id, id),
+          eq(blogKeywordTargets.owner, owner)
+        ))
+        .returning();
+      return result || null;
+    } catch (error) {
+      throw new Error(`Unauthorized or target not found: ${error}`);
+    }
+  }
+
+  async deleteBlogKeywordTargetByOwner(owner: string, id: string): Promise<boolean> {
+    try {
+      const result = await db.delete(blogKeywordTargets)
+        .where(and(
+          eq(blogKeywordTargets.id, id),
+          eq(blogKeywordTargets.owner, owner)
+        ));
+      return (result.rowCount || 0) > 0;
+    } catch (error) {
+      return false;
+    }
+  }
 }
 
 export class MemStorage implements IStorage {
@@ -1559,6 +1661,8 @@ export class MemStorage implements IStorage {
   private reviewStates: Map<string, ReviewState>;
   // v7 키워드 매핑 변수들
   private targetKeywords: Map<string, TargetKeyword>;
+  // v7.13 통합 블로그-키워드 변수
+  private blogKeywordTargets: Map<string, BlogKeywordTarget>;
   // v7 키워드 그룹 변수들
   private groups: Map<string, Group>;
   private groupKeywords: Map<string, GroupKeyword>;
@@ -1585,6 +1689,8 @@ export class MemStorage implements IStorage {
     this.reviewStates = new Map();
     // v7 키워드 매핑 변수들 초기화
     this.targetKeywords = new Map();
+    // v7.13 통합 변수 초기화
+    this.blogKeywordTargets = new Map();
     // v7 키워드 그룹 변수들 초기화
     this.groups = new Map();
     this.groupKeywords = new Map();
@@ -2697,7 +2803,7 @@ export class MemStorage implements IStorage {
       scheduleCron: data.scheduleCron ?? null,
       sortDefault: data.sortDefault ?? null,
       deviceDefault: data.deviceDefault ?? null,
-      active: data.active ?? null,
+      active: data.active ?? true,
       createdAt: now,
     };
     this.productTargets.set(id, target);
@@ -2798,6 +2904,8 @@ export class MemStorage implements IStorage {
       page: data.page ?? null,
       position: data.position ?? null,
       metadata: data.metadata ?? null,
+      pairId: (data as any).pairId ?? null,
+      exposed: (data as any).exposed ?? false,
       timestamp: new Date(),
     };
     this.rankSnapshots.set(id, snapshot);
@@ -3056,7 +3164,13 @@ export class MemStorage implements IStorage {
     const id = randomUUID();
     const groupIndex: GroupIndexDaily = {
       id,
-      ...data
+      ...data,
+      avgRank: data.avgRank ?? null,
+      keywordCount: data.keywordCount ?? null,
+      topRankCount: data.topRankCount ?? null,
+      improvementCount: data.improvementCount ?? null,
+      alertCount: data.alertCount ?? null,
+      indexScore: data.indexScore ?? null
     };
     this.groupIndexDaily.set(id, groupIndex);
     return groupIndex;
@@ -3525,6 +3639,84 @@ export class MemStorage implements IStorage {
     }
 
     return result;
+  }
+
+  // v7.13 Blog-Keyword Targets (1:1 매핑 통합 관리)
+  async getBlogKeywordTargets(owner?: string): Promise<BlogKeywordTarget[]> {
+    const results = Array.from(this.blogKeywordTargets.values());
+    if (owner) {
+      return results.filter(target => target.owner === owner).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+    return results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  async createBlogKeywordTarget(data: InsertBlogKeywordTarget): Promise<BlogKeywordTarget> {
+    const id = randomUUID();
+    const now = new Date();
+    const target: BlogKeywordTarget = {
+      id,
+      owner: data.owner,
+      keywordText: data.keywordText,
+      keywordNorm: (data as any).keywordNorm || data.keywordText.toLowerCase().trim(),
+      blogUrl: data.blogUrl,
+      blogUrlNorm: (data as any).blogUrlNorm || data.blogUrl.toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, ''),
+      nickname: (data as any).nickname || `${data.keywordText}-${data.blogUrl.split('/')[2] || 'blog'}`,
+      title: data.title || null,
+      brand: data.brand || null,
+      groupName: data.groupName || null,
+      active: data.active !== undefined ? data.active : true,
+      createdAt: now
+    };
+    this.blogKeywordTargets.set(id, target);
+    return target;
+  }
+
+  async updateBlogKeywordTarget(id: string, updates: Partial<BlogKeywordTarget>): Promise<BlogKeywordTarget> {
+    const existing = this.blogKeywordTargets.get(id);
+    if (!existing) {
+      throw new Error(`BlogKeywordTarget with id ${id} not found`);
+    }
+    
+    const updated = { ...existing, ...updates };
+    this.blogKeywordTargets.set(id, updated);
+    return updated;
+  }
+
+  async deleteBlogKeywordTarget(id: string): Promise<void> {
+    this.blogKeywordTargets.delete(id);
+  }
+
+  async getBlogKeywordTarget(id: string): Promise<BlogKeywordTarget | null> {
+    return this.blogKeywordTargets.get(id) || null;
+  }
+
+  // Owner-aware methods for security
+  async getBlogKeywordTargetById(owner: string, id: string): Promise<BlogKeywordTarget | null> {
+    const target = this.blogKeywordTargets.get(id);
+    if (target && target.owner === owner) {
+      return target;
+    }
+    return null;
+  }
+
+  async updateBlogKeywordTargetByOwner(owner: string, id: string, updates: Partial<BlogKeywordTarget>): Promise<BlogKeywordTarget | null> {
+    const existing = this.blogKeywordTargets.get(id);
+    if (!existing || existing.owner !== owner) {
+      return null;
+    }
+    
+    const updated = { ...existing, ...updates };
+    this.blogKeywordTargets.set(id, updated);
+    return updated;
+  }
+
+  async deleteBlogKeywordTargetByOwner(owner: string, id: string): Promise<boolean> {
+    const target = this.blogKeywordTargets.get(id);
+    if (target && target.owner === owner) {
+      this.blogKeywordTargets.delete(id);
+      return true;
+    }
+    return false;
   }
 }
 
