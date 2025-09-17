@@ -67,6 +67,10 @@ function pickLongest(tokens: string[]): string | null {
   return tokens.sort((a, b) => b.length - a.length)[0];
 }
 
+// 조합 폭발 제어 상수
+const MAX_CANDS_PER_TITLE = 30;   // 추출 전체 상한
+const MAX_BIGRAMS_PER_BASE = 12;  // base 조합 상한
+
 /**
  * extractTokens - 제목에서 토큰 추출 (banSingles 제외)
  */
@@ -213,10 +217,13 @@ export async function processPostTitleVFinal(
   }
   
   const ctx = { title, blogId, postId: postId.toString(), inputKeyword, jobId };
-  const rawCandidates = engine.generateCandidates(ctx, cfg);
+  let rawCandidates = engine.generateCandidates(ctx, cfg);
+  
+  // n-gram/추가 후보 생성 후: candidates 상한 적용 (조합 폭발 제어)
+  rawCandidates = rawCandidates.slice(0, MAX_CANDS_PER_TITLE);
   stats.candidatesGenerated = rawCandidates.length;
   
-  console.log(`🔤 [vFinal] Generated ${stats.candidatesGenerated} candidates`);
+  console.log(`🔤 [vFinal] Generated ${stats.candidatesGenerated} candidates (limited to ${MAX_CANDS_PER_TITLE})`);
   
   // Step 3: 제목 토큰 프리엔리치 (DB→API→upsert→merge)
   console.log(`📊 [vFinal] Pre-enriching tokens...`);
@@ -252,10 +259,11 @@ export async function processPostTitleVFinal(
     // base + 나머지로 빅그램 생성
     const base = pickMaxVolumeToken(pool) || pickLongest(toks);
     if (base) {
-      const bigrams = expandBigrams(base, toks);
+      // bigrams 만들 때 상한 적용
+      const bigrams = expandBigrams(base, toks).slice(0, MAX_BIGRAMS_PER_BASE);
       stats.bigramsExpanded = bigrams.length;
       
-      console.log(`📈 [vFinal] Generated ${stats.bigramsExpanded} bigrams with base "${base}"`);
+      console.log(`📈 [vFinal] Generated ${stats.bigramsExpanded} bigrams with base "${base}" (limited to ${MAX_BIGRAMS_PER_BASE})`);
       
       // 빅그램 프리엔리치
       const bigramTexts = bigrams.map(b => b.surface);

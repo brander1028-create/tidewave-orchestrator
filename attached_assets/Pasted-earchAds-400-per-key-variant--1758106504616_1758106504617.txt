@@ -1,0 +1,110 @@
+earchAds 400 무한 재시도가 여전히 같은 키워드에서 반복돼요. (per-key 시도 카운터가 variant 기준이거나 루프 밖에 선언이 안 됨)
+
+최종 선정 직전 품질 필터가 빠져서 vol=0 키들이 soft gate 통과 후 TopK에 섞여요.
+
+조합 폭발(타이틀당 40~100+ 후보)로 한 번에 5k~6k upsert까지 발생 → 느려지고 400도 더 잘 터짐.
+
+아래 “딱 3개 패치”만 반영하세요. 그대로 넣으면 무한 루프 끊기 + 품질 보정 + 속도 안정이 한 번에 됩니다.
+
+A) 400/413 완전 차단 — “키 단위” 재시도 상한 + minimal 변형 스킵
+
+수정 파일: server/services/searchads-robust.ts
+
+// 1) 키 정규화 (표면형 하나로 묶기)
+const baseKey = (s:string)=> s.normalize('NFKC')
+  .toLowerCase().replace(/[\s\-\.]/g,'').trim();
+
+// 2) per-key 시도 카운터(반드시 while 루프 바깥에!)
+const tries: Record<string, number> = {};
+const MAX_ATTEMPTS_PER_KEY = 5;
+
+while (i < items.length) {
+  // slice = [surface1, surface2, ...]
+  const slice = items.slice(i, i + batch);
+  const surfaces = slice.map(s => cleanKeyword(s));
+
+  // minimal=false면 variants, true면 base surface만
+  const payload = minimal ? surfaces : surfaces.flatMap(variantsFor);
+
+  try {
+    const rows = await searchAds.bulk(payload);
+    res.push(...rows);
+    i += batch; minimal = false;                // 성공 → 다음 묶음
+    if (batch < 8) batch++;                     // 완만한 상향
+  } catch (e:any) {
+    if (is413(e) || is400(e)) {
+      // 배치 줄이기
+      if (batch > 1) { batch = Math.max(1, Math.floor(batch/2)); continue; }
+
+      // 배치=1인데도 400/413 → 이 키워드 묶음의 대표키로 시도 횟수 누적
+      const key = baseKey(surfaces[0]);
+      tries[key] = (tries[key] || 0) + 1;
+
+      if (tries[key] >= MAX_ATTEMPTS_PER_KEY) { // ★ 같은 키 5회 넘으면 스킵
+        markPartialFail(key); i += 1; minimal = false; continue;
+      }
+
+      // 아직 5회 미만 → minimal 변형으로 한 번 더만 시도
+      minimal = true; continue;
+    }
+    throw e;
+  }
+}
+
+
+포인트
+• tries는 반드시 루프 바깥에 선언.
+• 대표키는 정규화된 surface로 묶어서 variant마다 따로 카운트되지 않게.
+• 배치=1 & minimal에서도 400이면 그 키워드는 스킵하고 다음으로.
+
+B) 최종 선정 직전 품질 필터(soft gate 유지하면서 0 볼륨 컷)
+
+적용 위치: 최종 TopK 만들기 바로 전(vFinal/v17 공통)
+
+const MIN_VOL = 10;                                // 임시 권장
+const MIN_ADS = cfg.adscore?.SCORE_MIN ?? 0.35;
+
+const finalPool = sorted.filter(k =>
+  (k.volume ?? 0) >= MIN_VOL || (k.adScore ?? 0) >= MIN_ADS
+);
+
+// 그래도 비면 한 개는 살리되 랭크는 생략
+const shortlist = (finalPool.length ? finalPool : sorted.slice(0,1))
+                   .slice(0, cfg.phase2.tiersPerPost);
+
+// 이후 shortlist 대상으로만 랭크 호출
+
+
+결과: 이제/중인데/방법… 같은 0 볼륨 연결어는 TopK에서 빠지고, 그래도 후보가 없으면 1개만 보이게(랭크 생략) 됩니다.
+
+C) 조합 폭발 제어(속도/안정)
+
+타이틀 후보 상한(하나의 제목에서):
+
+const MAX_CANDS_PER_TITLE = 30;   // 추출 전체 상한
+const MAX_BIGRAMS_PER_BASE = 12;  // base 조합 상한
+
+// n-gram/추가 후보 생성 후:
+candidates = dedupe(candidates).slice(0, MAX_CANDS_PER_TITLE);
+
+// bigrams 만들 때:
+const pairs = expandBigrams(base, toks).slice(0, MAX_BIGRAMS_PER_BASE);
+
+
+효과: 한 제목에서 5천~6천 upsert가 발생하던 게 수백 단위로 제한되어 400/413 빈도가 크게 줄고, 전체 처리 시간이 짧아져요.
+
+빠른 검증 (지금 로그 흐름 기준으로 이 3가지만 체크)
+
+SearchAds 루프:
+
+같은 키워드에서 Trying minimal variants…가 최대 5회만 나오고, 이후 partial-fail(skip) 로그와 함께 다음 키로 이동해야 정상.
+
+TopK 품질:
+
+vol=0 연결어류가 TopK(선정 키워드)에서 사라짐.
+
+빅그램(예: 에스트라 아토베리어, 서비스센터 예약)은 최소 한 번은 API 시도하되, 400 반복 시 스킵되고 다른 후보로 넘어감.
+
+/results 400:
+
+잡이 running일 때는 정상. 완료 후 200으로 바뀌는지 확인.
