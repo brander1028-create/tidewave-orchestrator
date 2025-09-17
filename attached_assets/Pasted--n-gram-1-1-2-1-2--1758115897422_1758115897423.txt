@@ -1,0 +1,160 @@
+✅ 바뀐 규칙(핵심 요약)
+
+후보는 “제목 토큰만” 사용. 연관어/전체 n-gram 확장 금지.
+
+1티어: 단일 키워드 1개(메인)
+
+2티어: 1티어 + 제목 내 2번째로 높은 토큰 고정
+
+3,4티어: 1티어 + (제목 토큰 상위 N) 조합 중 조회량+점수 상위로 채우기
+
+로컬/맛집 단독 금지 → 반드시 조합으로만.
+
+SearchAds 호출은 제목 토큰 + 정규화 변형 최소형만. 배치=8→4→2→1, 키 단위 5회 후 스킵.
+
+모바일 랭크 체크는 서치피드 안내/더보기 문구 전까지만.
+
+1) 연관어 확장 OFF + 제목 토큰 상한
+
+설정(예시)
+
+{
+  "phase2": {
+    "expandRelated": false,           // 🔴 연관어 확장 금지
+    "maxTitleTokens": 6,              // 제목 토큰 상한
+    "tiersPerPost": 4,
+    "banSingles": ["맛집","정리","방법","추천","후기","여자","바르","및","과","와","의","이제","중인데","때인가"]
+  },
+  "searchads": {
+    "maxAttemptsPerKey": 5,
+    "maxBatch": 8
+  }
+}
+
+
+토큰 추출
+
+const tails = /(은|는|이|가|을|를|에|에서|으로|로|과|와|의|및|도|만|까지|부터)$/;
+function extractTitleTokens(title:string, banSingles:Set<string>){
+  return title.replace(/[^\p{L}\p{N}\s]/gu,' ')
+    .split(/\s+/)
+    .map(w=>w.replace(tails,''))
+    .filter(w => w.length>=2 && !banSingles.has(w) && !/^\d+$/.test(w))
+    .slice(0, cfg.phase2.maxTitleTokens); // 상한
+}
+
+2) 결정론 티어 배치(1=단일, 2=1+Top2, 3/4=상위 조합)
+// 정규화/판정
+const isLocal = (w:string)=> /(서울|부산|인천|대구|대전|광주|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)(특별시|광역시|도)?$/.test(w) || /[가-힣]+(시|군|구|동|읍|면|리)$/.test(w);
+const isBannedSingle = (w:string)=> banSingles.has(w) || isLocal(w);
+
+// 1) 제목 토큰만 프리엔리치(DB→API→upsert→merge)
+const toks = extractTitleTokens(title, banSinglesSet);
+await preEnrich(toks); // variants 최소(공백/무공백/하이픈만)
+
+// 2) 단일 후보 정렬(조회량 우선, 동점시 adScore)
+const singles = toks
+  .filter(t=>!isBannedSingle(t))
+  .map(t=>toCandidateFromDB(t))    // DB에서 volume/adScore 읽어옴
+  .sort((a,b)=> (b.volume??0)-(a.volume??0) || (b.adScore??0)-(a.adScore??0));
+
+// T1
+const T1 = singles[0];                           // 단일 1개
+// 2티어 후보: T1 + “두번째로 높은 토큰”
+const second = singles[1] ?? null;
+
+// 3) bigram 후보 구성: base=T1.text
+const base = T1?.text ?? (toks[0]||"");
+const bigramSeq: Candidate[] = [];
+if (second) bigramSeq.push( toCandidateFromDB(`${base} ${second.text}`) );
+
+// 나머지 조합: 제목 토큰들 중 상위 N(예: 4개)와 결합
+const others = singles.slice(2, 6);
+for (const tok of others) bigramSeq.push( toCandidateFromDB(`${base} ${tok.text}`) );
+
+// bigram 프리엔리치(아직 볼륨 없는 건 이때만)
+await preEnrich(bigramSeq.map(c=>c.text));
+
+// 3티어/4티어: bigram들 정렬(조회량 70 + adScore 30)
+const scored = bigramSeq
+  .map(mergeFromDB) // volume/adScore 병합
+  .filter(hasCommerce) // source=='api_ok' && ad_depth>0 && ctr>0
+  .sort((a,b)=>{
+    const vA = Math.log10(Math.max(1,a.volume??1))*25, vB = Math.log10(Math.max(1,b.volume??1))*25;
+    const sA = 0.7*vA + 0.3*((a.adScore??0)*100);
+    const sB = 0.7*vB + 0.3*((b.adScore??0)*100);
+    return sB - sA;
+  });
+
+const T2 = bigramSeq[0] ?? null;      // 고정: T1 + second
+const rest = scored.filter(c => T2 ? nrm(c.text)!==nrm(T2.text) : true);
+const T3 = rest[0] ?? null;
+const T4 = rest[1] ?? null;
+
+// shortlist 구성: T1, T2, T3, T4 (null은 제외)
+let shortlist = [T1, T2, T3, T4].filter(Boolean) as Candidate[];
+
+// soft 보정: (volume≥10 || adScore≥0.35), 비면 1개 남기고 rank=null
+const finalPool = shortlist.filter(k => (k.volume??0)>=10 || (k.adScore??0)>=0.35);
+if (!finalPool.length && shortlist.length) shortlist = [{...shortlist[0], rank:null}];
+else if (finalPool.length) shortlist = finalPool;
+
+
+효과
+• 항상 1티어 단일, 2티어는 T1+두번째 토큰, 3/4티어는 상위 조합
+• 랜덤/폭발 없음, 시나리오 예측 가능
+
+3) 로컬/맛집 단독 금지 (조합만 허용)
+
+토큰화 단계에서 단일 후보에서 제거 (isLocal() || word==='맛집' 컷)
+
+bigram 생성 시에는 허용(필수 결합)
+
+4) SearchAds 호출 최소화
+
+제목 토큰 + bigramSeq만 preEnrich.
+
+variantsFor(surface)는 [surface, nospace] 정도로 최소화(하이픈은 길 때만).
+
+per-key 5회 실패 시 스킵 + i += 1 전진 유지.
+
+const tries: Record<string,number> = {};
+const key = nrm(surfaces[0]);
+tries[key] = (tries[key]||0)+1;
+if (tries[key] >= 5) { markPartialFail(key); i+=1; minimal=false; continue; }
+
+5) 모바일 랭크 체커 stop sentinel
+const STOP_TEXTS = ["검색결과 더보기","서치피드에서 더 다양한 콘텐츠를 탐색해보세요"];
+for (const card of cards){
+  const t = $(card).text();
+  if (STOP_TEXTS.some(s=>t.includes(s))) break;
+  // … 기존 블로그 카드 처리
+}
+
+6) 왜 오류가 났나(원인 요약)
+
+복잡한 제목 → 후보 2~3천개 생성 → SearchAds/DB 폭주 → 타임아웃(400/413 다발)
+
+per-key 재시도는 있었지만 후보가 너무 많아 “무한처럼” 보이는 현상
+
+2~4티어가 랜덤/폭발형이라 조합 갯수가 더 커지고, 품질도 흔들림
+
+위 절식(제목 토큰만, 조합 결정론, 상한)으로 후보 3~6개 수준에 고정되면 문제 사라집니다.
+
+7) 더 줄일 수 있는 추가 스위치(선택)
+
+phase2.maxTitleTokens = 4로 더 줄이기(짧은 제목 위주)
+
+bigramSeq 상한 2 + (N-2) → 항상 최대 5개
+
+잡당 SearchAds 호출 상한(예: 80개) 초과 시 나머지는 다음 라운드로 이월
+
+8) 빠른 검증 체크
+
+1티어=단일 / 2티어=T1+두번째 / 3·4티어=상위 조합
+
+SearchAds 호출 건수: 이전 대비 한자릿수~두자릿수로 감소
+
+로그에 stop=sentinel
+
+Gate 통과 키워드가 바로 티어에 반영(“fallback 컷”만 남음)

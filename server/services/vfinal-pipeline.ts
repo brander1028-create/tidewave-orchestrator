@@ -75,16 +75,29 @@ const MAX_CANDS_PER_TITLE = 30;   // 추출 전체 상한
 const MAX_BIGRAMS_PER_BASE = 12;  // base 조합 상한
 
 /**
- * extractTokens - 제목에서 토큰 추출 (banSingles 제외)
+ * extractTitleTokens - 제목에서 토큰 추출 (첨부 파일 개선안 적용)
+ * 조사 제거, banSingles 제외, 로컬/맛집 단독 금지, 제목 토큰 상한 적용
  */
-function extractTokens(title: string, banSingles: string[] = []): string[] {
-  const words = title
-    .split(/[\s\-_.,!?()]+/)
-    .map(w => w.trim())
-    .filter(w => w.length >= 2);
-    
-  // banSingles 제외
-  return words.filter(word => !banSingles.includes(word));
+function extractTitleTokens(title: string, cfg: any): string[] {
+  const maxTitleTokens = cfg.phase2?.maxTitleTokens || 6;
+  const banSingles = new Set(cfg.phase2?.banSingles || ["맛집","정리","방법","추천","후기","여자","바르","및","과","와","의","이제","중인데","때인가"]);
+  
+  // 조사 패턴
+  const tails = /(은|는|이|가|을|를|에|에서|으로|로|과|와|의|및|도|만|까지|부터)$/;
+  
+  // 로컬 지역 패턴
+  const isLocal = (w: string) => /(서울|부산|인천|대구|대전|광주|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)(특별시|광역시|도)?$/.test(w) || /[가-힣]+(시|군|구|동|읍|면|리)$/.test(w);
+  
+  return title.replace(/[^가-힣a-zA-Z0-9\s]/g, ' ')  // 한글/영문/숫자/공백만 유지
+    .split(/\s+/)
+    .map(w => w.replace(tails, ''))  // 조사 제거
+    .filter(w => 
+      w.length >= 2 && 
+      !banSingles.has(w) && 
+      !/^\d+$/.test(w) &&     // 순수 숫자 제외
+      !isLocal(w)              // 로컬 지역 제외
+    )
+    .slice(0, maxTitleTokens); // 상한 적용
 }
 
 /**
@@ -270,214 +283,196 @@ export async function processPostTitleVFinal(
     reEnriched: 0,
     reSelected: 0,
     gateFiltered: 0,
+    eligibleAfterGate: 0,
     tiersAssigned: 0,
   };
   
-  // Step 1: 제목→토큰 추출
-  const toks = extractTokens(title, cfg.phase2?.banSingles || []);
+  // Step 1: 제목→토큰 추출 (첨부 파일 개선안: 제목 토큰만, 상한 적용)
+  const toks = extractTitleTokens(title, cfg);
   console.log(`📝 [vFinal] Extracted ${toks.length} tokens: ${toks.slice(0, 5).join(', ')}...`);
   
-  // Step 2: Phase2 엔진으로 초기 후보 생성 (Gate 적용 안함!)
-  const engine = engineRegistry.get(cfg.phase2?.engine || 'lk');
-  if (!engine) {
-    throw new Error(`Unknown Phase2 engine: ${cfg.phase2?.engine}`);
+  // Step 2: ★ 결정론적 티어 구성 (첨부 파일 개선안)
+  console.log(`🎯 [Deterministic Tiers] Starting tier assignment from title tokens only...`);
+  
+  if (toks.length === 0) {
+    console.log(`⚠️ [vFinal] No eligible tokens after filtering`);
+    return {
+      tiers: [],
+      stats: { ...stats, candidatesGenerated: 0, firstSelected: 0, eligibleAfterGate: 0 }
+    };
   }
   
-  const ctx = { title, blogId, postId: postId.toString(), inputKeyword, jobId };
-  let rawCandidates = engine.generateCandidates(ctx, cfg);
+  // Helper: Convert token to candidate
+  const toCandidateFromToken = (token: string): Candidate => ({
+    text: token,
+    frequency: 1,
+    position: 0,
+    length: token.length,
+    compound: false,
+    volume: 0
+  });
   
-  // n-gram/추가 후보 생성 후: candidates 상한 적용 (조합 폭발 제어)
-  rawCandidates = rawCandidates.slice(0, MAX_CANDS_PER_TITLE);
-  stats.candidatesGenerated = rawCandidates.length;
+  const toCandidateFromBigram = (text: string): Candidate => ({
+    text: text,
+    frequency: 1,
+    position: 0,
+    length: text.length,
+    compound: true,
+    volume: 0
+  });
   
-  console.log(`🔤 [vFinal] Generated ${stats.candidatesGenerated} candidates (limited to ${MAX_CANDS_PER_TITLE})`);
+  // Step 2.1: 단일 토큰을 Candidate로 변환
+  const singles: Candidate[] = toks.map(tok => toCandidateFromToken(tok));
+  stats.candidatesGenerated = singles.length;
+  console.log(`🏭 [vFinal] Generated ${stats.candidatesGenerated} single-token candidates`);
   
-  // Step 3: 제목 토큰 프리엔리치 (DB→API→upsert→merge)
-  console.log(`📊 [vFinal] Pre-enriching tokens...`);
+  // Step 2.2: 단일 토큰 Pre-enrich
+  console.log(`📊 [vFinal] Pre-enriching single tokens...`);
   
-  const candidateTexts = rawCandidates.map(c => c.text);
-  const volumeData = await getVolumesWithHealth(db, candidateTexts);
+  const singleTexts = singles.map(c => c.text);
+  const singleVolumeData = await getVolumesWithHealth(db, singleTexts);
   
-  // Merge volumes back to candidates
-  rawCandidates.forEach(candidate => {
+  singles.forEach(candidate => {
     const normKey = nrm(candidate.text);
-    const volumeInfo = volumeData.volumes[normKey];
+    const volumeInfo = singleVolumeData.volumes[normKey];
     
     if (volumeInfo && volumeInfo.total > 0) {
       candidate.volume = volumeInfo.total;
       stats.preEnriched++;
-      console.log(`   📊 [Pre-enrich] "${candidate.text}" → volume ${volumeInfo.total}`);
+      console.log(`   📊 [Single Pre-enrich] "${candidate.text}" → volume ${volumeInfo.total}`);
     }
   });
   
-  console.log(`✅ [vFinal] Pre-enriched ${stats.preEnriched}/${stats.candidatesGenerated} candidates`);
+  console.log(`✅ [vFinal] Pre-enriched ${stats.preEnriched}/${stats.candidatesGenerated} single tokens`);
   
-  // Step 4: 2-A DB TopK 선택 (상태머신 1단계)
-  let pool = [...rawCandidates];
-  let topK = pickTopK(pool, K);
-  stats.firstSelected = topK.length;
+  // Step 3: T1 선정 (최고 볼륨 우선, 동점시 길이)
+  const sortedSingles = singles.sort((a, b) => {
+    const volA = a.volume || 0;
+    const volB = b.volume || 0;
+    if (volB !== volA) return volB - volA;  // 볼륨 높은순
+    return b.length - a.length;  // 길이 긴순
+  });
   
-  console.log(`🎯 [2-A] DB TopK selection: ${stats.firstSelected} candidates`);
+  const T1 = sortedSingles[0];
+  const second = sortedSingles[1] || null;
+  stats.firstSelected = 1;
   
-  // Step 5: 2-B Gate 필터링 (상태머신 2단계)
-  console.log(`🚫 [2-B] Applying post-enrich gate...`);
-  let gatedCandidates = await applyPostEnrichGate(topK, cfg);
-  stats.gateFiltered = gatedCandidates.filter(c => !c.eligible).length;
+  console.log(`🎯 [T1 Selection] "${T1.text}" (volume: ${T1.volume || 0})`);
   
-  console.log(`🚫 [2-B] Gate filtered ${stats.gateFiltered}/${topK.length} candidates`);
+  // Step 4: T2, T3, T4 구성 (결정론적 bigram 시퀀스)
+  const base = T1.text;
+  const bigramSeq: Candidate[] = [];
   
-  // Step 6: 2-B1 부족시 bigram 확장 (상태머신 3단계)
-  const eligibleAfterGate = gatedCandidates.filter(c => c.eligible).length;
-  stats.eligibleAfterGate = eligibleAfterGate; // ★ Task 8: eligibleAfterGate 통계 기록
+  // T2: T1 + second (고정)
+  if (second) {
+    const t2Text = `${base} ${second.text}`;
+    bigramSeq.push(toCandidateFromBigram(t2Text));
+    console.log(`🎯 [T2 Fixed] "${t2Text}" (T1 + second highest)`);
+  }
   
-  if (eligibleAfterGate < K) {
-    console.log(`🔧 [2-B1] Insufficient eligible candidates (${eligibleAfterGate}/${K}), expanding with bigrams...`);
+  // T3, T4: T1 + 나머지 조합 (상위 4개까지)
+  const others = sortedSingles.slice(2, 6);
+  for (const tok of others) {
+    const bigramText = `${base} ${tok.text}`;
+    bigramSeq.push(toCandidateFromBigram(bigramText));
+  }
+  
+  console.log(`🏭 [Bigram Generation] Generated ${bigramSeq.length} deterministic bigrams`);
+  
+  // Step 5: Bigram Pre-enrich
+  if (bigramSeq.length > 0) {
+    const bigramTexts = bigramSeq.map(c => c.text);
+    const bigramVolumeData = await getVolumesWithHealth(db, bigramTexts);
     
-    // base + 나머지로 빅그램 생성
-    const base = pickMaxVolumeToken(pool) || pickLongest(toks);
-    if (base) {
-      // bigrams 만들 때 상한 적용
-      const bigrams = expandBigrams(base, toks).slice(0, MAX_BIGRAMS_PER_BASE);
-      stats.bigramsExpanded = bigrams.length;
+    bigramSeq.forEach(candidate => {
+      const normKey = nrm(candidate.text);
+      const volumeInfo = bigramVolumeData.volumes[normKey];
       
-      console.log(`📈 [2-B1] Generated ${stats.bigramsExpanded} bigrams with base "${base}" (limited to ${MAX_BIGRAMS_PER_BASE})`);
-      
-      // 빅그램 프리엔리치
-      const bigramTexts = bigrams.map(b => b.surface);
-      const bigramVolumeData = await getVolumesWithHealth(db, bigramTexts);
-      
-      // 빅그램을 후보로 추가
-      const bigramCandidates: Candidate[] = bigrams.map(bigram => ({
-        text: bigram.surface,
-        frequency: 1,
-        position: 0,
-        length: bigram.surface.length,
-        compound: true,
-        volume: 0
-      }));
-      
-      // 볼륨 병합
-      bigramCandidates.forEach(candidate => {
-        const normKey = nrm(candidate.text);
-        const volumeInfo = bigramVolumeData.volumes[normKey];
-        
-        if (volumeInfo && volumeInfo.total > 0) {
-          candidate.volume = volumeInfo.total;
-          stats.reEnriched++;
-          console.log(`   📊 [2-B1] Re-enrich "${candidate.text}" → volume ${volumeInfo.total}`);
-        }
-      });
-      
-      // 풀에 추가하고 재선정
-      pool = [...rawCandidates, ...bigramCandidates];
-      topK = pickTopK(pool, K);
-      stats.reSelected = topK.length;
-      
-      console.log(`🎯 [2-B1] Re-select TopK: ${stats.reSelected} candidates after bigram expansion`);
-      
-      // 확장된 후보에 대해 다시 Gate 적용
-      gatedCandidates = await applyPostEnrichGate(topK, cfg);
-      const additionalFiltered = gatedCandidates.filter(c => !c.eligible).length - stats.gateFiltered;
-      stats.gateFiltered += additionalFiltered;
-      
-      console.log(`🚫 [2-B1] Additional gate filtering: ${additionalFiltered} candidates`);
-    }
-  } else {
-    console.log(`✅ [2-B] Sufficient eligible candidates (${eligibleAfterGate}/${K}), skipping bigram expansion`);
+      if (volumeInfo && volumeInfo.total > 0) {
+        candidate.volume = volumeInfo.total;
+        stats.reEnriched++;
+        console.log(`   📊 [Bigram Pre-enrich] "${candidate.text}" → volume ${volumeInfo.total}`);
+      }
+    });
   }
   
-  // Step 7: 점수 계산
-  gatedCandidates.forEach(candidate => {
-    candidate.totalScore = calculateTotalScore(candidate, cfg);
+  stats.bigramsExpanded = bigramSeq.length;
+  
+  // Step 6: totalScore 계산 (70% 볼륨 + 30% adScore)
+  const allCandidates = [T1, ...bigramSeq];
+  allCandidates.forEach(candidate => {
+    const vol = candidate.volume || 0;
+    const volScore = vol > 0 ? Math.log10(vol) * 25 : 0;
+    const adScore = candidate.adScore || 0;
+    candidate.totalScore = 0.7 * volScore + 0.3 * (adScore * 100);
   });
   
-  // Step 8: 랭크 체크
-  console.log(`🔍 [vFinal] Checking SERP rankings...`);
+  // Step 7: T2, T3, T4 선정 (bigram 중 점수순)
+  const T2 = bigramSeq[0] || null;  // 고정: T1 + second
+  const remainingBigrams = bigramSeq.slice(1).sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+  const T3 = remainingBigrams[0] || null;
+  const T4 = remainingBigrams[1] || null;
   
-  for (const candidate of gatedCandidates) {
-    if (candidate.eligible) {
-      try {
-        candidate.rank = await serpScraper.checkKeywordRankingInMobileNaver(
-          candidate.text, 
-          `https://blog.naver.com/${blogId}`
-        );
-        console.log(`   📊 [Rank Check] "${candidate.text}" → rank ${candidate.rank || 'NA'}`);
-      } catch (error) {
-        console.error(`   ❌ [Rank Check] Failed for "${candidate.text}":`, error);
-      }
-    }
-  }
+  // Step 8: shortlist 구성 [T1, T2, T3, T4]
+  let shortlist = [T1, T2, T3, T4].filter(Boolean) as Candidate[];
   
-  // Step 8.5: ★ 패치3: 최종 선정 직전 보정 (상업성 기반 필터링)
-  const MIN_VOL = 10;
-  const MIN_ADS = cfg.adscore?.SCORE_MIN ?? 0.35;
+  console.log(`📊 [Tier Policy] T1: "${T1.text}", T2: "${T2?.text || 'N/A'}", T3: "${T3?.text || 'N/A'}", T4: "${T4?.text || 'N/A'}"`);
   
-  // 상업성 있는 키워드만 최종 풀에 선정
+  // Step 9: ★ 하드 Gate 적용 (source='api_ok' && ad_eligible=true만 통과)
+  console.log(`🚫 [Hard Gate] Applying post-enrich gate to ${shortlist.length} candidates...`);
+  const beforeGateCount = shortlist.length;
+  
+  const gatedCandidates = await applyPostEnrichGate(shortlist, cfg);
   const eligibleCandidates = gatedCandidates.filter(c => c.eligible);
   
-  // 배치 DB 쿼리 (개별 쿼리 대신)
-  const finalCandidateTexts = eligibleCandidates.map(c => c.text);
-  const existingDbInfo = finalCandidateTexts.length > 0 ? await db.select({
-    text: managedKeywords.text,
-    source: managedKeywords.source,
-    ad_eligible: managedKeywords.ad_eligible
-  })
-    .from(managedKeywords)
-    .where(inArray(managedKeywords.text, finalCandidateTexts)) : [];
+  stats.gateFiltered = beforeGateCount - eligibleCandidates.length;
+  stats.eligibleAfterGate = eligibleCandidates.length;
   
-  const dbMap = new Map(existingDbInfo.map(info => [info.text, info]));
+  console.log(`🚫 [Hard Gate] Filtered ${stats.gateFiltered}/${beforeGateCount}, ${stats.eligibleAfterGate} eligible candidates`);
   
-  const finalPool = eligibleCandidates.filter(k => {
-    const dbInfo = dbMap.get(k.text);
-    // ★ 패치: ad_eligible 필드 직접 사용 (Gate와 일관성)
-    const hasCommerce = dbInfo?.source === "api_ok" && dbInfo?.ad_eligible === true;
-    const meetsThreshold = (k.volume ?? 0) >= MIN_VOL || (k.adScore ?? 0) >= MIN_ADS;
-    
-    return hasCommerce && meetsThreshold;
-  });
+  // Step 9.1: soft 보정 (eligible 중에서 volume≥10 || adScore≥0.35), 비면 1개 남기고 rank=null
+  const MIN_VOL = 10;
+  const MIN_ADS = cfg.adscore?.SCORE_MIN ?? 0.35;
+  const finalPool = eligibleCandidates.filter(k => (k.volume || 0) >= MIN_VOL || (k.adScore || 0) >= MIN_ADS);
   
-  // soft gate: finalPool이 비어있으면 eligible 중 최고점 1개라도 넘김
-  const finalCandidates = finalPool.length > 0 ? 
-    finalPool : 
-    eligibleCandidates.slice(0, 1).map(k => ({...k, rank: null}));
-  
-  console.log(`🎯 [최종 보정] ${finalCandidates.length}/${eligibleCandidates.length} candidates passed final filter`);
-
-  // Step 8.7: ★ 티어 배치 규칙 강제 (1티어=단일, 2~K티어=2어 조합만)
-  
-  // 1) 단일/조합 분리
-  const singles = finalCandidates.filter(c => !isBigram(c.text));
-  const bigramsOnly = finalCandidates.filter(c => isBigram(c.text));
-  
-  // 2) 1티어: 단일 중에서 고름 (단, 단일 금지어 제외)
-  const singlePool = singles.filter(c => !isBannedSingle(c.text));
-  const tier1 = singlePool.sort((a, b) => (b.totalScore ?? 0) - (a.totalScore ?? 0))[0];
-  
-  // 3) 2~K티어: 전부 2어 조합에서만 고름
-  const need = Math.max(0, K - 1);
-  const tier2toK = bigramsOnly
-    .filter((c, i, arr) => arr.findIndex(x => policyNrm(x.text) === policyNrm(c.text)) === i)  // 중복 제거
-    .sort((a, b) => (b.totalScore ?? 0) - (a.totalScore ?? 0))
-    .slice(0, need);
-  
-  // 4) 최종 shortlist (1티어 없으면 조합 상위 1개로 대체)
-  let shortlist: typeof finalCandidates = [];
-  if (tier1) {
-    shortlist = [tier1, ...tier2toK];
+  if (!finalPool.length && eligibleCandidates.length) {
+    shortlist = [{...eligibleCandidates[0], rank: null}];
+  } else if (finalPool.length) {
+    shortlist = finalPool;
   } else {
-    shortlist = bigramsOnly.slice(0, K);   // 그래도 단일이 없으면 전부 조합
+    shortlist = [];
   }
   
-  console.log(`📊 [티어 정책] Singles: ${singles.length}, Bigrams: ${bigramsOnly.length}, Tier1: ${tier1 ? '1' : '0'}, Tier2-${K}: ${tier2toK.length}`);
-
-  // Step 9: 티어 할당 (shortlist 사용)
-  const rawTiers = engine.assignTiers(shortlist, cfg);
+  // Step 10: SERP 랭크 체크 (최종 shortlist만)
+  console.log(`🔍 [vFinal] Checking SERP rankings on final shortlist...`);
+  
+  for (const candidate of shortlist) {
+    try {
+      candidate.rank = await serpScraper.checkKeywordRankingInMobileNaver(
+        candidate.text, 
+        `https://blog.naver.com/${blogId}`
+      );
+      console.log(`   📊 [Rank Check] "${candidate.text}" → rank ${candidate.rank || 'NA'}`);
+    } catch (error) {
+      console.error(`   ❌ [Rank Check] Failed for "${candidate.text}":`, error);
+    }
+  }
+  
+  const finalCandidates = shortlist;
+  console.log(`🎯 [최종 보정] ${finalCandidates.length} candidates in final deterministic shortlist`);
+  
+  // Step 11: ★ 결정론적 티어 할당 (engine 없이 직접 구성)
+  const deterministic_tiers: Tier[] = finalCandidates.map((candidate, index) => ({
+    tier: index + 1,
+    candidate: candidate,
+    score: candidate.totalScore || 0
+  }));
   
   // ★ Filter out empty/invalid tiers to fix empty tier issue
-  const validTiers = filterValidTiers(rawTiers);
+  const validTiers = filterValidTiers(deterministic_tiers);
   stats.tiersAssigned = validTiers.length;
   
-  console.log(`🏆 [vFinal] Assigned ${rawTiers.length} raw tiers, filtered to ${validTiers.length} valid tiers`);
+  console.log(`🏆 [vFinal] Created ${deterministic_tiers.length} deterministic tiers, filtered to ${validTiers.length} valid tiers`);
   
   // Step 10: 저장 (postTierChecks) - vFinal 테스트 모드 안전 처리 + DB 무결성 보장
   const isTestMode = jobId?.startsWith('test-') || jobId === 'test-job-001';
@@ -554,8 +549,7 @@ export async function processPostTitleVFinal(
   };
   
   console.log(`✅ [vFinal Pipeline] Completed - Generated ${result.tiers.length} tiers`);
-  // ★ Task 8: eligibleAfterGate 통계 추가
-  stats.eligibleAfterGate = eligibleAfterGate;
+  // ★ Task 8: eligibleAfterGate 통계는 이미 하드 Gate 적용 시 설정됨
   
   console.log(`📊 [vFinal Stats] Generated:${stats.candidatesGenerated}, PreEnriched:${stats.preEnriched}, FirstSelected:${stats.firstSelected}, BigramsExpanded:${stats.bigramsExpanded}, ReEnriched:${stats.reEnriched}, ReSelected:${stats.reSelected}, GateFiltered:${stats.gateFiltered}, EligibleAfterGate:${stats.eligibleAfterGate}, TiersAssigned:${stats.tiersAssigned}`);
   
