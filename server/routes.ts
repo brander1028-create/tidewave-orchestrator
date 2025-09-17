@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import axios from "axios";
 import { 
   insertSubmissionSchema, 
   insertTrackedTargetSchema, 
@@ -31,6 +32,18 @@ import { naverBlogScraper } from "./blog-scraper";
 import { z } from "zod";
 import { scrapingService } from "./scraping-service";
 import { calculateYoYMoMWoWForProduct } from './aggregation-service';
+
+// v7.13 환경설정 import
+const V713_CONFIG = {
+  USE_MOCK: process.env.USE_MOCK === 'true' || false,
+  TZ: process.env.TZ || 'Asia/Seoul',
+  GLOBAL_RANK_CRON: process.env.GLOBAL_RANK_CRON || '0 7,20 * * *',
+  ALERT_COOLDOWN_HOURS: parseInt(process.env.ALERT_COOLDOWN_HOURS || '6'),
+  RANK_PER_MIN: parseInt(process.env.RANK_PER_MIN || '20'),
+  RANK_PER_DAY: parseInt(process.env.RANK_PER_DAY || '500'),
+  CACHE_TTL_SEC: parseInt(process.env.CACHE_TTL_SEC || '600'),
+  KEYWORDS_API_BASE: process.env.KEYWORDS_API_BASE || 'https://42ccc512-7f90-450a-a0a0-0b29770596c8-00-1eg5ws086e4j3.kirk.replit.dev/keywords'
+};
 
 // Scraping validation schemas
 const scrapingConfigSchema = z.object({
@@ -1451,25 +1464,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "최소 1개 키워드가 필요합니다" });
       }
 
-      // 키워드별 조회량/점수 데이터 생성 (실제로는 외부 API 연동)
-      const keywordData = keywords.map(keyword => {
-        // 시뮬레이션: 키워드 길이와 종류에 따른 조회량/점수 계산
-        const baseVolume = keyword.includes('홍삼') ? 15000 : 5000;
-        const volume = baseVolume + Math.floor(Math.random() * 10000);
+      // v7.13: 외부 키워드 API 연동 [조회량][점수] 데이터 제공
+      let keywordData;
+      
+      try {
+        // 외부 키워드 API 호출
+        const response = await axios.post(`${V713_CONFIG.KEYWORDS_API_BASE}/lookup`, {
+          keywords: keywords,
+          fields: ['volume', 'score', 'trend', 'competition']
+        }, {
+          timeout: 5000, // 5초 타임아웃
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'BlogRankMonitor-v7.13'
+          }
+        });
         
-        let score = 70 + Math.floor(Math.random() * 25); // 70-95 범위
-        if (keyword.includes('추천') || keyword.includes('효능')) score += 5;
-        if (keyword.includes('부작용')) score -= 10;
+        keywordData = response.data;
         
-        return {
-          keyword,
-          volume,
-          score: Math.min(100, Math.max(20, score)),
-          trend: Math.random() > 0.5 ? 'up' : Math.random() > 0.3 ? 'down' : 'stable',
-          competition: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)],
+        // API 응답 검증 및 정규화
+        if (!Array.isArray(keywordData)) {
+          throw new Error('Invalid API response: expected array');
+        }
+        
+        keywordData = keywordData.map((item, index) => ({
+          keyword: keywords[index] || item.keyword,
+          volume: typeof item.volume === 'number' ? item.volume : 0,
+          score: typeof item.score === 'number' ? Math.min(100, Math.max(0, item.score)) : 50,
+          trend: ['up', 'down', 'stable'].includes(item.trend) ? item.trend : 'stable',
+          competition: ['low', 'medium', 'high'].includes(item.competition) ? item.competition : 'medium',
           lastUpdated: new Date().toISOString()
-        };
-      });
+        }));
+        
+      } catch (apiError) {
+        console.warn(`[키워드 API] 외부 API 호출 실패, fallback 사용:`, apiError instanceof Error ? apiError.message : String(apiError));
+        
+        // Fallback: 외부 API 실패시 기본 데이터 제공
+        keywordData = keywords.map(keyword => {
+          const baseVolume = keyword.includes('홍삼') ? 15000 : 5000;
+          const volume = baseVolume + Math.floor(Math.random() * 10000);
+          
+          let score = 70 + Math.floor(Math.random() * 25); // 70-95 범위
+          if (keyword.includes('추천') || keyword.includes('효능')) score += 5;
+          if (keyword.includes('부작용')) score -= 10;
+          
+          return {
+            keyword,
+            volume,
+            score: Math.min(100, Math.max(20, score)),
+            trend: Math.random() > 0.5 ? 'up' : Math.random() > 0.3 ? 'down' : 'stable',
+            competition: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)],
+            lastUpdated: new Date().toISOString(),
+            fallback: true // fallback 데이터 표시
+          };
+        });
+      }
 
       // Cache-Control: 1시간 캐시
       res.set('Cache-Control', 'public, max-age=3600');
