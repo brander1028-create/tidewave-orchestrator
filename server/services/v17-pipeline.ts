@@ -117,7 +117,13 @@ export async function processPostTitleV17(
     throw new Error(`Unknown Phase2 engine: ${cfg.phase2.engine}`);
   }
   
-  const ctx = { title };
+  const ctx = { 
+    title, 
+    blogId,
+    postId: postId.toString(),
+    inputKeyword,
+    jobId 
+  };
   const candidates = engine.generateCandidates(ctx, cfg);
   console.log(`🔤 [v17 Pipeline] Generated ${candidates.length} candidates using ${cfg.phase2.engine} engine`);
   
@@ -260,8 +266,8 @@ export async function processPostTitleV17(
     tiers: finalTiers.map(tier => ({
       tier: tier.tier,
       text: tier.candidate.text,
-      volume: tier.candidate.volume,
-      rank: tier.candidate.rank,
+      volume: tier.candidate.volume ?? null,
+      rank: tier.candidate.rank ?? null,
       score: tier.score,
       adScore: tier.candidate.adScore,
       eligible: tier.candidate.eligible,
@@ -314,7 +320,7 @@ export async function processSerpAnalysisJobWithV17Assembly(
     
     // 2) 기본 processSerpAnalysisJob 실행 (legacy와 동일하지만 v17 모드)
     // 동적 import로 circular dependency 방지
-    const { default: routes } = await import("../routes");
+    const { registerRoutes } = await import("../routes");
     
     // processSerpAnalysisJob을 Promise로 래핑 (원래는 fire-and-forget)
     await new Promise<void>((resolve, reject) => {
