@@ -60,74 +60,61 @@ function buildSummaryByKeywordFromTiers(tiers: any[], cfg: any) {
   const byKw: Record<string, any> = {};
   
   for (const t of tiers) {
-    // ★ 올바른 집계: t.inputKeyword를 키로 사용 (t.keywords 배열이 아님!)
-    const key = (t.inputKeyword || t.candidate?.text || "unknown").trim();
-    if (!byKw[key]) {
-      byKw[key] = { 
-        keyword: key, 
-        searchVolume: null, // ★ 초기값을 null로 설정
-        totalBlogs: 0,
-        newBlogs: 0,
-        phase2ExposedNew: 0,
-        blogs: [],
-        maxTierVolume: 0 // ★ tier에서 최대 조회량 추적
-      };
-    }
-      
-    // ★ tier에서 조회량 추출 및 최대값 추적
-    const tierVolume = t.candidate?.volume ?? t.volume ?? null;
-    if (tierVolume && tierVolume > byKw[key].maxTierVolume) {
-      byKw[key].maxTierVolume = tierVolume;
-    }
-    
-    // tier를 blog/post 구조로 추가
-    // 실제 프로젝트 구조에 맞춰 조정 필요
-    if (t.blog && t.post) {
-      let blog = byKw[key].blogs.find((b: any) => b.blogId === t.blog.blogId);
-      if (!blog) {
-        blog = {
-          blogId: t.blog.blogId,
-          blogName: t.blog.blogName || t.blog.blogId,
-          blogUrl: t.blog.blogUrl || '',
-          status: 'collected',
-          totalExposed: 0,
-          totalScore: 0,
-          topKeywords: [],
-          posts: []
+    // tier가 키워드 배열을 가지고 있다고 가정
+    for (const kw of (t.keywords ?? [])) {
+      const key = kw.inputKeyword || kw.text || "unknown";
+      if (!byKw[key]) {
+        byKw[key] = { 
+          keyword: key, 
+          searchVolume: kw.volume ?? null,
+          totalBlogs: 0,
+          newBlogs: 0,
+          phase2ExposedNew: 0,
+          blogs: [] 
         };
-        byKw[key].blogs.push(blog);
-        byKw[key].totalBlogs++;
       }
       
-      let post = blog.posts.find((p: any) => p.title === t.post.title);
-      if (!post) {
-        post = {
-          title: t.post.title,
-          tiers: []
-        };
-        blog.posts.push(post);
+      // tier를 blog/post 구조로 추가
+      // 실제 프로젝트 구조에 맞춰 조정 필요
+      if (t.blog && t.post) {
+        let blog = byKw[key].blogs.find((b: any) => b.blogId === t.blog.blogId);
+        if (!blog) {
+          blog = {
+            blogId: t.blog.blogId,
+            blogName: t.blog.blogName || t.blog.blogId,
+            blogUrl: t.blog.blogUrl || '',
+            status: 'collected',
+            totalExposed: 0,
+            totalScore: 0,
+            topKeywords: [],
+            posts: []
+          };
+          byKw[key].blogs.push(blog);
+          byKw[key].totalBlogs++;
+        }
+        
+        let post = blog.posts.find((p: any) => p.title === t.post.title);
+        if (!post) {
+          post = {
+            title: t.post.title,
+            tiers: []
+          };
+          blog.posts.push(post);
+        }
+        
+        // ★ tier 추가: v17 실제 계산 점수 우선 사용
+        post.tiers.push({
+          tier: t.tier || 1,
+          text: t.candidate?.text || t.textSurface || t.text || "",
+          volume: t.candidate?.volume ?? t.volume ?? null,
+          rank: t.candidate?.rank ?? t.rank ?? null,
+          score: t.candidate?.totalScore ?? t.score ?? t.candidate?.adScore ?? 0, // ★ totalScore 최우선
+          eligible: t.candidate?.eligible ?? true,
+          skipReason: t.candidate?.skipReason ?? null
+        });
+        
+        blog.totalScore += (t.score ?? 0);
       }
-      
-      // ★ tier 추가: v17 실제 계산 점수 우선 사용
-      post.tiers.push({
-        tier: t.tier || 1,
-        text: t.candidate?.text || t.textSurface || t.text || "",
-        volume: tierVolume,
-        rank: t.candidate?.rank ?? t.rank ?? null,
-        score: t.candidate?.totalScore ?? t.score ?? t.candidate?.adScore ?? 0, // ★ totalScore 최우선
-        eligible: t.candidate?.eligible ?? true,
-        skipReason: t.candidate?.skipReason ?? null
-      });
-      
-      blog.totalScore += (t.score ?? 0);
-    }
-  }
-  
-  // ★ 마지막 단계: searchVolume이 null/0이면 maxTierVolume으로 설정
-  for (const kwData of Object.values(byKw)) {
-    if ((!kwData.searchVolume || kwData.searchVolume === 0) && kwData.maxTierVolume > 0) {
-      kwData.searchVolume = kwData.maxTierVolume;
-      console.log(`🎯 [Volume Fix] "${kwData.keyword}": searchVolume set to ${kwData.maxTierVolume} from tiers`);
     }
   }
   
