@@ -272,6 +272,27 @@ export default function BlogRank() {
     },
   });
 
+  // Delete blog mutation
+  const deleteBlogMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await manualBlogApi.remove(id);
+    },
+    onSuccess: () => {
+      toast({
+        title: "키워드 삭제 완료",
+        description: "키워드 추적이 중단되었습니다.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "삭제 실패",
+        description: `키워드 삭제 중 오류가 발생했습니다: ${error.message}`,
+        variant: "destructive",
+      });
+    },
+  });
+
   // Data processing
   const mockData = generateMockData(trackedTargets);
   
@@ -460,6 +481,13 @@ export default function BlogRank() {
       });
     }
   }, [trackedTargets, queryClient]);
+
+  // 삭제 처리
+  const handleDeleteTarget = (targetId: string) => {
+    if (confirm("정말로 이 키워드 추적을 중단하시겠습니까?")) {
+      deleteBlogMutation.mutate(targetId);
+    }
+  };
 
   // 취소 처리
   const handleCancel = () => {
@@ -994,7 +1022,7 @@ export default function BlogRank() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => removeKeywordFromDashboard(item.id)}
+                    onClick={() => handleDeleteTarget(item.id)}
                     className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                     data-testid={`button-remove-${item.id}`}
                   >
