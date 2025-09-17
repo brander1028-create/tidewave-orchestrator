@@ -140,9 +140,31 @@ class SerpScraper {
     const results: SerpResult[] = [];
     const foundUrls = new Set<string>();
     
+    // STOP_TEXTS sentinel: 서치피드 진입 전에서 종료
+    const STOP_TEXTS = [
+      "검색결과 더보기",                                 // 더보기 버튼
+      "서치피드에서 더 다양한 콘텐츠를 탐색해보세요",     // 서치피드 안내
+    ];
+    
+    // HTML에서 가장 먼저 나타나는 sentinel 찾기 (earliest-stop)
+    const stopIndices = STOP_TEXTS.map(stopText => ({
+      text: stopText,
+      index: html.indexOf(stopText)
+    })).filter(item => item.index !== -1);
+    
+    let scanableHtml = html;
+    if (stopIndices.length > 0) {
+      // 가장 먼저 나타나는 sentinel 선택
+      const earliestStop = stopIndices.reduce((earliest, current) => 
+        current.index < earliest.index ? current : earliest
+      );
+      scanableHtml = html.substring(0, earliestStop.index);
+      console.log(`🛑 [Mobile Sentinel] Found "${earliestStop.text}" at position ${earliestStop.index}, limiting scan to ${scanableHtml.length} chars`);
+    }
+    
     // Multiple parsing strategies for Naver mobile search
     const blogUrlRegex = /https:\/\/blog\.naver\.com\/[^\s"'<>\)\]]+/g;
-    const blogMatches = Array.from(html.matchAll(blogUrlRegex));
+    const blogMatches = Array.from(scanableHtml.matchAll(blogUrlRegex));
     
     let currentRank = 1;
     
@@ -159,11 +181,11 @@ class SerpScraper {
         const blogIdMatch = blogUrl.match(/blog\.naver\.com\/([^\/\?]+)/);
         const blogId = blogIdMatch ? blogIdMatch[1] : 'blog';
         
-        // Try to extract title from surrounding HTML context
-        const urlIndex = html.indexOf(blogUrl);
+        // Try to extract title from surrounding HTML context (within scanable area)
+        const urlIndex = scanableHtml.indexOf(blogUrl);
         const contextStart = Math.max(0, urlIndex - 500);
-        const contextEnd = Math.min(html.length, urlIndex + 500);
-        const context = html.slice(contextStart, contextEnd);
+        const contextEnd = Math.min(scanableHtml.length, urlIndex + 500);
+        const context = scanableHtml.slice(contextStart, contextEnd);
         
         let title = this.extractTitleFromSearchContext(context, blogId, keyword);
         let snippet = this.extractSnippetFromSearchContext(context, keyword);
