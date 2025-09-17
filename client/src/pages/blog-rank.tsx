@@ -3,15 +3,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
 import { 
-  Plus,
   ArrowUpDown,
   Signal,
   ExternalLink,
@@ -19,18 +15,15 @@ import {
   TrendingDown,
   Minus,
   Users,
-  FolderPlus,
   ChevronUp,
   ChevronDown,
   Search,
-  Trash2,
   Settings,
-  Loader2
+  Loader2,
+  Database
 } from "lucide-react";
-import { targetsApi, manualBlogApi, rankApi } from "@/lib/api";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
+import { manualBlogApi, rankApi } from "@/lib/api";
+import { Link } from "wouter";
 
 // Types
 interface BlogKeywordData {
@@ -62,20 +55,6 @@ interface Plan {
   tasks: Task[];
 }
 
-// Form schemas
-const addBlogSchema = z.object({
-  keyword: z.string().min(1, "키워드를 입력해주세요"),
-  url: z.string().url("올바른 URL을 입력해주세요"),
-  title: z.string().optional(),
-  brand: z.string().default("브랜드A"),
-});
-
-const createGroupSchema = z.object({
-  name: z.string().min(1, "그룹명을 입력해주세요"),
-});
-
-type AddBlogForm = z.infer<typeof addBlogSchema>;
-type CreateGroupForm = z.infer<typeof createGroupSchema>;
 
 // Format functions
 const formatNumber = (num: number): string => {
@@ -198,8 +177,6 @@ const generateMockData = (targets: any[]): BlogKeywordData[] => {
 
 export default function BlogRank() {
   // State
-  const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
-  const [isCreateGroupOpen, setIsCreateGroupOpen] = React.useState(false);
   const [selectedBrand, setSelectedBrand] = React.useState("전체");
   const [viewMode, setViewMode] = React.useState<"all" | "on" | "off">("all");
   const [sortBy, setSortBy] = React.useState("recent");
@@ -224,74 +201,6 @@ export default function BlogRank() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // Forms
-  const blogForm = useForm<AddBlogForm>({
-    resolver: zodResolver(addBlogSchema),
-    defaultValues: {
-      keyword: "",
-      url: "",
-      title: "",
-      brand: "브랜드A",
-    },
-  });
-
-  const groupForm = useForm<CreateGroupForm>({
-    resolver: zodResolver(createGroupSchema),
-    defaultValues: {
-      name: "",
-    },
-  });
-
-  // Mutations
-  const addBlogMutation = useMutation({
-    mutationFn: async (data: AddBlogForm) => {
-      return await manualBlogApi.create({
-        keyword: data.keyword,
-        url: data.url,
-        title: data.title ?? "",
-        rank: null,
-        notes: null,
-        submittedBy: "admin",
-      });
-    },
-    onSuccess: () => {
-      toast({
-        title: "키워드 추가 완료",
-        description: "새로운 키워드가 추가되었습니다.",
-      });
-      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
-      setIsAddBlogOpen(false);
-      blogForm.reset();
-    },
-    onError: (error: any) => {
-      toast({
-        title: "추가 실패",
-        description: `키워드 추가 중 오류가 발생했습니다: ${error.message}`,
-        variant: "destructive",
-      });
-    },
-  });
-
-  // Delete blog mutation
-  const deleteBlogMutation = useMutation({
-    mutationFn: async (id: string) => {
-      return await manualBlogApi.remove(id);
-    },
-    onSuccess: () => {
-      toast({
-        title: "키워드 삭제 완료",
-        description: "키워드 추적이 중단되었습니다.",
-      });
-      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "삭제 실패",
-        description: `키워드 삭제 중 오류가 발생했습니다: ${error.message}`,
-        variant: "destructive",
-      });
-    },
-  });
 
   // Data processing
   const mockData = generateMockData(trackedTargets);
@@ -482,12 +391,6 @@ export default function BlogRank() {
     }
   }, [trackedTargets, queryClient]);
 
-  // 삭제 처리
-  const handleDeleteTarget = (targetId: string) => {
-    if (confirm("정말로 이 키워드 추적을 중단하시겠습니까?")) {
-      deleteBlogMutation.mutate(targetId);
-    }
-  };
 
   // 취소 처리
   const handleCancel = () => {
@@ -506,88 +409,7 @@ export default function BlogRank() {
     });
   };
 
-  // Form handlers
-  const onSubmitBlog = (data: AddBlogForm) => {
-    addBlogMutation.mutate(data);
-  };
 
-  const onSubmitGroup = async (data: CreateGroupForm) => {
-    try {
-      // TODO: 실제 API 호출로 그룹 저장
-      // await groupApi.create({ name: data.name });
-      
-      setGroups(prev => [...prev, data.name]);
-      setIsCreateGroupOpen(false);
-      groupForm.reset();
-      
-      toast({
-        title: "그룹 생성 완료",
-        description: `"${data.name}" 그룹이 생성되었습니다.`,
-      });
-    } catch (error: any) {
-      toast({
-        title: "그룹 생성 실패",
-        description: `오류: ${error.message}`,
-        variant: "destructive",
-      });
-    }
-  };
-
-  // 대시보드에서 키워드 삭제 (데이터는 유지)
-  const removeKeywordFromDashboard = async (id: string) => {
-    try {
-      // 내부 상태에서만 제거 (데이터베이스는 유지)
-      queryClient.setQueryData(['/api/targets/blog'], (oldData: any[] | undefined) => {
-        if (!oldData) return oldData;
-        return oldData.filter(target => target.id !== id);
-      });
-      
-      toast({
-        title: "대시보드에서 제거",
-        description: "키워드가 대시보드에서 숨겨졌습니다. 데이터는 안전하게 보관됩니다.",
-      });
-      
-    } catch (error: any) {
-      // 실패 시 되돌리기
-      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
-      
-      toast({
-        title: "제거 실패",
-        description: `오류: ${error.message}`,
-        variant: "destructive",
-      });
-    }
-  };
-
-  const toggleKeywordActive = async (id: string) => {
-    try {
-      // 낙관적 업데이트: 즉시 UI 반영
-      queryClient.setQueryData(['/api/targets/blog'], (oldData: any[] | undefined) => {
-        if (!oldData) return oldData;
-        return oldData.map(target => 
-          target.id === id ? { ...target, active: !target.active } : target
-        );
-      });
-      
-      // TODO: 실제 API 호출 구현
-      // await manualBlogApi.update(id, { active: !currentActive });
-      
-      toast({
-        title: "상태 변경",
-        description: "키워드 상태가 변경되었습니다.",
-      });
-      
-    } catch (error: any) {
-      // 실패 시 되돌리기
-      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
-      
-      toast({
-        title: "상태 변경 실패",
-        description: `오류: ${error.message}`,
-        variant: "destructive",
-      });
-    }
-  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -612,16 +434,17 @@ export default function BlogRank() {
                 />
               </div>
               
-              {/* 그룹만들기 버튼 */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsCreateGroupOpen(true)}
-                data-testid="button-create-group-header"
-              >
-                <FolderPlus className="h-4 w-4 mr-2" />
-                그룹만들기
-              </Button>
+              {/* 데이터베이스 관리 */}
+              <Link to="/database">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  data-testid="button-manage-database"
+                >
+                  <Database className="h-4 w-4 mr-2" />
+                  관리
+                </Button>
+              </Link>
               
               {/* 설정 아이콘 */}
               <Button
@@ -633,15 +456,6 @@ export default function BlogRank() {
                 <Settings className="h-4 w-4" />
               </Button>
               
-              {/* 키워드 추가 */}
-              <Button
-                onClick={() => setIsAddBlogOpen(true)}
-                size="sm"
-                data-testid="button-add-keyword"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                키워드 추가
-              </Button>
             </div>
           </div>
         </div>
@@ -660,36 +474,31 @@ export default function BlogRank() {
                   <h3 className="font-semibold text-foreground">빠른 액션</h3>
                 </div>
                 <div className="space-y-3">
-                  {/* 전체 순위 업데이트 */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    data-testid="button-update-all-ranks"
-                  >
-                    <TrendingUp className="h-4 w-4 mr-2" />
-                    전체 순위 업데이트
-                  </Button>
+                  {/* 순위 관리 링크 */}
+                  <Link to="/database">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      data-testid="button-manage-ranks"
+                    >
+                      <TrendingUp className="h-4 w-4 mr-2" />
+                      순위 데이터 관리
+                    </Button>
+                  </Link>
                   
-                  {/* 일괄 상태 관리 */}
-                  <div className="flex gap-2">
+                  {/* 데이터베이스 관리 링크 */}
+                  <Link to="/database">
                     <Button
                       variant="outline"
                       size="sm"
-                      className="flex-1"
-                      data-testid="button-activate-all"
+                      className="w-full"
+                      data-testid="button-manage-keywords"
                     >
-                      모두 활성화
+                      <Database className="h-4 w-4 mr-2" />
+                      키워드 상태 관리
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      data-testid="button-deactivate-all"
-                    >
-                      모두 비활성화
-                    </Button>
-                  </div>
+                  </Link>
                 </div>
               </div>
 
@@ -702,7 +511,9 @@ export default function BlogRank() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <Label className="text-sm">자동 체크</Label>
-                    <Switch defaultChecked data-testid="switch-auto-check" />
+                    <Badge variant="default" data-testid="status-auto-check">
+                      활성화
+                    </Badge>
                   </div>
                   <div className="space-y-2">
                     <Label className="text-sm">체크 간격</Label>
@@ -882,14 +693,17 @@ export default function BlogRank() {
                 </div>
               </div>
             ) : (
-              <Button
-                onClick={runAllChecks}
-                size="sm"
-                disabled={trackedTargets.length === 0}
-                data-testid="button-start-all-checks"
-              >
-                전체 체크 시작
-              </Button>
+              <Link to="/database">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={trackedTargets.length === 0}
+                  data-testid="button-manage-checks"
+                >
+                  <Database className="h-4 w-4 mr-2" />
+                  체크 관리
+                </Button>
+              </Link>
             )}
           </div>
         </div>
@@ -925,12 +739,12 @@ export default function BlogRank() {
               >
                 {/* ON/OFF */}
                 <div className="col-span-1 flex items-center">
-                  <Switch
-                    checked={item.active}
-                    onCheckedChange={() => toggleKeywordActive(item.id)}
-                    className="data-[state=checked]:bg-primary"
-                    data-testid={`switch-${item.id}`}
-                  />
+                  <Badge 
+                    variant={item.active ? "default" : "secondary"}
+                    data-testid={`status-${item.id}`}
+                  >
+                    {item.active ? "활성" : "비활성"}
+                  </Badge>
                 </div>
 
                 {/* 키워드 */}
@@ -1022,11 +836,10 @@ export default function BlogRank() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleDeleteTarget(item.id)}
-                    className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
-                    data-testid={`button-remove-${item.id}`}
+                    className="h-8 w-8 p-0 text-muted-foreground hover:text-blue-600"
+                    data-testid={`button-view-analytics-${item.id}`}
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <TrendingUp className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
@@ -1044,10 +857,12 @@ export default function BlogRank() {
                   : "첫 번째 키워드를 추가해보세요."
                 }
               </p>
-              <Button onClick={() => setIsAddBlogOpen(true)} data-testid="button-add-first-keyword">
-                <Plus className="h-4 w-4 mr-2" />
-                키워드 추가
-              </Button>
+              <Link to="/database">
+                <Button data-testid="button-manage-database-empty">
+                  <Database className="h-4 w-4 mr-2" />
+                  키워드 관리
+                </Button>
+              </Link>
             </div>
           )}
         </div>
@@ -1061,129 +876,6 @@ export default function BlogRank() {
         )}
       </div>
 
-      {/* Add Blog Modal */}
-      <Dialog open={isAddBlogOpen} onOpenChange={setIsAddBlogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>키워드 추가</DialogTitle>
-          </DialogHeader>
-          <Form {...blogForm}>
-            <form onSubmit={blogForm.handleSubmit(onSubmitBlog)} className="space-y-4">
-              <FormField
-                control={blogForm.control}
-                name="keyword"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>키워드</FormLabel>
-                    <FormControl>
-                      <Input placeholder="예: 홍삼스틱" {...field} data-testid="input-keyword" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={blogForm.control}
-                name="url"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>블로그 URL</FormLabel>
-                    <FormControl>
-                      <Input placeholder="https://blog.naver.com/..." {...field} data-testid="input-url" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={blogForm.control}
-                name="brand"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>브랜드</FormLabel>
-                    <FormControl>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <SelectTrigger data-testid="select-brand">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="브랜드A">브랜드A</SelectItem>
-                          <SelectItem value="브랜드B">브랜드B</SelectItem>
-                          <SelectItem value="브랜드C">브랜드C</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <div className="flex gap-2 pt-4">
-                <Button 
-                  type="button" 
-                  variant="outline" 
-                  onClick={() => setIsAddBlogOpen(false)}
-                  className="flex-1"
-                  data-testid="button-cancel"
-                >
-                  취소
-                </Button>
-                <Button 
-                  type="submit" 
-                  disabled={addBlogMutation.isPending}
-                  className="flex-1"
-                  data-testid="button-submit"
-                >
-                  {addBlogMutation.isPending ? "추가 중..." : "추가"}
-                </Button>
-              </div>
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Create Group Modal */}
-      <Dialog open={isCreateGroupOpen} onOpenChange={setIsCreateGroupOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>그룹 만들기</DialogTitle>
-          </DialogHeader>
-          <Form {...groupForm}>
-            <form onSubmit={groupForm.handleSubmit(onSubmitGroup)} className="space-y-4">
-              <FormField
-                control={groupForm.control}
-                name="name"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>그룹명</FormLabel>
-                    <FormControl>
-                      <Input placeholder="예: 마케팅 키워드" {...field} data-testid="input-group-name" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <div className="flex gap-2 pt-4">
-                <Button 
-                  type="button" 
-                  variant="outline" 
-                  onClick={() => setIsCreateGroupOpen(false)}
-                  className="flex-1"
-                  data-testid="button-cancel-group"
-                >
-                  취소
-                </Button>
-                <Button 
-                  type="submit" 
-                  className="flex-1"
-                  data-testid="button-submit-group"
-                >
-                  생성
-                </Button>
-              </div>
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
