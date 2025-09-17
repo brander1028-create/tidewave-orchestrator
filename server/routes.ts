@@ -1050,7 +1050,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }));
       } else {
         // Blog 타겟 조회
-        allTargets = await storage.getBlogTargetsWithKeywords(owner);
+        // tracked_targets 테이블에서 데이터 조회
+        const trackedTargets = await storage.getTrackedTargets(owner);
+        allTargets = trackedTargets
+          .filter(target => target.kind === kind)
+          .map(target => ({
+            ...target,
+            keywords: target.query ? [target.query] : [], // query를 keywords 배열로 매핑
+            title: target.url, // URL을 title로 사용
+          }));
       }
       let filteredTargets = allTargets;
 

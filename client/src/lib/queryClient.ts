@@ -19,9 +19,8 @@ export async function apiRequest(
     headers.set("Content-Type", "application/json");
   }
   // 모든 요청에 권한 헤더 자동 주입
-  headers.set('x-role', localStorage.getItem('role') ?? 'system');
-  const owner = localStorage.getItem('owner');
-  if (owner) headers.set('x-owner', owner);
+  headers.set('x-role', localStorage.getItem('role') ?? 'admin');
+  headers.set('x-owner', localStorage.getItem('owner') ?? 'admin');
   
   const res = await fetch(url, {
     method,
