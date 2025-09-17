@@ -6,8 +6,9 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// 0-1) 가벼운 헬스체크 (50ms 이내)
-app.get('/__ready', (_req, res) => res.status(200).send('ok'));
+// 0-1) 초경량 헬스(플랫폼이 / 또는 /__ready 를 칠 수 있음)
+app.get('/', (_req, res) => res.status(200).send('ok'));        // 루트도 200
+app.get('/__ready', (_req, res) => res.status(200).send('ok')); // 헬스 전용
 
 app.use((req, res, next) => {
   const start = Date.now();

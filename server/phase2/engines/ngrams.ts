@@ -84,30 +84,43 @@ export class NgramsEngine implements Phase2Engine {
       return scoreB - scoreA;
     });
     
+    // 제목 단계는 soft지만, 최종 선정 직전 최소조건 1줄 추가
+    const MIN_VOL = 10;
+    const MIN_ADS = (cfg.adscore?.SCORE_MIN ?? 0.35);
+    const pool = sorted.filter(k => (k.volume ?? 0) >= MIN_VOL || (k.adScore ?? 0) >= MIN_ADS);
+    const topK = (pool.length ? pool : sorted.slice(0, 1))  // 그래도 없으면 1개는 남기되
+                      .slice(0, tiersPerPost);                         // 최대 tiersPerPost개로 제한
+    
     const tiers: Tier[] = [];
     
-    for (let i = 0; i < Math.min(tiersPerPost, sorted.length); i++) {
-      const candidate = sorted[i];
+    for (let i = 0; i < topK.length; i++) {
+      const candidate = topK[i];
       tiers.push({
         tier: i + 1,
-        text: candidate.text,
-        volume: candidate.volume || null,
-        rank: candidate.rank || null,
+        candidate: candidate,  // ✅ Wrap candidate in candidate property
         score: candidate.totalScore || 0,
-        eligible: candidate.eligible,
-        adScore: candidate.adScore,
-        skipReason: candidate.skipReason,
       });
     }
 
     // Fill empty tiers if needed
     if (cfg.features.tierAutoFill) {
       while (tiers.length < tiersPerPost) {
-        tiers.push({
-          tier: tiers.length + 1,
+        // Create empty candidate for empty tier
+        const emptyCandidate: Candidate = {
           text: "",
+          frequency: 0,
+          position: 0,
+          length: 0,
+          compound: false,
           volume: null,
           rank: null,
+          totalScore: 0,
+          eligible: true,
+        };
+        
+        tiers.push({
+          tier: tiers.length + 1,
+          candidate: emptyCandidate,
           score: 0,
         });
       }

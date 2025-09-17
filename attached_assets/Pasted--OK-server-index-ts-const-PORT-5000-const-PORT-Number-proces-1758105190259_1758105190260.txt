@@ -1,0 +1,88 @@
+부팅·헬스 즉시 OK (포트/루트/헬스 엔드포인트 두 개)
+
+server/index.ts
+
+- const PORT = 5000;
++ const PORT = Number(process.env.PORT || 3000);
+
++ // 초경량 헬스(플랫폼이 / 또는 /__ready 를 칠 수 있음)
++ app.get('/', (_req,res)=>res.status(200).send('ok'));        // 루트도 200
++ app.get('/__ready', (_req,res)=>res.status(200).send('ok')); // 헬스 전용
+
+app.listen(PORT, '0.0.0.0', () => {
+-  // (여기서 무거운 작업 금지!)
++  console.log(`[server] listening on ${PORT}`);
+});
+
+
+부팅 시 무거운 pre-enrich 금지(큐/워커에서만). 루트(/)까지 200 주면 “포트 안 열림” 메시지는 사라집니다.
+
+B) SearchAds 400/413 무한 재시도 완전히 차단 (키 단위, 최대 5회)
+
+server/services/searchads-robust.ts
+
+- function variantsFor(surface:string){ ... } // 기존 유지(최소 변형: surface, nospace, (길면 hyphen))
++ const MAX_ATTEMPTS_PER_KEY = 5;
+
++ const tries: Record<string,number> = {};
++ const baseKey = (s:string)=> s.normalize('NFKC').toLowerCase().replace(/[\s\-\.]/g,'');
+
+  while (i < items.length) {
+    const slice = items.slice(i, i+batch);
+-   const payload = minimal ? slice : slice.flatMap(variantsFor);
++   // 키(시도 횟수)는 'base surface' 기준으로 묶음 (variant별로 따로 카운트 금지)
++   const baseSurfaces = slice.map(s => s); // slice 요소가 surface일 것
++   if (minimal) {
++     // 최소 변형: base만
++     payload = baseSurfaces;
++   } else {
++     payload = baseSurfaces.flatMap(variantsFor);
++   }
+    try {
+      const rows = await searchAds.bulk(payload);
+      ...
+    } catch (e:any) {
+      if (is413(e) || is400(e)) {
+        if (batch > 1) { batch = Math.max(1, Math.floor(batch/2)); continue; }
+        // 배치=1인데도 400/413이면, 키 단위로 스킵
+-       // (기존: minimal 토글만 반복 → 동일 키 무한 재시도)
++       const key = baseKey(baseSurfaces[0]);            // 현재 키워드 묶음의 대표 키
++       tries[key] = (tries[key]||0) + 1;
++       if (tries[key] >= MAX_ATTEMPTS_PER_KEY) {        // ★ 같은 키 최대 5회
++         markPartialFail(key); i += 1; minimal=false; continue;
++       }
++       // 아직 5회 미만이면: minimal 토글 후 다시 시도
++       minimal = true; continue;
+      }
+      throw e;
+    }
+  }
+
+
+핵심: 같은 키에 대한 시도 횟수를 변형과 상관없이 1개로 묶어 5회 넘으면 건너뜁니다. (지금 로그는 변형마다 따로 카운트돼 끝없이 돌고 있음)
+
+C) 최종 선정 직전 “0 볼륨 쓰레기” 컷(soft Gate 유지하면서 품질 보정)
+
+서버 선정부(랭크 호출 직전) – vFinal / v17 공통
+
+const sorted = eligible.sort((a,b)=> b.score - a.score);
+- const topK = sorted.slice(0, K);
++ // 제목 단계는 soft지만, 최종 선정 직전 최소조건 1줄 추가
++ const MIN_VOL = 10;
++ const MIN_ADS = (cfg.adscore?.SCORE_MIN ?? 0.35);
++ const pool = sorted.filter(k => (k.volume ?? 0) >= MIN_VOL || (k.adScore ?? 0) >= MIN_ADS);
++ const topK = (pool.length ? pool : sorted.slice(0,1))  // 그래도 없으면 1개는 남기되
++                  .slice(0, K);                         // 최대 K개로 제한
+
+
+효과: “이제/중인데/방법…” 같은 0 볼륨 연결어가 TopK 본선에 끼어드는 걸 막고, 그래도 후보가 없으면 1개만 표시하고 랭크는 생략하도록 유도됩니다.
+
+빠른 확인(딱 4개만)
+
+포트/헬스: 배포 미리보기에서 루트(/)가 200, /__ready 200. “Make sure this app has a port…” 메시지 사라짐.
+
+SearchAds 루프: 400/413가 반복돼도 같은 키에서 **최대 5회 후 partial-fail(skip)**가 찍히고 다음 키로 넘어감(로그로 확인).
+
+TopK 품질: 제목 단계 soft 유지하되 최종 선정에서 0 볼륨 키워드가 사라지고, 실제 볼륨/광고지표 있는 키워드가 TopK에 들어감.
+
+jobs/results: /api/serp/jobs/<id>는 200(실행 중), /results는 run 완료 후 200. 실행 중에는 400이 정상.

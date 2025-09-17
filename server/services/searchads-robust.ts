@@ -19,8 +19,11 @@ export function variantsFor(surface: string) {
 function is413(e: any) { return (e?.message || "").includes("413"); }
 function is400(e: any) { return (e?.message || "").includes("400"); }
 
-// 1-1) 하드 스킵 조건
+// 1-1) 하드 스킵 조건 + 키 정규화
 const MIN_BATCH = 1, MAX_ATTEMPTS_PER_KEY = 5;
+
+// 키 정규화 (변형 상관없이 동일 키로 묶음)
+const baseKey = (s: string) => s.normalize('NFKC').toLowerCase().replace(/[\s\-\.]/g, '');
 
 /** 413/400 에서 배치 1까지 줄이고, 변형도 최소화해 끝까지 밀어붙이는 bulk */
 export async function robustBulkVolumes(
@@ -30,7 +33,7 @@ export async function robustBulkVolumes(
   let i = 0, batch = Math.min(8, Math.max(1, keywords.length));
   const volumes: Record<string, any> = {};
   let minimal = !!opts?.minimalVariant;
-  const attemptsPerKey: Record<string, number> = {}; // 키워드별 시도 횟수 추적
+  const tries: Record<string, number> = {}; // baseKey 기준 시도 횟수 추적
   
   function markPartialFail(key: string) {
     console.warn(`[robustBulk] ${opts?.logPrefix || ""} SKIP "${key}" after ${MAX_ATTEMPTS_PER_KEY} attempts`);
@@ -38,7 +41,15 @@ export async function robustBulkVolumes(
 
   while (i < keywords.length) {
     const slice = keywords.slice(i, i + batch);
-    const payload = minimal ? slice : slice.flatMap(variantsFor);
+    // 키(시도 횟수)는 'base surface' 기준으로 묶음 (variant별로 따로 카운트 금지)
+    const baseSurfaces = slice.map(s => s); // slice 요소가 surface일 것
+    let payload;
+    if (minimal) {
+      // 최소 변형: base만
+      payload = baseSurfaces;
+    } else {
+      payload = baseSurfaces.flatMap(variantsFor);
+    }
 
     try {
       const result = await getVolumes(payload);   // 실제 SearchAds API 호출
@@ -52,21 +63,23 @@ export async function robustBulkVolumes(
       minimal = false;                              // 다음 시도는 정상 변형
       
       // 성공한 키워드들의 시도 횟수 리셋
-      slice.forEach(key => { attemptsPerKey[key] = 0; });
+      baseSurfaces.forEach(key => { tries[baseKey(key)] = 0; });
     } catch (e: any) {
       console.warn(`[robustBulk] ${opts?.logPrefix || ""} ${e?.message || e}`);
       if (is413(e) || is400(e)) {
-        // 배치=1 & minimal 변형에서도 400가 계속이면 "이 키워드는 스킵"
-        if (batch === MIN_BATCH && minimal) {
-          const key = slice[0]; // 배치=1이므로 키워드 1개
-          attemptsPerKey[key] = (attemptsPerKey[key] || 0) + 1;
-          if (attemptsPerKey[key] >= MAX_ATTEMPTS_PER_KEY) {
+        // 배치=1인데도 400/413이면, 키 단위로 스킵
+        if (batch === MIN_BATCH) {
+          const key = baseKey(baseSurfaces[0]);            // 현재 키워드 묶음의 대표 키
+          tries[key] = (tries[key] || 0) + 1;
+          if (tries[key] >= MAX_ATTEMPTS_PER_KEY) {        // ★ 같은 키 최대 5회
             markPartialFail(key); 
             i += 1; 
             minimal = false; 
-            attemptsPerKey[key] = 0; 
             continue;
           }
+          // 아직 5회 미만이면: minimal 토글 후 다시 시도
+          minimal = true; 
+          continue;
         }
         
         if (batch > MIN_BATCH) { 

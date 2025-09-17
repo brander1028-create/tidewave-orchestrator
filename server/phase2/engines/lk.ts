@@ -97,10 +97,17 @@ export class LKEngine implements Phase2Engine {
     // Sort candidates by total score (descending)
     const sorted = [...candidates].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
     
+    // 제목 단계는 soft지만, 최종 선정 직전 최소조건 1줄 추가
+    const MIN_VOL = 10;
+    const MIN_ADS = (cfg.adscore?.SCORE_MIN ?? 0.35);
+    const pool = sorted.filter(k => (k.volume ?? 0) >= MIN_VOL || (k.adScore ?? 0) >= MIN_ADS);
+    const topK = (pool.length ? pool : sorted.slice(0, 1))  // 그래도 없으면 1개는 남기되
+                      .slice(0, tiersPerPost);                         // 최대 tiersPerPost개로 제한
+    
     const tiers: Tier[] = [];
     
-    for (let i = 0; i < Math.min(tiersPerPost, sorted.length); i++) {
-      const candidate = sorted[i];
+    for (let i = 0; i < topK.length; i++) {
+      const candidate = topK[i];
       tiers.push({
         tier: i + 1,
         candidate: candidate,  // ✅ Wrap candidate in candidate property
