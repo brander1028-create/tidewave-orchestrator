@@ -14,12 +14,22 @@ export function assembleResults(jobId: string, tiers: any[], cfg: any) {
 
   const summaryByKeyword = buildSummaryByKeywordFromTiers(tiers, cfg);
 
-  // ★ 레거시 UI가 finalStats만 읽는 경우를 대비해 tiers를 finalStats에도 넣어줌
+  // ★ 레거시 UI가 finalStats만 읽는 경우를 대비해 변환된 tiers를 finalStats에도 넣어줌
+  const transformedTiers = tiers.map(t => ({
+    tier: t.tier || 1,
+    text: t.candidate?.text || t.textSurface || t.text || "", // ★ 핵심: textSurface → text 변환
+    volume: t.candidate?.volume ?? t.volume ?? null,
+    rank: t.candidate?.rank ?? t.rank ?? null,
+    score: t.candidate?.totalScore ?? t.score ?? t.candidate?.adScore ?? 0,
+    eligible: t.candidate?.eligible ?? true,
+    skipReason: t.candidate?.skipReason ?? null
+  }));
+  
   const finalStats = {
     blogs: summaryByKeyword.reduce((a,k)=>a+(k.blogs?.length||0),0),
     posts: summaryByKeyword.flatMap(k=>k.blogs||[]).reduce((a: number, b: any)=>a+((b.posts||[]).length),0),
     keywords: summaryByKeyword.length,
-    tiers  // ★ 중요: 레거시 표시용
+    tiers: transformedTiers  // ★ 중요: 변환된 tier 객체 사용
   };
 
   // ★ Legacy UI 호환성: attemptsByKeyword, exposureStatsByKeyword 추가
