@@ -184,6 +184,50 @@ export async function processPostTitleV17(
     }
   }
   
+  // Step 3.5: 추가 키워드 발굴 (사용자 요청사항)
+  // 제목에서 추출된 키워드가 DB에 없으면 API로 추가해서 DB 확장
+  console.log(`🔍 [v17 Pipeline] Step 3.5: 추가 키워드 발굴 시작`);
+  const candidatesWithoutVolume = candidates.filter(c => !c.volume || c.volume === 0);
+  
+  if (candidatesWithoutVolume.length > 0) {
+    console.log(`🚀 [추가 키워드 발굴] ${candidatesWithoutVolume.length}개 키워드를 DB에 추가합니다`);
+    console.log(`   키워드: ${candidatesWithoutVolume.map(c => c.text).slice(0, 5).join(', ')}${candidatesWithoutVolume.length > 5 ? '...' : ''}`);
+    
+    try {
+      const missingKeywords = candidatesWithoutVolume.map(c => c.text);
+      
+      // 네이버 SearchAds API로 키워드 발굴 및 DB 추가
+      const volumeData = await getVolumesWithHealth(db, missingKeywords);
+      let enrichedCount = 0;
+      
+      // 새로 추가된 키워드 정보를 candidates에 다시 merge
+      candidatesWithoutVolume.forEach(candidate => {
+        const keyRaw = candidate.text;
+        const keyLC = keyRaw.toLowerCase().trim();
+        const keyNrm = keyRaw.normalize('NFKC').toLowerCase().replace(/[\s\-_.]+/g, '');
+        
+        const volumeInfo = volumeData.volumes[keyRaw] || 
+                          volumeData.volumes[keyLC] || 
+                          volumeData.volumes[keyNrm];
+        
+        if (volumeInfo && volumeInfo.total > 0) {
+          candidate.volume = volumeInfo.total;
+          enrichedCount++;
+          console.log(`   ✅ [키워드 발굴] "${candidate.text}" → volume ${volumeInfo.total} (DB에 추가됨)`);
+        }
+      });
+      
+      stats.preEnriched += enrichedCount;
+      console.log(`🎉 [추가 키워드 발굴] 완료: ${enrichedCount}개 키워드를 DB에 추가하고 volume 확보`);
+      
+    } catch (error) {
+      console.error(`❌ [추가 키워드 발굴] 실패:`, error);
+      console.log(`⚠️ [추가 키워드 발굴] API 오류로 일부 키워드는 volume 없이 진행됩니다`);
+    }
+  } else {
+    console.log(`✅ [추가 키워드 발굴] 모든 키워드가 이미 DB에 있습니다`);
+  }
+  
   // Step 4: Score-First Gate + Scoring
   const enrichedCandidates = await engine.enrichAndScore(candidates, cfg);
   
