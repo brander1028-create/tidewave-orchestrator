@@ -107,7 +107,25 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-// 수동 블로그 입력 데이터
+// v7.13 키워드↔블로그 1:1 매핑 테이블 (핵심)
+export const blogKeywordTargets = pgTable("blog_keyword_targets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  owner: varchar("owner").notNull(),
+  keywordText: text("keyword_text").notNull(),
+  keywordNorm: text("keyword_norm").notNull(), // 정규화된 키워드 (trim/소문자/연속공백 1칸)
+  blogUrl: text("blog_url").notNull(),
+  blogUrlNorm: text("blog_url_norm").notNull(), // 정규화된 URL
+  nickname: varchar("nickname").notNull(), // URL에서 자동추출, 수정 가능
+  title: text("title"), // 선택사항
+  brand: varchar("brand"), // 선택사항
+  groupName: varchar("group_name"), // 선택사항, SQL 키워드 충돌 방지
+  active: boolean("active").default(true).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  uniqueMapping: unique().on(table.owner, table.keywordNorm, table.blogUrlNorm),
+}));
+
+// 수동 블로그 입력 데이터 (레거시 - v7.13에서 폐기 예정)
 export const manualBlogEntries = pgTable("manual_blog_entries", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   keyword: text("keyword").notNull(),
@@ -154,10 +172,11 @@ export const productTargets = pgTable("product_targets", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// 랭킹 스냅샷 (v6 실구동)
+// 랭킹 스냅샷 (v7.13 업데이트 - pair_id 추가)
 export const rankSnapshots = pgTable("rank_snapshots", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  targetId: varchar("target_id").notNull(),
+  targetId: varchar("target_id").notNull(), // 레거시 호환용
+  pairId: varchar("pair_id").references(() => blogKeywordTargets.id), // v7.13: FK 제약조건
   kind: varchar("kind").notNull(), // 'blog' | 'shop'
   query: text("query").notNull(),
   rank: integer("rank"),
@@ -165,6 +184,7 @@ export const rankSnapshots = pgTable("rank_snapshots", {
   position: integer("position"),
   sort: varchar("sort"), // 쇼핑몰용
   device: varchar("device").notNull(), // 'pc' | 'mobile'
+  exposed: boolean("exposed").default(false).notNull(), // 노출 여부
   timestamp: timestamp("timestamp").notNull().defaultNow(),
   source: varchar("source").notNull(),
   metadata: json("metadata"),
@@ -588,3 +608,29 @@ export const insertDashboardSettingsSchema = createInsertSchema(dashboardSetting
 
 export type InsertRollingAlert = z.infer<typeof insertRollingAlertSchema>;
 export type InsertDashboardSettings = z.infer<typeof insertDashboardSettingsSchema>;
+
+// v7.13 Blog Keyword Targets 스키마와 타입
+export const insertBlogKeywordTargetSchema = createInsertSchema(blogKeywordTargets).omit({
+  id: true,
+  keywordNorm: true, // 자동 생성
+  blogUrlNorm: true, // 자동 생성
+  nickname: true, // 자동 생성
+  createdAt: true,
+}).extend({
+  keywordText: z.string().min(1, "키워드를 입력하세요").max(100, "키워드는 100자 이내여야 합니다"),
+  blogUrl: z.string().url("올바른 URL을 입력하세요").refine(url => 
+    url.includes("blog.naver.com"), 
+    "네이버 블로그 URL만 지원합니다"
+  ),
+  title: z.string().max(200, "제목은 200자 이내여야 합니다").optional(),
+  brand: z.string().max(50, "브랜드명은 50자 이내여야 합니다").optional(),
+  groupName: z.string().max(50, "그룹명은 50자 이내여야 합니다").optional(),
+});
+
+export const updateBlogKeywordTargetSchema = insertBlogKeywordTargetSchema
+  .partial()
+  .omit({ owner: true, keywordText: true, blogUrl: true }); // 핵심 필드는 수정 불가
+
+export type BlogKeywordTarget = typeof blogKeywordTargets.$inferSelect;
+export type InsertBlogKeywordTarget = z.infer<typeof insertBlogKeywordTargetSchema>;
+export type UpdateBlogKeywordTarget = z.infer<typeof updateBlogKeywordTargetSchema>;

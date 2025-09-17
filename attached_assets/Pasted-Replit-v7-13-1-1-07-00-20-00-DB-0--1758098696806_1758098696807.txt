@@ -1,0 +1,203 @@
+Replit 제작·패치요청 v7.13 (최종) — 키워드↔블로그 1:1 + 전역 스케줄(07:00/20:00) + 외부 키워드DB 재사용
+0) 핵심 요약
+
+매핑 단위=한 줄(키워드 1개 ↔ 블로그 1개). 같은 키워드로 여러 블로그를 추적하려면 행을 여러 개 만들면 됨.
+예) 홍삼 – A블로그, 홍삼 – B블로그 (각각 독립 행)
+
+스케줄은 전역(기본 오전 7시·저녁 8시, 로컬 타임존)에서만 관리. 등록 단계에서는 스케줄 입력 없음.
+
+브랜드명/그룹은 옵션(미입력 가능, 이후 변경 가능).
+
+**키워드 [조회량][점수]**는 기존 외부 서비스를 그대로 프록시해 사용:
+KEYWORDS_API_BASE=https://42ccc512-7f90-450a-a0a0-0b29770596c8-00-1eg5ws086e4j3.kirk.replit.dev/keywords
+
+1) ENV & 기본 설정
+DRIZZLE_DB_URL=sqlite:data/app.db
+USE_MOCK=false
+TZ=Asia/Seoul
+GLOBAL_RANK_CRON=0 7,20 * * *          # 전역 스케줄 (오전7·저녁8)
+ALERT_COOLDOWN_HOURS=6
+RANK_PER_MIN=20
+RANK_PER_DAY=500
+CACHE_TTL_SEC=600
+KEYWORDS_API_BASE=https://42ccc512-7f90-450a-a0a0-0b29770596c8-00-1eg5ws086e4j3.kirk.replit.dev/keywords
+
+
+전역 스케줄은 설정 페이지에서 수정 가능하게 하고, 개별 매핑에는 스케줄 입력 UI/필드 없음.
+
+2) 스키마(Drizzle) — 1:1 매핑 중심
+
+기존 blog_targets + target_keywords 다대다는 폐기하고 단일 테이블로 정규화.
+
+blog_keyword_targets (핵심)
+
+id, owner
+
+keyword_text (저장 시 정규화: trim/소문자/연속공백 1칸)
+
+blog_url (정규화: canonical)
+
+nickname (URL에서 자동추출, 수정 가능)
+
+title? (선택)
+
+brand? (선택)
+
+group? (선택, 공란 허용)
+
+active boolean default true
+
+created_at
+
+UNIQUE(owner, keyword_norm, blog_url_norm)
+
+rank_snapshots(기존 유지)
+
+pair_id(=blog_keyword_targets.id) 로 연결
+
+query=keyword_text, rank/page/pos, exposed boolean, ts, …
+
+review_state / metric_snapshots / alerts / rolling_alerts / dashboard_settings / rank_agg_day / group_index_daily: 기존 설계대로
+
+streak 계산: 집계 또는 쿼리로 노출 연속일수를 계산(필드 보관 불필수)
+
+마이그레이션: 기존 데이터가 있으면 (각 blog_target × target_keyword) 조합을 blog_keyword_targets 행으로 변환.
+
+3) API (필수)
+3.1 매핑 CRUD (1:1 단위)
+
+GET /api/pairs?query=&group=&brand=&state=active|inactive
+
+응답 항목: keyword_text, blog_url, nickname, title, brand, group, active, created_at, latest_rank, delta, exposed, streak_days, first_exposed_ts
+
+POST /api/pairs
+
+body: { keyword_text, blog_url, nickname?, title?, brand?, group? }
+
+생성 시 닉네임 자동추출, 키워드/URL 정규화, 중복(UNIQUE) 방지
+
+PATCH /api/pairs/:id (brand/group/nickname/title/active 수정)
+
+DELETE /api/pairs/:id
+
+상태 토글: POST /api/pairs/:id/toggle → active on/off
+
+3.2 순위 수집
+
+계획: GET /api/rank/plan?kind=blog&pair_ids[]=...
+→ { total, tasks:[{ pair_id, keyword, nickname }] }
+
+실행: POST /api/rank/blog/check
+
+body: { pair_ids?:string[] } (키워드는 pair에서 읽음)
+
+규칙: 모바일 SERP 1페이지, 서치피드 안내문 위까지만. 안내문이 없으면 15위까지만.
+
+매칭: 정확 URL 우선, 실패 시 닉네임 보조 → exposed=true/false
+
+히스토리: GET /api/rank/history?pair_id=&range=30d
+→ rank, exposed, streak_days, ts …
+
+3.3 전역 스케줄/설정
+
+GET/POST /api/settings
+
+global_rank_cron(기본 0 7,20 * * *, TZ=Asia/Seoul), 기타 토큰/캐시/프리셋
+
+서버 크론: global_rank_cron에 따라 active=true 인 모든 pair 자동 체크
+
+3.4 키워드 메타(외부 DB 재사용)
+
+프록시: GET /api/keywords/lookup?texts=홍삼,홍삼스틱
+
+내부에서 KEYWORDS_API_BASE 호출 → {text, volume, score} 매핑 후 1시간 캐시
+
+UI 칩/테이블에 [조회량][점수] 뱃지로 표시
+
+4) 크롤러/가드(동일)
+
+중립 UA, 800–1500ms 랜덤지연, robots 준수
+
+토큰버킷: RANK_PER_MIN/RANK_PER_DAY
+
+캐시: CACHE_TTL_SEC (강제 ?nocache=1)
+
+429/5xx 지수 백오프
+
+실패 시 LKG 선택 지원
+
+5) UI/UX (핵심만)
+5.1 등록(1:1)
+
+필드: 키워드, 블로그 URL, (자동)닉네임, 옵션 제목/브랜드/그룹
+
+스케줄 입력 없음(전역에서만)
+
+5.2 블로그 순위 화면
+
+컬럼:
+키워드 [조회량][점수] | 닉네임/제목 | 현재순위 | Δ | 유지 n일 | (최초노출) | 바로가기 | 마지막체크 | 액션(👁 ⟳ 🔔 Ⓧ)
+
+전체 체크 시작 → plan 호출 후 배치 러너(동시3개) 실행
+
+버튼 스피너/라벨: 체크 중… (a/N)
+
+얇은 진행막대 + 오른쪽 지금: [키워드]·[닉네임]
+
+행별 스피너 on/off, 취소 지원
+
+검색/필터/정렬: 키워드/닉네임/URL 검색, 그룹/브랜드/노출/상태 필터, 정렬(최근/Δ/현재/조회량/점수)
+
+상단 키워드 패널은 접힘 기본, 칩의 X 삭제 제거 → 테이블 액션 Ⓧ(쌍 해제/삭제) 로 이동
+
+5.3 데이터베이스(항상 저장)
+
+Pairs(키워드↔블로그) 탭: 상태 토글, 즉시체크(⟳), 그룹/브랜드 일괄수정
+
+스냅샷 요약(일 집계): 평균/최저/최고/노출·미노출/Δ/WoW/MoM/vol7
+
+수집 규칙: “최근 30일 Top 진입 없음 → 자동 중지” 토글
+
+키워드 보관소: [조회량][점수], 최초/최근 수집, 누적 스냅샷
+
+6) 오류/안전
+
+클라이언트 인터셉터로 모든 요청에 x-role(필수), x-owner 주입. 401은 retry=0.
+
+실행 전 plan.total==0이면 토스트 체크할 대상 없음, 호출 중단.
+
+대시보드 설정 저장은 디바운스1s + 동일값 스킵 + invalidate 금지(v7.9 유지).
+
+7) DoD(수락 기준)
+
+등록 폼에 스케줄 입력 없음. 전역 스케줄이 기본 07:00/20:00으로 동작하고, 설정에서 변경 가능.
+
+1:1 매핑으로 리스트가 보이며, 동일 키워드의 여러 블로그가 각각 독립 행으로 표시.
+
+“전체 체크 시작” 시 스피너/퍼센트/현재 작업/행별 스피너가 보이고 끝까지 갱신.
+
+rank_snapshots에 저장되고 히스토리에서 rank/exposed/streak_days/first_exposed_ts가 보임.
+
+**[조회량][점수]**가 외부 DB 프록시로 렌더(캐시 1h).
+
+DB 탭에서 상태 토글, 자동중지(30일 미진입) 동작.
+
+서치피드 경계(없으면 15위) 규칙으로 순위가 측정됨.
+
+8) 스모크 테스트
+# 1) 매핑 생성(예: 홍삼 – A블로그)
+curl -sX POST http://localhost:3000/api/pairs -H "x-role: Admin" -H "Content-Type: application/json" \
+ -d '{"keyword_text":"홍삼","blog_url":"https://blog.naver.com/userA/12345","brand":"진생가","group":"브랜딩"}' | jq .
+
+# 2) 계획 수 확인
+curl -s "http://localhost:3000/api/rank/plan?kind=blog" -H "x-role: Admin" | jq .
+
+# 3) 실행
+curl -sX POST http://localhost:3000/api/rank/blog/check -H "x-role: Admin" \
+ -H "Content-Type: application/json" -d '{"pair_ids":["<PAIR_ID>"]}' | jq .
+
+# 4) 히스토리
+curl -s "http://localhost:3000/api/rank/history?pair_id=<PAIR_ID>&range=7d" -H "x-role: Admin" | jq '.[0]'
+
+# 5) 키워드 메타(외부 DB)
+curl -s "http://localhost:3000/api/keywords/lookup?texts=홍삼" | jq .
