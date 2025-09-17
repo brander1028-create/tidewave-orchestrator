@@ -18,7 +18,11 @@ import {
   TrendingDown,
   Minus,
   Users,
-  FolderPlus
+  FolderPlus,
+  ChevronUp,
+  ChevronDown,
+  Search,
+  Trash2
 } from "lucide-react";
 import { targetsApi, manualBlogApi, rankApi } from "@/lib/api";
 import { useForm } from "react-hook-form";
@@ -80,6 +84,70 @@ const formatChange = (change: number): string => {
   return `${sign}${change}`;
 };
 
+// 토스 스타일 미니 트렌드 차트 컴포넌트
+const TossTrendChart = ({ data, change }: { data: number[], change: number }) => {
+  const width = 60;
+  const height = 24;
+  const padding = 2;
+  
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  
+  // 데이터를 SVG 좌표로 변환
+  const points = data.map((value, index) => {
+    const x = padding + (index * (width - padding * 2)) / (data.length - 1);
+    const y = height - padding - ((value - min) / range) * (height - padding * 2);
+    return `${x},${y}`;
+  }).join(' ');
+  
+  // 변동에 따른 색상 결정
+  const color = change > 0 ? '#ef4444' : change < 0 ? '#3b82f6' : '#6b7280';
+  
+  return (
+    <div className="flex items-center">
+      <svg width={width} height={height} className="mr-2">
+        {/* 점선 배경 */}
+        <defs>
+          <pattern id="dots" patternUnits="userSpaceOnUse" width="4" height="4">
+            <circle cx="2" cy="2" r="0.5" fill="currentColor" className="text-muted-foreground" opacity="0.2" />
+          </pattern>
+        </defs>
+        <rect width={width} height={height} fill="url(#dots)" />
+        
+        {/* 라인 차트 */}
+        <polyline
+          points={points}
+          fill="none"
+          stroke={color}
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        
+        {/* 시작점과 끝점 */}
+        {data.length > 1 && (
+          <>
+            <circle
+              cx={padding}
+              cy={height - padding - ((data[0] - min) / range) * (height - padding * 2)}
+              r="1"
+              fill={color}
+              opacity="0.8"
+            />
+            <circle
+              cx={width - padding}
+              cy={height - padding - ((data[data.length - 1] - min) / range) * (height - padding * 2)}
+              r="1.5"
+              fill={color}
+            />
+          </>
+        )}
+      </svg>
+    </div>
+  );
+};
+
 // Mock data generator
 const generateMockData = (targets: any[]): BlogKeywordData[] => {
   return targets.map((target, index) => {
@@ -98,6 +166,13 @@ const generateMockData = (targets: any[]): BlogKeywordData[] => {
     const baseTime = Date.now() - (index * 60 * 1000); // 1분씩 차이
     const lastCheckTime = new Date(baseTime);
     
+    // 10일간 트렌드 데이터 생성 (순위 기반)
+    const baseRank = ranks[idNum % 7] || 15;
+    const trendData = Array.from({ length: 10 }, (_, i) => {
+      const variation = (Math.sin(i * 0.5) + Math.random() * 0.5 - 0.25) * 5;
+      return Math.max(1, Math.min(50, baseRank + variation));
+    });
+    
     return {
       id: target.id || (index + 1).toString(),
       active: target.active !== undefined ? target.active : true, // 실제 상태 사용
@@ -109,7 +184,7 @@ const generateMockData = (targets: any[]): BlogKeywordData[] => {
       maintainDays: maintainDays[idNum % 7] || 7,
       blogId: `blog${index + 1}`,
       blogUrl: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
-      trend: Array.from({ length: 7 }, (_, i) => ranks[idNum % 7] + (Math.random() * 6 - 3)),
+      trend: trendData, // 10일간 데이터
       postDate: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toLocaleDateString('ko-KR'),
       lastCheck: lastCheckTime.toISOString(), // ISO 문자열로 저장
       brand: brands[idNum % 7] || "브랜드A",
@@ -126,6 +201,10 @@ export default function BlogRank() {
   const [viewMode, setViewMode] = React.useState<"all" | "on" | "off">("all");
   const [sortBy, setSortBy] = React.useState("recent");
   const [groups, setGroups] = React.useState(["그룹1", "그룹2", "그룹3"]);
+  
+  // 키워드 관리 섹션 확장/축소 상태
+  const [isKeywordSectionExpanded, setIsKeywordSectionExpanded] = React.useState(false);
+  const [keywordSearchTerm, setKeywordSearchTerm] = React.useState("");
   
   // 배치 실행 상태
   const [isRunning, setIsRunning] = React.useState(false);
@@ -200,6 +279,14 @@ export default function BlogRank() {
   const filteredData = React.useMemo(() => {
     let filtered = mockData;
     
+    // 키워드 검색 필터
+    if (keywordSearchTerm.trim()) {
+      filtered = filtered.filter(item => 
+        item.keyword.toLowerCase().includes(keywordSearchTerm.toLowerCase()) ||
+        item.group.toLowerCase().includes(keywordSearchTerm.toLowerCase())
+      );
+    }
+    
     // 브랜드 필터
     if (selectedBrand !== "전체") {
       filtered = filtered.filter(item => item.brand === selectedBrand);
@@ -235,7 +322,7 @@ export default function BlogRank() {
     });
     
     return sorted;
-  }, [mockData, selectedBrand, viewMode, sortBy]);
+  }, [mockData, selectedBrand, viewMode, sortBy, keywordSearchTerm]);
 
   // 배치 실행 로직
   const runAllChecks = React.useCallback(async () => {
@@ -415,6 +502,32 @@ export default function BlogRank() {
     }
   };
 
+  // 대시보드에서 키워드 삭제 (데이터는 유지)
+  const removeKeywordFromDashboard = async (id: string) => {
+    try {
+      // 내부 상태에서만 제거 (데이터베이스는 유지)
+      queryClient.setQueryData(['/api/targets/blog'], (oldData: any[] | undefined) => {
+        if (!oldData) return oldData;
+        return oldData.filter(target => target.id !== id);
+      });
+      
+      toast({
+        title: "대시보드에서 제거",
+        description: "키워드가 대시보드에서 숨겨졌습니다. 데이터는 안전하게 보관됩니다.",
+      });
+      
+    } catch (error: any) {
+      // 실패 시 되돌리기
+      queryClient.invalidateQueries({ queryKey: ['/api/targets/blog'] });
+      
+      toast({
+        title: "제거 실패",
+        description: `오류: ${error.message}`,
+        variant: "destructive",
+      });
+    }
+  };
+
   const toggleKeywordActive = async (id: string) => {
     try {
       // 낙관적 업데이트: 즉시 UI 반영
@@ -456,27 +569,81 @@ export default function BlogRank() {
               <p className="text-sm text-muted-foreground">네이버 블로그 SERP 순위 모니터링 및 인사이트 분석</p>
             </div>
             <div className="flex gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsCreateGroupOpen(true)}
-                data-testid="button-create-group"
-              >
-                <FolderPlus className="h-4 w-4 mr-2" />
-                그룹 만들기
-              </Button>
-              <Button
-                onClick={() => setIsAddBlogOpen(true)}
-                size="sm"
-                data-testid="button-add-keyword"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                키워드 추가
-              </Button>
+              {!isKeywordSectionExpanded && (
+                <Button
+                  onClick={() => setIsKeywordSectionExpanded(true)}
+                  size="sm"
+                  data-testid="button-expand-keyword-section"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  키워드 추가
+                </Button>
+              )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* 확장 가능한 키워드 관리 섹션 */}
+      {isKeywordSectionExpanded && (
+        <div className="border-b border-border bg-muted/20">
+          <div className="container mx-auto px-4 py-4">
+            <div className="space-y-4">
+              {/* 제목과 축소 버튼 */}
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-foreground">키워드 관리</h2>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsKeywordSectionExpanded(false)}
+                  data-testid="button-collapse-keyword-section"
+                >
+                  <ChevronUp className="h-4 w-4 mr-2" />
+                  축소하기
+                </Button>
+              </div>
+              
+              {/* 기능 버튼들 */}
+              <div className="flex items-center gap-4">
+                {/* 키워드 검색 */}
+                <div className="flex-1 max-w-md">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="키워드 검색..."
+                      value={keywordSearchTerm}
+                      onChange={(e) => setKeywordSearchTerm(e.target.value)}
+                      className="pl-10"
+                      data-testid="input-keyword-search"
+                    />
+                  </div>
+                </div>
+                
+                {/* 그룹 만들기 */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsCreateGroupOpen(true)}
+                  data-testid="button-create-group"
+                >
+                  <FolderPlus className="h-4 w-4 mr-2" />
+                  그룹 만들기
+                </Button>
+                
+                {/* 키워드 추가 */}
+                <Button
+                  onClick={() => setIsAddBlogOpen(true)}
+                  size="sm"
+                  data-testid="button-add-keyword"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  키워드 추가
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Controls */}
       <div className="container mx-auto px-4 py-4">
@@ -566,7 +733,7 @@ export default function BlogRank() {
         {/* Table */}
         <div className="border border-border rounded-lg overflow-hidden">
           {/* Table Header */}
-          <div className="grid grid-cols-12 gap-4 p-4 bg-muted/50 border-b border-border text-sm font-medium text-muted-foreground">
+          <div className="grid grid-cols-13 gap-4 p-4 bg-muted/50 border-b border-border text-sm font-medium text-muted-foreground">
             <div className="col-span-1">ON/OFF</div>
             <div className="col-span-1">키워드</div>
             <div className="col-span-1">브랜드</div>
@@ -579,6 +746,7 @@ export default function BlogRank() {
             <div className="col-span-1">트렌드</div>
             <div className="col-span-1">글쓴날짜</div>
             <div className="col-span-1">마지막체크</div>
+            <div className="col-span-1">액션</div>
           </div>
 
           {/* Table Body */}
@@ -586,7 +754,7 @@ export default function BlogRank() {
             {filteredData.map((item, index) => (
               <div
                 key={item.id}
-                className={`grid grid-cols-12 gap-4 p-4 text-sm hover:bg-muted/50 transition-colors ${
+                className={`grid grid-cols-13 gap-4 p-4 text-sm hover:bg-muted/50 transition-colors ${
                   index % 2 === 0 ? 'bg-background' : 'bg-muted/20'
                 }`}
                 data-testid={`row-keyword-${item.id}`}
@@ -611,17 +779,17 @@ export default function BlogRank() {
 
                 {/* 브랜드 */}
                 <div className="col-span-1">
-                  <div className="font-medium text-foreground">{item.brand}</div>
+                  <div className="text-sm text-muted-foreground">{item.brand}</div>
                 </div>
 
                 {/* 조회량 */}
                 <div className="col-span-1">
-                  <div className="font-medium text-foreground">{formatNumber(item.volume)}</div>
+                  <div className="text-sm text-muted-foreground">{formatNumber(item.volume)}</div>
                 </div>
 
                 {/* 점수 */}
                 <div className="col-span-1">
-                  <div className="font-medium text-foreground">{item.score}</div>
+                  <div className="text-sm text-muted-foreground">{item.score}</div>
                 </div>
 
                 {/* 순위 */}
@@ -645,7 +813,7 @@ export default function BlogRank() {
 
                 {/* 유지일 */}
                 <div className="col-span-1">
-                  <div className="font-medium text-foreground">{item.maintainDays}일</div>
+                  <div className="text-sm text-muted-foreground">{item.maintainDays}일</div>
                 </div>
 
                 {/* 블로그ID */}
@@ -665,19 +833,7 @@ export default function BlogRank() {
 
                 {/* 트렌드 */}
                 <div className="col-span-1">
-                  <div className="flex items-center gap-1">
-                    {item.trend.slice(-7).map((value, idx) => (
-                      <div
-                        key={idx}
-                        className={`w-1 h-6 rounded-sm ${
-                          value <= 10 ? 'bg-green-500' :
-                          value <= 20 ? 'bg-yellow-500' :
-                          'bg-red-500'
-                        }`}
-                        style={{ opacity: 0.4 + (idx * 0.1) }}
-                      />
-                    ))}
-                  </div>
+                  <TossTrendChart data={item.trend} change={item.change} />
                 </div>
 
                 {/* 글쓴날짜 */}
@@ -695,6 +851,19 @@ export default function BlogRank() {
                       minute: '2-digit'
                     })}
                   </div>
+                </div>
+
+                {/* 액션 */}
+                <div className="col-span-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeKeywordFromDashboard(item.id)}
+                    className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                    data-testid={`button-remove-${item.id}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
             ))}

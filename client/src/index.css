@@ -3,6 +3,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 커스텀 그리드 클래스 */
+.grid-cols-13 {
+  grid-template-columns: repeat(13, minmax(0, 1fr));
+}
+
 :root {
   --background: hsl(222, 84%, 4%);
   --foreground: hsl(210, 40%, 98%);
