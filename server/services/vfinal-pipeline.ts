@@ -259,16 +259,24 @@ export async function processPostTitleVFinal(
   
   console.log(`✅ [vFinal] Pre-enriched ${stats.preEnriched}/${stats.candidatesGenerated} candidates`);
   
-  // Step 4: 1차 선정
+  // Step 4: 2-A DB TopK 선택 (상태머신 1단계)
   let pool = [...rawCandidates];
   let topK = pickTopK(pool, K);
   stats.firstSelected = topK.length;
   
-  console.log(`🎯 [vFinal] First selection: ${stats.firstSelected} candidates`);
+  console.log(`🎯 [2-A] DB TopK selection: ${stats.firstSelected} candidates`);
   
-  // Step 5: 전부 비었거나 부족하면 → 빅그램 확장
-  if (!topK.length || topK.every(t => !t.text)) {
-    console.log(`🔧 [vFinal] Expanding with bigrams...`);
+  // Step 5: 2-B Gate 필터링 (상태머신 2단계)
+  console.log(`🚫 [2-B] Applying post-enrich gate...`);
+  let gatedCandidates = await applyPostEnrichGate(topK, cfg);
+  stats.gateFiltered = gatedCandidates.filter(c => !c.eligible).length;
+  
+  console.log(`🚫 [2-B] Gate filtered ${stats.gateFiltered}/${topK.length} candidates`);
+  
+  // Step 6: 2-B1 부족시 bigram 확장 (상태머신 3단계)
+  const eligibleAfterGate = gatedCandidates.filter(c => c.eligible).length;
+  if (eligibleAfterGate < K) {
+    console.log(`🔧 [2-B1] Insufficient eligible candidates (${eligibleAfterGate}/${K}), expanding with bigrams...`);
     
     // base + 나머지로 빅그램 생성
     const base = pickMaxVolumeToken(pool) || pickLongest(toks);
@@ -277,7 +285,7 @@ export async function processPostTitleVFinal(
       const bigrams = expandBigrams(base, toks).slice(0, MAX_BIGRAMS_PER_BASE);
       stats.bigramsExpanded = bigrams.length;
       
-      console.log(`📈 [vFinal] Generated ${stats.bigramsExpanded} bigrams with base "${base}" (limited to ${MAX_BIGRAMS_PER_BASE})`);
+      console.log(`📈 [2-B1] Generated ${stats.bigramsExpanded} bigrams with base "${base}" (limited to ${MAX_BIGRAMS_PER_BASE})`);
       
       // 빅그램 프리엔리치
       const bigramTexts = bigrams.map(b => b.surface);
@@ -301,7 +309,7 @@ export async function processPostTitleVFinal(
         if (volumeInfo && volumeInfo.total > 0) {
           candidate.volume = volumeInfo.total;
           stats.reEnriched++;
-          console.log(`   📊 [Re-enrich] "${candidate.text}" → volume ${volumeInfo.total}`);
+          console.log(`   📊 [2-B1] Re-enrich "${candidate.text}" → volume ${volumeInfo.total}`);
         }
       });
       
@@ -310,16 +318,18 @@ export async function processPostTitleVFinal(
       topK = pickTopK(pool, K);
       stats.reSelected = topK.length;
       
-      console.log(`🎯 [vFinal] Re-selected: ${stats.reSelected} candidates after bigram expansion`);
+      console.log(`🎯 [2-B1] Re-select TopK: ${stats.reSelected} candidates after bigram expansion`);
+      
+      // 확장된 후보에 대해 다시 Gate 적용
+      gatedCandidates = await applyPostEnrichGate(topK, cfg);
+      const additionalFiltered = gatedCandidates.filter(c => !c.eligible).length - stats.gateFiltered;
+      stats.gateFiltered += additionalFiltered;
+      
+      console.log(`🚫 [2-B1] Additional gate filtering: ${additionalFiltered} candidates`);
     }
+  } else {
+    console.log(`✅ [2-B] Sufficient eligible candidates (${eligibleAfterGate}/${K}), skipping bigram expansion`);
   }
-  
-  // Step 6: Gate (프리엔리치 이후 적용!) - vFinal 핵심!
-  console.log(`🚫 [vFinal] Applying post-enrich gate...`);
-  const gatedCandidates = await applyPostEnrichGate(topK, cfg);
-  stats.gateFiltered = gatedCandidates.filter(c => !c.eligible).length;
-  
-  console.log(`🚫 [vFinal] Gate filtered ${stats.gateFiltered}/${topK.length} candidates`);
   
   // Step 7: 점수 계산
   gatedCandidates.forEach(candidate => {
