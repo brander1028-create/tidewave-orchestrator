@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
+import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
 import { 
   Plus,
@@ -23,7 +24,8 @@ import {
   ChevronDown,
   Search,
   Trash2,
-  Settings
+  Settings,
+  Loader2
 } from "lucide-react";
 import { targetsApi, manualBlogApi, rankApi } from "@/lib/api";
 import { useForm } from "react-hook-form";
@@ -560,7 +562,44 @@ export default function BlogRank() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background relative">
+      {/* 전체 체크 로딩 오버레이 */}
+      {isRunning && (
+        <div className="fixed inset-0 bg-blue-600/20 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-card border border-border rounded-xl p-8 shadow-2xl min-w-[400px] max-w-md w-full mx-4">
+            <div className="text-center space-y-6">
+              <div className="flex items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+              </div>
+              
+              <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-foreground">순위 체크 진행중</h3>
+                <p className="text-sm text-muted-foreground">{progress.text}</p>
+                
+                <div className="space-y-2 pt-2">
+                  <Progress 
+                    value={progress.total > 0 ? (progress.done / progress.total) * 100 : 0}
+                    className="w-full h-3"
+                  />
+                  <p className="text-xs text-muted-foreground text-center">
+                    {progress.done} / {progress.total} ({progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%)
+                  </p>
+                </div>
+              </div>
+              
+              <Button
+                variant="outline"
+                onClick={handleCancel}
+                className="w-full"
+                data-testid="button-cancel-overlay"
+              >
+                취소
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Header */}
       <div className="border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto px-4 py-4">
