@@ -145,24 +145,21 @@ async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<C
 }
 
 /**
- * calculateTotalScore - vFinal 점수 계산 (나중에 7:3으로 수정 예정)
+ * calculateTotalScore - vFinal 7:3 점수 시스템 (volume 70% + ads 30%)
  */
 function calculateTotalScore(candidate: Candidate, cfg: any): number {
   // volumeScale = min(100, log10(max(1, volume))*25)
   const volume = candidate.volume || 1;
   const volumeScale = Math.min(100, Math.log10(Math.max(1, volume)) * 25);
   
-  // contentScore (내부 가중치)
-  const freq = candidate.frequency || 0;
-  const pos = 1 / Math.max(1, candidate.position || 1);
-  const len = Math.min(1, (candidate.length || 1) / 20);
-  const contentScore = 0.5 * freq + 0.3 * pos + 0.2 * len;
+  // adScore (0~100 범위로 정규화)
+  const adScore = (candidate.adScore || 0) * 100;
   
-  // totalScore = 0.7*volumeScale + 0.3*contentScore
-  const volumeWeight = cfg.weights?.volume || 0.7;
-  const contentWeight = cfg.weights?.content || 0.3;
+  // vFinal 7:3 가중치: volume 70% + ads 30%
+  const volumeWeight = 0.7;
+  const adWeight = 0.3;
   
-  const totalScore = volumeWeight * volumeScale + contentWeight * contentScore * 100;
+  const totalScore = volumeWeight * volumeScale + adWeight * adScore;
   return Math.round(totalScore * 100) / 100;
 }
 
