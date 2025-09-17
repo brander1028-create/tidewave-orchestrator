@@ -37,8 +37,8 @@ import {
   Bell
 } from "lucide-react";
 import { ColumnDef } from "@tanstack/react-table";
-import { targetsApi, scrapingApi, rankApi, manualBlogApi } from "@/lib/api";
-import type { TrackedTarget, InsertTrackedTarget } from "@shared/schema";
+import { targetsApi, scrapingApi, rankApi, blogKeywordPairsApi } from "@/lib/api";
+import type { TrackedTarget, InsertTrackedTarget, BlogKeywordTarget } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -58,17 +58,17 @@ interface RankingData {
   streakDays: number;
 }
 
-// Form schema for manual blog entry
-const addManualBlogSchema = z.object({
+// v7.13: Form schema for blog-keyword pair (1:1 mapping)
+const addBlogKeywordPairSchema = z.object({
+  blogTitle: z.string().min(1, "블로그 제목을 입력해주세요"),
+  blogUrl: z.string().url("올바른 블로그 URL을 입력해주세요"),
   keyword: z.string().min(1, "키워드를 입력해주세요"),
-  url: z.string().url("올바른 URL을 입력해주세요"),
-  title: z.string().min(1, "블로그 제목을 입력해주세요"),
-  rank: z.number().min(1, "순위는 1 이상이어야 합니다").optional(),
+  active: z.boolean().default(true),
   notes: z.string().optional(),
-  submittedBy: z.string().default("admin"),
+  owner: z.string().default("admin"),
 });
 
-type AddManualBlogForm = z.infer<typeof addManualBlogSchema>;
+type AddBlogKeywordPairForm = z.infer<typeof addBlogKeywordPairSchema>;
 
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
@@ -76,96 +76,98 @@ export default function Rank() {
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
   const queryClient = useQueryClient();
   
-  // Fetch tracked targets from API
-  const { data: trackedTargets = [], isLoading: targetsLoading } = useQuery<TrackedTarget[]>({
-    queryKey: ['/api/tracked-targets'],
+  // v7.13: Fetch blog-keyword pairs from API
+  const { data: blogKeywordPairs = [], isLoading: pairsLoading } = useQuery<BlogKeywordTarget[]>({
+    queryKey: ['/api/pairs'],
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
   
-  // Form for adding new targets
-  const form = useForm<AddManualBlogForm>({
-    resolver: zodResolver(addManualBlogSchema),
+  // Form for adding new blog-keyword pairs
+  const form = useForm<AddBlogKeywordPairForm>({
+    resolver: zodResolver(addBlogKeywordPairSchema),
     defaultValues: {
+      blogTitle: "",
+      blogUrl: "",
       keyword: "",
-      url: "",
-      title: "",
-      rank: undefined,
+      active: true,
       notes: "",
-      submittedBy: "admin",
+      owner: "admin",
     },
   });
   
-  // Add manual blog entry mutation  
-  const addBlogMutation = useMutation({
-    mutationFn: async (data: AddManualBlogForm) => {
-      return await manualBlogApi.create({
+  // Add blog-keyword pair mutation  
+  const addPairMutation = useMutation({
+    mutationFn: async (data: AddBlogKeywordPairForm) => {
+      return await blogKeywordPairsApi.create({
+        blogTitle: data.blogTitle,
+        blogUrl: data.blogUrl,
         keyword: data.keyword,
-        url: data.url,
-        title: data.title,
-        rank: data.rank ?? null,
-        notes: data.notes ?? null,
-        submittedBy: data.submittedBy,
+        active: data.active,
+        notes: data.notes || null,
+        owner: data.owner,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       });
     },
     onSuccess: () => {
       toast({
-        title: "블로그 입력 완료",
-        description: "수동 블로그 입력이 성공적으로 저장되었습니다.",
+        title: "페어 등록 완료",
+        description: "블로그-키워드 페어가 성공적으로 등록되었습니다.",
       });
-      queryClient.invalidateQueries({ queryKey: ['/api/manual-blogs'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
       setIsAddBlogOpen(false);
       form.reset();
     },
     onError: (error) => {
       toast({
-        title: "입력 실패",
-        description: `블로그 입력 중 오류가 발생했습니다: ${error.message}`,
+        title: "등록 실패",
+        description: `페어 등록 중 오류가 발생했습니다: ${error.message}`,
         variant: "destructive",
       });
     },
   });
   
-  // Delete target mutation
-  const deleteTargetMutation = useMutation({
+  // Delete blog-keyword pair mutation  
+  const deletePairMutation = useMutation({
     mutationFn: async (id: string) => {
-      return await targetsApi.remove(id);
+      return await blogKeywordPairsApi.remove(id);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/tracked-targets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
       toast({
-        title: "키워드 삭제 완료",
-        description: "키워드 추적이 중단되었습니다.",
+        title: "페어 삭제 완료",
+        description: "블로그-키워드 페어가 삭제되었습니다.",
       });
     },
     onError: (error) => {
       toast({
         title: "삭제 실패",
-        description: "키워드 삭제 중 오류가 발생했습니다.",
+        description: "페어 삭제 중 오류가 발생했습니다.",
         variant: "destructive",
       });
     },
   });
 
-  // Convert tracked targets to ranking data
-  const convertTargetsToRankingData = (targets: TrackedTarget[]): RankingData[] => {
-    return targets
-      .filter(target => target.kind === selectedTab)
-      .map((target, index) => {
-        // Use stable data based on target ID to avoid re-rendering
-        const idNum = parseInt(target.id?.slice(-1) || '0') || index;
+  // v7.13: Convert blog-keyword pairs to ranking data
+  const convertPairsToRankingData = (pairs: BlogKeywordTarget[]): RankingData[] => {
+    return pairs
+      .filter(pair => pair.active) // Only show active pairs for blog tab
+      .map((pair, index) => {
+        // Use stable data based on pair ID to avoid re-rendering
+        const idNum = parseInt(pair.id?.slice(-1) || '0') || index;
         const baseRank = [8, 15, 12, 20, 7, 25, 11][idNum % 7] || (idNum % 30) + 1;
         const baseChange = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
         
         return {
-          id: target.id || (index + 1).toString(),
-          keyword: target.query || `키워드 ${index + 1}`,
+          id: pair.id || (index + 1).toString(),
+          keyword: pair.keywordText || `키워드 ${index + 1}`,
           rank: baseRank,
           change: baseChange,
           page: Math.floor((baseRank - 1) / 10) + 1,
           position: ((baseRank - 1) % 10) + 1,
-          url: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
+          url: pair.blogUrl || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
           trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
-          status: target.enabled ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
+          status: pair.active ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
           lastCheck: "5분 전",
           exposed: baseRank <= 15, // 15위까지만 노출
           streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3
@@ -173,18 +175,18 @@ export default function Rank() {
       });
   };
 
-  // Current ranking data based on tracked targets
-  const currentRankingData = convertTargetsToRankingData(trackedTargets);
+  // v7.13: Current ranking data using new function
+  const currentRankingData = convertPairsToRankingData(blogKeywordPairs);
 
   // Handle form submission
-  const onSubmit = (data: AddManualBlogForm) => {
-    addBlogMutation.mutate(data);
+  const onSubmit = (data: AddBlogKeywordPairForm) => {
+    addPairMutation.mutate(data);
   };
   
-  // Handle target deletion
-  const handleDeleteTarget = (targetId: string) => {
-    if (confirm("정말로 이 키워드 추적을 중단하시겠습니까?")) {
-      deleteTargetMutation.mutate(targetId);
+  // Handle pair deletion
+  const handleDeletePair = (pairId: string) => {
+    if (confirm("정말로 이 블로그-키워드 페어를 삭제하시겠습니까?")) {
+      deletePairMutation.mutate(pairId);
     }
   };
 
@@ -341,9 +343,9 @@ export default function Rank() {
                         variant="ghost"
                         size="sm"
                         className="h-4 w-4 p-0 hover:text-destructive"
-                        onClick={() => handleDeleteTarget(item.id)}
+                        onClick={() => handleDeletePair(item.id)}
                         data-testid={`button-remove-keyword-${item.id}`}
-                        disabled={deleteTargetMutation.isPending}
+                        disabled={deletePairMutation.isPending}
                       >
                         <X className="h-3 w-3" />
                       </Button>
@@ -676,7 +678,7 @@ export default function Rank() {
       <Dialog open={isAddBlogOpen} onOpenChange={setIsAddBlogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>수동 블로그 입력</DialogTitle>
+            <DialogTitle>블로그-키워드 페어 등록</DialogTitle>
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
@@ -700,7 +702,7 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="url"
+                name="blogUrl"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>블로그 URL</FormLabel>
@@ -708,7 +710,7 @@ export default function Rank() {
                       <Input 
                         placeholder="https://blog.naver.com/..." 
                         {...field}
-                        data-testid="input-url"
+                        data-testid="input-blog-url"
                       />
                     </FormControl>
                     <FormMessage />
@@ -718,7 +720,7 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="title"
+                name="blogTitle"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>블로그 제목</FormLabel>
@@ -726,7 +728,7 @@ export default function Rank() {
                       <Input 
                         placeholder="블로그 제목을 입력하세요" 
                         {...field}
-                        data-testid="input-title"
+                        data-testid="input-blog-title"
                       />
                     </FormControl>
                     <FormMessage />
@@ -736,20 +738,22 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="rank"
+                name="active"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>순위 (선택)</FormLabel>
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-sm">
+                    <div className="space-y-0.5">
+                      <FormLabel>활성화</FormLabel>
+                      <div className="text-sm text-muted-foreground">
+                        전역 크론 스케줄에 포함하여 자동 순위 체크
+                      </div>
+                    </div>
                     <FormControl>
-                      <Input 
-                        type="number" 
-                        placeholder="1-100" 
-                        {...field}
-                        onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
-                        data-testid="input-rank"
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        data-testid="switch-active"
                       />
                     </FormControl>
-                    <FormMessage />
                   </FormItem>
                 )}
               />
@@ -785,10 +789,10 @@ export default function Rank() {
                 <Button 
                   type="submit" 
                   className="flex-1"
-                  disabled={addBlogMutation.isPending}
+                  disabled={addPairMutation.isPending}
                   data-testid="button-submit-target"
                 >
-                  {addBlogMutation.isPending ? "추가 중..." : "추가"}
+                  {addPairMutation.isPending ? "추가 중..." : "추가"}
                 </Button>
               </div>
             </form>
