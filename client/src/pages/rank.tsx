@@ -74,6 +74,7 @@ export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
+  const [metadataLoading, setMetadataLoading] = React.useState(false);
   const queryClient = useQueryClient();
   
   // v7.13.1: Fetch blog-keyword pairs from API with proper auth
@@ -226,6 +227,32 @@ export default function Rank() {
   const currentRankingData = convertPairsToRankingData(blogKeywordPairs);
 
   // Handle form submission
+  // v7.13.1: 메타데이터 자동 수집 함수
+  const handleUrlBlur = async (url: string) => {
+    if (!url.trim() || metadataLoading) return;
+    
+    setMetadataLoading(true);
+    try {
+      const response = await fetch(`/api/metadata?url=${encodeURIComponent(url.trim())}`);
+      if (response.ok) {
+        const metadata = await response.json();
+        console.log('[v7.13.1] 메타데이터 수집 성공:', metadata);
+        
+        // 제목이 수집되었고 현재 제목 필드가 비어있으면 자동 채움
+        if (metadata.title && !form.getValues('title')) {
+          form.setValue('title', metadata.title);
+        }
+      } else {
+        const error = await response.json();
+        console.log('[v7.13.1] 메타데이터 수집 실패:', error.message);
+      }
+    } catch (error) {
+      console.log('[v7.13.1] 메타데이터 수집 오류:', error);
+    } finally {
+      setMetadataLoading(false);
+    }
+  };
+
   const onSubmit = (data: AddBlogKeywordPairForm) => {
     addPairMutation.mutate(data);
   };
@@ -761,14 +788,27 @@ export default function Rank() {
                 name="blogUrl"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>블로그 URL</FormLabel>
+                    <FormLabel className="flex items-center gap-2">
+                      블로그 URL
+                      {metadataLoading && (
+                        <RefreshCw className="w-4 h-4 animate-spin text-primary" />
+                      )}
+                    </FormLabel>
                     <FormControl>
                       <Input 
                         placeholder="https://blog.naver.com/..." 
                         {...field}
+                        onBlur={(e) => {
+                          field.onBlur(e);
+                          handleUrlBlur(e.target.value);
+                        }}
                         data-testid="input-blog-url"
+                        disabled={metadataLoading}
                       />
                     </FormControl>
+                    <div className="text-xs text-muted-foreground">
+                      URL 입력 후 포커스를 다른 곳으로 이동하면 제목이 자동으로 채워집니다
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
