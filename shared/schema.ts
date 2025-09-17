@@ -73,6 +73,8 @@ export const managedKeywords = pgTable("managed_keywords", {
   comp_score: integer("comp_score").default(0), // 경쟁도 점수: 20/60/100
   ad_depth: real("ad_depth").default(0), // plAvgDepth - 평균 광고 노출 깊이
   has_ads: boolean("has_ads").notNull().default(false), // ad_depth > 0
+  ctr: real("ctr").default(0), // plClickRate - 클릭률 (0-1)
+  ad_eligible: boolean("ad_eligible").notNull().default(false), // adDepth>0 && ctr>0 (상업성 하드 필터)
   est_cpc_krw: integer("est_cpc_krw"), // 예상 CPC (KRW, nullable)
   est_cpc_source: text("est_cpc_source").default("unknown"), // account/estimated/unknown
   score: integer("score").notNull().default(0), // 종합점수 0-100

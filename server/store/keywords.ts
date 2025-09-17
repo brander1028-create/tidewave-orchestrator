@@ -117,6 +117,8 @@ export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Pro
                 comp_score: kw.comp_score ?? 0,
                 ad_depth: kw.ad_depth ?? 0,
                 has_ads: !!kw.has_ads,
+                ctr: kw.ctr ?? 0,                              // ★ CTR 필드
+                ad_eligible: !!kw.ad_eligible,                 // ★ 상업성 하드 필터
                 est_cpc_krw: kw.est_cpc_krw ?? null,
                 est_cpc_source: kw.est_cpc_source ?? 'unknown',
                 score: kw.score ?? 0,
@@ -130,10 +132,13 @@ export async function upsertMany(keywords: Partial<InsertManagedKeyword>[]): Pro
                   grade: sql`excluded.grade`,
                   commerciality: sql`excluded.commerciality`,
                   difficulty: sql`excluded.difficulty`,
+                  source: sql`excluded.source`,                   // ★ CRITICAL: source 업데이트 추가
                   comp_idx: sql`excluded.comp_idx`,
                   comp_score: sql`excluded.comp_score`,
                   ad_depth: sql`excluded.ad_depth`,
                   has_ads: sql`excluded.has_ads`,
+                  ctr: sql`excluded.ctr`,                      // ★ CTR 업데이트
+                  ad_eligible: sql`excluded.ad_eligible`,     // ★ 상업성 업데이트
                   est_cpc_krw: sql`excluded.est_cpc_krw`,
                   est_cpc_source: sql`excluded.est_cpc_source`,
                   score: sql`excluded.score`,

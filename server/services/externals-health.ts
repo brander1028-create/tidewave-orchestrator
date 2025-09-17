@@ -94,6 +94,7 @@ export async function getVolumesWithHealth(
           const comp_score = await compIdxToScore(comp_idx);
           const ad_depth = volumeData.plAvgDepth || 0;
           const has_ads = ad_depth > 0;
+          const ctr = volumeData.plClickRate || 0; // ★ CTR 추가
           
           // CPC 추정
           let est_cpc_krw: number | null = null;
@@ -114,8 +115,12 @@ export async function getVolumesWithHealth(
           console.log(`↗️ calling calculateOverallScore for "${text}": vol=${raw_volume}, comp=${comp_score}, ad=${ad_depth}, cpc=${est_cpc_krw || 0}`);
           const score = await calculateOverallScore(raw_volume, comp_score, ad_depth, est_cpc_krw || 0);
           
-          // ★ 패치1: 대체치(fallback) 식별
-          const isApiOk = raw_volume > 0 && ad_depth > 0 && (est_cpc_source !== 'estimated' || est_cpc_krw !== 100);
+          // ★ 규칙1: source 식별 (API 성공 vs 대체치)
+          const fromApi = raw_volume > 0 || ctr > 0 || comp_idx || ad_depth > 0;
+          const source = fromApi ? 'api_ok' : 'fallback';
+          
+          // ★ 규칙1: 상업성 하드 필터 (adDepth>0 && ctr>0)
+          const ad_eligible = ad_depth > 0 && ctr > 0;
           
           keywordsToUpsert.push({
             text,
@@ -124,11 +129,13 @@ export async function getVolumesWithHealth(
             grade,
             commerciality: Math.min(100, Math.round((raw_volume / 1000) * 10)),
             difficulty: Math.min(100, Math.round((raw_volume / 500) * 8)),
-            source: isApiOk ? 'api_ok' : 'fallback',          // ★ 대체치 식별
+            source,           // ★ api_ok vs fallback
             comp_idx,
             comp_score,
             ad_depth,
             has_ads,
+            ctr,             // ★ CTR 추가
+            ad_eligible,     // ★ 상업성 하드 필터
             est_cpc_krw,
             est_cpc_source,
             score
