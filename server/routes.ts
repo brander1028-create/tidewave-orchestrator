@@ -2840,6 +2840,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // === vFinal Pipeline Test API ===
+  
+  // POST /api/test/vfinal-pipeline - vFinal 파이프라인 테스트
+  app.post('/api/test/vfinal-pipeline', async (req, res) => {
+    try {
+      const { title, jobId, blogId, postId, inputKeyword } = req.body;
+      
+      // 필수 파라미터 검증
+      if (!title || !jobId || !blogId || postId === undefined || !inputKeyword) {
+        return res.status(400).json({ 
+          error: 'Missing required parameters', 
+          required: ['title', 'jobId', 'blogId', 'postId', 'inputKeyword'] 
+        });
+      }
+      
+      console.log(`🧪 [vFinal Test] Testing pipeline with title: "${title.substring(0, 50)}..."`);
+      
+      // vFinal 파이프라인 호출
+      const { processPostTitleVFinal } = await import('./services/vfinal-pipeline');
+      const result = await processPostTitleVFinal(title, jobId, blogId, Number(postId), inputKeyword);
+      
+      console.log(`✅ [vFinal Test] Completed - Generated ${result.tiers.length} tiers`);
+      
+      res.json({
+        success: true,
+        result,
+        test_info: {
+          title,
+          jobId,
+          blogId,
+          postId: Number(postId),
+          inputKeyword,
+          timestamp: new Date().toISOString()
+        }
+      });
+      
+    } catch (error) {
+      console.error(`❌ [vFinal Test] Error:`, error);
+      res.status(500).json({ 
+        error: 'vFinal pipeline test failed', 
+        details: String(error) 
+      });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
