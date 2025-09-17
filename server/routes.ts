@@ -1545,6 +1545,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Enhanced SERP search with optimistic health checking
+  // Zero volume keywords fix endpoint
+  app.post('/api/fix-zero-volumes', async (req, res) => {
+    try {
+      const { limit = 100 } = req.body;
+      const { fixZeroVolumeKeywords } = await import('./services/fix-zero-volumes.js');
+      const stats = await fixZeroVolumeKeywords(db, limit);
+      res.json(stats);
+    } catch (error) {
+      console.error('Fix zero volumes failed:', error);
+      res.status(500).json({ error: 'Failed to fix zero volumes' });
+    }
+  });
+
+  // Fix specific keywords endpoint
+  app.post('/api/fix-keywords', async (req, res) => {
+    try {
+      const { keywords } = req.body;
+      if (!Array.isArray(keywords)) {
+        return res.status(400).json({ error: 'Keywords must be an array' });
+      }
+      const { fixSpecificKeywords } = await import('./services/fix-zero-volumes.js');
+      const stats = await fixSpecificKeywords(db, keywords);
+      res.json(stats);
+    } catch (error) {
+      console.error('Fix specific keywords failed:', error);
+      res.status(500).json({ error: 'Failed to fix specific keywords' });
+    }
+  });
+
   app.post('/api/serp/search', async (req, res) => {
     try {
       const { strict = false } = req.body || {};
