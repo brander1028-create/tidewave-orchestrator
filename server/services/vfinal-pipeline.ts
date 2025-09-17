@@ -96,8 +96,7 @@ async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<C
   const existingKeywords = await db.select({
     text: managedKeywords.text,
     source: managedKeywords.source,
-    ad_depth: managedKeywords.ad_depth,
-    est_cpc_krw: managedKeywords.est_cpc_krw,
+    ad_eligible: managedKeywords.ad_eligible,  // ★ 규칙3: ad_eligible 필드 추가
     volume: managedKeywords.volume
   })
     .from(managedKeywords)
@@ -119,17 +118,14 @@ async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<C
         eligible = false;
         skipReason = "ban";
       } else {
-        // ★ 패치2: 상업성 없음 하드컷
+        // ★ 규칙3: Gate 하드 필터링 (source='api_ok' && ad_eligible=true)
         const dbInfo = dbMap.get(candidate.text);
-        const isNoCommerce = dbInfo && (
-          dbInfo.source !== 'api_ok' || 
-          (dbInfo.ad_depth ?? 0) <= 0 || 
-          (dbInfo.est_cpc_krw ?? 0) === 0
-        );
+        const hasCommerce = dbInfo?.source === 'api_ok' && dbInfo?.ad_eligible === true;
         
-        if (isNoCommerce) {
+        if (!hasCommerce) {
           eligible = false;
-          skipReason = "ineligible";
+          skipReason = "no_commerce";
+          console.log(`🚫 [Gate] "${candidate.text}" filtered: source=${dbInfo?.source}, ad_eligible=${dbInfo?.ad_eligible}`);
         } else {
           // AdScore 계산용 volume 설정
           const volume = candidate.volume || 0;
