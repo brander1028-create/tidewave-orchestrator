@@ -106,6 +106,7 @@ export default function Rank() {
   });
   
   // Add blog-keyword pair mutation  
+  // v7.13.1: 낙관적 업데이트로 즉시 UI 반영
   const addPairMutation = useMutation({
     mutationFn: async (data: AddBlogKeywordPairForm) => {
       // v7.13.1: 정확한 필드 매핑으로 API 호출
@@ -135,21 +136,63 @@ export default function Rank() {
       
       return response.json();
     },
-    onSuccess: () => {
-      toast({
-        title: "페어 등록 완료",
-        description: "블로그-키워드 페어가 성공적으로 등록되었습니다.",
-      });
-      queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
-      setIsAddBlogOpen(false);
-      form.reset();
+    onMutate: async (newPair) => {
+      // 진행 중인 쿼리 취소하여 낙관적 업데이트 충돌 방지
+      await queryClient.cancelQueries({ queryKey: ['/api/pairs'] });
+      
+      // 이전 데이터 백업 (롤백용)
+      const previousPairs = queryClient.getQueryData(['/api/pairs']);
+      
+      // 임시 ID와 함께 새 페어를 즉시 캐시에 추가
+      const optimisticPair = {
+        id: `temp-${Date.now()}`, // 임시 ID
+        keywordText: newPair.keywordText,
+        blogUrl: newPair.blogUrl,
+        title: newPair.title || '',
+        brand: newPair.brand || '',
+        groupName: newPair.group || '',
+        active: newPair.active,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      
+      // 캐시에 즉시 추가 (UI에 바로 반영)
+      queryClient.setQueryData(['/api/pairs'], (old: any) => 
+        old ? [...old, optimisticPair] : [optimisticPair]
+      );
+      
+      console.log('[v7.13.1] 낙관적 업데이트 적용:', optimisticPair);
+      
+      return { previousPairs };
     },
-    onError: (error) => {
+    onError: (error, newPair, context) => {
+      // 실패시 이전 상태로 롤백
+      if (context?.previousPairs) {
+        queryClient.setQueryData(['/api/pairs'], context.previousPairs);
+        console.log('[v7.13.1] 낙관적 업데이트 롤백');
+      }
+      
       toast({
         title: "등록 실패",
         description: `페어 등록 중 오류가 발생했습니다: ${error.message}`,
         variant: "destructive",
       });
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "페어 등록 완료",
+        description: "블로그-키워드 페어가 성공적으로 등록되었습니다.",
+      });
+      
+      console.log('[v7.13.1] 서버 응답으로 실제 데이터 업데이트:', data);
+      
+      setIsAddBlogOpen(false);
+      form.reset();
+    },
+    onSettled: () => {
+      // 성공/실패 상관없이 최신 데이터로 동기화
+      queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
+      console.log('[v7.13.1] 쿼리 무효화로 최신 데이터 동기화');
     },
   });
   
@@ -226,6 +269,34 @@ export default function Rank() {
   // v7.13: Current ranking data using new function
   const currentRankingData = convertPairsToRankingData(blogKeywordPairs);
 
+  // v7.13.1: 키워드 메타정보 API 연동
+  const keywordTexts = blogKeywordPairs?.map(pair => pair.keywordText).filter(Boolean).join(',') || '';
+  
+  const { data: keywordMetadata, isLoading: keywordMetadataLoading } = useQuery({
+    queryKey: ['/api/keywords/lookup', keywordTexts],
+    enabled: !!keywordTexts && keywordTexts.length > 0,
+    staleTime: 1000 * 60 * 60, // 1시간 캐시
+    refetchOnWindowFocus: false,
+  });
+
+  // 키워드별 메타데이터 매핑 헬퍼 함수
+  const getKeywordMetadata = (keyword: string) => {
+    if (!keywordMetadata || keywordMetadataLoading) {
+      return { volume: 0, score: 0, trend: 'stable' as const };
+    }
+    
+    const metadata = keywordMetadata.find((item: any) => item.keyword === keyword);
+    if (metadata) {
+      return {
+        volume: metadata.volume || 0,
+        score: metadata.score || 0,
+        trend: metadata.trend || 'stable' as const
+      };
+    }
+    
+    return { volume: 0, score: 0, trend: 'stable' as const };
+  };
+
   // Handle form submission
   // v7.13.1: 메타데이터 자동 수집 함수
   const handleUrlBlur = async (url: string) => {
@@ -269,17 +340,22 @@ export default function Rank() {
       accessorKey: "keyword",
       header: "키워드",
       cell: ({ row }) => {
-        // Use real keyword data or defaults
-        const volume = 0; // TODO: Integrate with keyword API
-        const score = 0; // TODO: Calculate from rank position
+        // v7.13.1: 실제 키워드 메타데이터 사용
+        const keywordData = getKeywordMetadata(row.original.keyword);
         
         return (
           <div className="space-y-2">
             <KeywordChip 
               keyword={row.original.keyword}
-              volume={volume}
-              score={score}
+              volume={keywordData.volume}
+              score={keywordData.score}
             />
+            {keywordMetadataLoading && (
+              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                <RefreshCw className="w-3 h-3 animate-spin" />
+                키워드 정보 로딩 중...
+              </div>
+            )}
           </div>
         );
       },
