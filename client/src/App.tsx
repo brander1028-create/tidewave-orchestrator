@@ -6,7 +6,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import MainLayout from "@/components/layout/main-layout";
 import Dashboard from "@/pages/dashboard";
 import Rank from "@/pages/rank";
-import BlogRank from "@/pages/blog-rank";
 import ShopRank from "@/pages/shop-rank";
 import Reviews from "@/pages/reviews";
 import Insights from "@/pages/insights";
@@ -23,7 +22,6 @@ function Router() {
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/dashboard" component={Dashboard} />
-        <Route path="/blog-rank" component={BlogRank} />
         <Route path="/shop-rank" component={ShopRank} />
         <Route path="/rank" component={Rank} />
         <Route path="/reviews" component={Reviews} />
