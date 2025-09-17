@@ -569,7 +569,31 @@ export default function BlogRank() {
               <h1 className="text-xl font-semibold text-foreground">블로그 순위 대시보드</h1>
               <p className="text-sm text-muted-foreground">네이버 블로그 SERP 순위 모니터링 및 인사이트 분석</p>
             </div>
-            <div className="flex gap-3">
+            <div className="flex items-center gap-3">
+              {/* 키워드 검색 */}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="키워드 검색..."
+                  value={keywordSearchTerm}
+                  onChange={(e) => setKeywordSearchTerm(e.target.value)}
+                  className="pl-10 w-48"
+                  data-testid="input-keyword-search-header"
+                />
+              </div>
+              
+              {/* 그룹만들기 버튼 */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsCreateGroupOpen(true)}
+                data-testid="button-create-group-header"
+              >
+                <FolderPlus className="h-4 w-4 mr-2" />
+                그룹만들기
+              </Button>
+              
+              {/* 설정 아이콘 */}
               <Button
                 variant="outline"
                 size="sm"
@@ -578,6 +602,8 @@ export default function BlogRank() {
               >
                 <Settings className="h-4 w-4" />
               </Button>
+              
+              {/* 키워드 추가 */}
               <Button
                 onClick={() => setIsAddBlogOpen(true)}
                 size="sm"
@@ -597,44 +623,41 @@ export default function BlogRank() {
           <div className="container mx-auto px-4 py-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              {/* 키워드 관리 카드 */}
+              {/* 빠른 액션 카드 */}
               <div className="bg-card border border-border rounded-lg p-4">
                 <div className="flex items-center gap-2 mb-4">
-                  <Search className="h-5 w-5 text-primary" />
-                  <h3 className="font-semibold text-foreground">키워드 관리</h3>
+                  <Users className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-foreground">빠른 액션</h3>
                 </div>
                 <div className="space-y-3">
-                  {/* 키워드 검색 */}
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      placeholder="키워드 검색..."
-                      value={keywordSearchTerm}
-                      onChange={(e) => setKeywordSearchTerm(e.target.value)}
-                      className="pl-10"
-                      data-testid="input-keyword-search"
-                    />
-                  </div>
-                  {/* 버튼 그룹 */}
+                  {/* 전체 순위 업데이트 */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    data-testid="button-update-all-ranks"
+                  >
+                    <TrendingUp className="h-4 w-4 mr-2" />
+                    전체 순위 업데이트
+                  </Button>
+                  
+                  {/* 일괄 상태 관리 */}
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setIsCreateGroupOpen(true)}
                       className="flex-1"
-                      data-testid="button-create-group"
+                      data-testid="button-activate-all"
                     >
-                      <FolderPlus className="h-4 w-4 mr-2" />
-                      그룹 만들기
+                      모두 활성화
                     </Button>
                     <Button
+                      variant="outline"
                       size="sm"
-                      onClick={() => setIsAddBlogOpen(true)}
                       className="flex-1"
-                      data-testid="button-add-keyword-settings"
+                      data-testid="button-deactivate-all"
                     >
-                      <Plus className="h-4 w-4 mr-2" />
-                      키워드 추가
+                      모두 비활성화
                     </Button>
                   </div>
                 </div>
