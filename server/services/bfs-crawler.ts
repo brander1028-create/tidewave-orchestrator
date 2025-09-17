@@ -257,31 +257,146 @@ function expandTravel(seed: string): string[] {
   return variants;
 }
 
+// 🎯 높은 가치 키워드 판별 (단일 키워드용)
+function isHighValueKeyword(keyword: string): boolean {
+  const highValueTerms = [
+    // 화장품/스킨케어
+    '아토베리어', '메디큐브', '시카플라스트', '레드블레미쉬', 
+    '크림', '세럼', '앰플', '에센스', '토너', '클렌저',
+    '에스트라', '에이피알', '더마로지카', '라로슈포제',
+    
+    // 건강식품/영양제
+    '비타민D3', '오메가3', '프로바이오틱스', '종합비타민', 
+    '마그네슘', '칼슘', '홍삼정', '루테인',
+    '나우푸드', '솔가', '종근당',
+    
+    // 전자제품
+    '17 프로', 's25 울트라', '로봇청소기', '스마트워치',
+    '이어폰 노캔', '플립7', '아이폰', '갤럭시'
+  ];
+  
+  const keywordLower = keyword.toLowerCase();
+  return highValueTerms.some(term => keywordLower.includes(term.toLowerCase()));
+}
+
+// 🎯 상업적 가치가 높은 브랜드+제품 조합 판별
+function isHighValueCombo(brand: string, model: string): boolean {
+  // 화장품/스킨케어 - 특정 제품명이 포함된 조합 우선순위
+  const highValueProducts = [
+    '아토베리어', '메디큐브', '시카플라스트', '레드블레미쉬', 
+    '크림', '세럼', '앰플', '에센스', '토너', '클렌저'
+  ];
+  
+  // 건강식품 - 특정 영양소 조합 우선순위
+  const highValueSupplements = [
+    '비타민D3', '오메가3', '프로바이오틱스', '종합비타민', 
+    '마그네슘', '칼슘', '홍삼정', '루테인'
+  ];
+  
+  // 전자제품 - 인기 모델 우선순위
+  const highValueElectronics = [
+    '17 프로', 's25 울트라', '로봇청소기', '스마트워치',
+    '이어폰 노캔', '플립7'
+  ];
+  
+  const productLower = model.toLowerCase();
+  
+  return highValueProducts.some(product => productLower.includes(product.toLowerCase())) ||
+         highValueSupplements.some(supplement => productLower.includes(supplement.toLowerCase())) ||
+         highValueElectronics.some(electronics => productLower.includes(electronics.toLowerCase()));
+}
+
 // 3-5) Models/Series Provider: 브랜드+시리즈+모델
 function expandModels(seed: string): string[] {
   const variants: string[] = [];
   
-  // 브랜드별 모델 변형
+  // 🆕 브랜드별 모델 변형 - 대폭 확장 (화장품, 건강식품, 전자제품)
   const brandModels: { [key: string]: string[] } = {
-    '샤오미': ['로봇청소기 m40', '로봇청소기 m30', '로봇청소기 s10', '로봇청소기 e10'],
-    '아이폰': ['17', '17 프로', '17pro', '16', '16 프로', '15'],
-    '갤럭시': ['s25', 's25 울트라', '플립7', '폴드7', 's24', 's24 울트라'],
+    // 🎯 화장품/스킨케어 브랜드 (에스트라 아토베리어 타겟)
+    '에스트라': ['아토베리어', '아토베리어 크림', '아토베리어 로션', '센시티브 크림', '수딩젤'],
+    '에이피알': ['메디큐브', '메디큐브 크림', '메디큐브 세럼', 'A+크림', '레드블레미쉬'],
+    '더마로지카': ['데일리 마이크로폴리언트', '스킨 스무딩 크림', '에이지 스마트', '프리클리어'],
+    '라로슈포제': ['시카플라스트', '안테리오스', '에파클라', '토레인', '프리비오스'],
+    '아벤느': ['아벤느 크림', '썰말워터', '아토덤', '쿠르베네', '시칼파테'],
+    '닥터지': ['레드블레미쉬', '그린티 세럼', 'V7토닝라이트', '필링젤'],
+    
+    // 💊 건강식품/영양제 브랜드  
+    '나우푸드': ['비타민D3', '오메가3', '마그네슘', '아연', '비타민C', '프로바이오틱스'],
+    '솔가': ['비타민D3', '오메가3', '칼슘마그네슘', '철분', '종합비타민'],
+    '종근당': ['홍삼정', '비타민D', '칼슘', '아이클리어', '프로바이오틱스'],
+    '뉴트리디데이': ['종합비타민', '오메가3', '루테인', '비타민D', '프로바이오틱스'],
+    '일양약품': ['곰표 비타민D', '칼슘 마그네슘', '종합비타민', '오메가3'],
+    '노바렉스': ['프리미엄 종합비타민', '루테인', '오메가3', '비타민D3'],
+    
+    // 📱 전자제품 브랜드 (기존 유지 + 확장)
+    '샤오미': ['로봇청소기 m40', '로봇청소기 m30', '로봇청소기 s10', '로봇청소기 e10', '밴드8', '스마트워치'],
+    '아이폰': ['17', '17 프로', '17pro', '16', '16 프로', '15', '14', '13'],
+    '갤럭시': ['s25', 's25 울트라', '플립7', '폴드7', 's24', 's24 울트라', 'z플립6'],
     '블루투스': ['이어폰 노캔', '이어폰 방수', '이어폰 게이밍', '헤드폰', '스피커']
   };
   
-  // 시드에 포함된 브랜드 확인 후 모델 추가
+  // 🆕 역방향 매핑 구축 (제품명→브랜드들)
+  const productToBrands: { [product: string]: string[] } = {};
+  Object.entries(brandModels).forEach(([brand, models]) => {
+    models.forEach(model => {
+      const normalizedModel = normalizeKeyword(model);
+      if (!productToBrands[normalizedModel]) {
+        productToBrands[normalizedModel] = [];
+      }
+      productToBrands[normalizedModel].push(brand);
+    });
+  });
+  
+  // 🆕 브랜드+제품 조합 생성 및 우선순위 부여
+  const priorityVariants: string[] = []; // 우선순위 높은 조합
+  const standardVariants: string[] = []; // 일반 조합
+  const normalizedSeed = normalizeKeyword(seed);
+  
+  // 1) 정방향 매칭: 시드에 브랜드가 포함된 경우
   Object.entries(brandModels).forEach(([brand, models]) => {
     if (seed.includes(brand.toLowerCase()) || seed.includes(brand)) {
       models.forEach(model => {
         if (!seed.includes(model)) {
-          variants.push(`${brand} ${model}`);
-          variants.push(`${model}`);
+          const brandModelCombo = `${brand} ${model}`;
+          
+          // 🎯 상업적 가치가 높은 조합을 우선순위로 분류
+          if (isHighValueCombo(brand, model)) {
+            priorityVariants.push(brandModelCombo);
+            priorityVariants.push(`${brandModelCombo} 추천`);
+            priorityVariants.push(`${brandModelCombo} 가격`);
+            priorityVariants.push(`${brandModelCombo} 효과`);
+          } else {
+            standardVariants.push(brandModelCombo);
+            standardVariants.push(model);
+          }
         }
       });
     }
   });
   
-  return variants;
+  // 🆕 2) 역방향 매칭: 시드에 제품명이 포함된 경우 (Gap 1 해결)
+  Object.entries(productToBrands).forEach(([product, brands]) => {
+    if (normalizedSeed.includes(product) || product.includes(normalizedSeed)) {
+      brands.forEach(brand => {
+        // 이미 정방향에서 처리되지 않은 경우만 추가
+        if (!normalizedSeed.includes(normalizeKeyword(brand))) {
+          const brandModelCombo = `${brand} ${seed}`;
+          
+          if (isHighValueCombo(brand, seed)) {
+            priorityVariants.push(brandModelCombo);
+            priorityVariants.push(`${brandModelCombo} 추천`);
+            priorityVariants.push(`${brandModelCombo} 가격`);
+            priorityVariants.push(`${brandModelCombo} 효과`);
+          } else {
+            standardVariants.push(brandModelCombo);
+          }
+        }
+      });
+    }
+  });
+  
+  // ✨ 우선순위 조합을 앞에 배치 (더 빨리 발견되고 처리됨)
+  return [...priorityVariants, ...standardVariants];
 }
 
 // 통합 확장 함수: 모든 Provider 적용 + LK 모드 지원
@@ -327,32 +442,49 @@ export function expandAllKeywords(seeds: string[], options: {
     }
   }
   
-  // 기존 확장자들 적용 (LK 모드와 병행)
+  // 🆕 우선순위 기반 확장 처리 (Gap 2 해결)
+  const priorityKeywords: string[] = []; // 브랜드+제품 조합 우선순위
+  const standardKeywords: string[] = []; // 일반 키워드
+  
   seeds.forEach(seed => {
     const variants = expandVariants(seed);
     const temporal = expandTemporal(seed);
-    const local = expandLocal(seed); // 기존 local 확장자도 유지
+    const local = expandLocal(seed);
     const travel = expandTravel(seed);
     const models = expandModels(seed);
     
-    // 모든 확장 결과 정규화 후 추가
-    [...variants, ...temporal, ...local, ...travel, ...models].forEach(expanded => {
+    // 브랜드+제품 조합은 우선순위 그룹에 추가
+    models.forEach(model => {
+      const normalized = normalizeKeyword(model);
+      if (normalized.length > 1 && isHighValueKeyword(normalized)) {
+        priorityKeywords.push(normalized);
+      } else if (normalized.length > 1) {
+        standardKeywords.push(normalized);
+      }
+    });
+    
+    // 기타 확장 결과는 일반 그룹에 추가
+    [...variants, ...temporal, ...local, ...travel].forEach(expanded => {
       const normalized = normalizeKeyword(expanded);
-      if (normalized.length > 1) { // 너무 짧은 키워드 제외
-        allExpanded.add(normalized);
+      if (normalized.length > 1) {
+        standardKeywords.push(normalized);
       }
     });
   });
   
+  // 🎯 우선순위 키워드를 먼저 Set에 추가 (삽입 순서 보장)
+  priorityKeywords.forEach(keyword => allExpanded.add(keyword));
+  standardKeywords.forEach(keyword => allExpanded.add(keyword));
+  
   const expandedArray = Array.from(allExpanded);
   console.log(`🌱 EXP seeds: in=${seeds.length} expanded=${expandedArray.length} frontier=${Math.min(expandedArray.length, 50000)}`);
   
-  // 50,000개 상한 적용 (명세서 요구사항)
+  // 🆕 50,000개 상한 적용 - 우선순위 보존 (Gap 2 해결)
   if (expandedArray.length > 50000) {
-    // LK 모드일 때는 복합어 우선순위로 정렬
     let sampled;
+    
     if (enableLKMode && preferCompound) {
-      // 복합어 우선순위로 샘플링
+      // LK 모드: 복합어 우선순위로 정렬
       sampled = expandedArray
         .sort((a, b) => {
           const aWords = a.split(/\s+/).length;
@@ -365,11 +497,10 @@ export function expandAllKeywords(seeds: string[], options: {
         .slice(0, 50000);
       console.log(`🔄 [LK Mode] Frontier capped at 50,000 with compound priority (from ${expandedArray.length})`);
     } else {
-      // 기존 랜덤 샘플링
-      sampled = expandedArray
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 50000);
-      console.log(`🔄 Frontier capped at 50,000 (from ${expandedArray.length})`);
+      // 🎯 브랜드+제품 우선순위 보존 (Set의 삽입 순서 활용)
+      // 이미 priorityKeywords가 먼저 Set에 추가되었으므로 첫 50,000개만 선택
+      sampled = expandedArray.slice(0, 50000);
+      console.log(`🔄 [Priority Mode] Frontier capped at 50,000 with brand+product priority (from ${expandedArray.length})`);
     }
     return sampled;
   }
