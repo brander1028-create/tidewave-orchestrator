@@ -1225,89 +1225,207 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Batch rank check for multiple targets
+  // Batch rank check for multiple targets - CRITICAL FIX: Enhanced error handling and blog integration
   app.post("/api/scraping/batch-rank-check", async (req, res) => {
+    const requestId = `batch-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    console.log(`[BatchRankCheck:${requestId}] Starting batch rank check request`);
+    
     try {
-      // Validate request body with Zod
+      // Enhanced Zod validation with detailed logging
+      console.log(`[BatchRankCheck:${requestId}] Validating request body:`, JSON.stringify(req.body, null, 2));
       const validation = batchScrapingSchema.safeParse(req.body);
+      
       if (!validation.success) {
+        console.error(`[BatchRankCheck:${requestId}] Validation failed:`, validation.error.errors);
         return res.status(400).json({ 
           message: "Invalid request data",
-          errors: validation.error.errors
+          errors: validation.error.errors,
+          requestId
         });
       }
       
       const { targets } = validation.data;
+      console.log(`[BatchRankCheck:${requestId}] Processing ${targets.length} targets`);
 
-      await scrapingService.initialize();
+      // Use blog scraper for blog targets, scraping service for shopping
+      const blogTargets: any[] = [];
+      const shopTargets: any[] = [];
       
-      const results = [];
-      
-      for (const targetConfig of targets) {
-        // Per-target try/catch for partial failure isolation
-        try {
-          const { targetId, query, kind, device, sort, target } = targetConfig;
-          
-          const config = {
-            target: target || '',
-            query,
-            device: device as 'mobile' | 'pc',
-            kind: kind as 'blog' | 'shop',
-            sort,
-            maxRetries: 3,
-            backoffMs: 1000
-          };
+      targets.forEach(target => {
+        if (target.kind === 'blog') {
+          blogTargets.push(target);
+        } else {
+          shopTargets.push(target);
+        }
+      });
 
-          const result = await scrapingService.scrapeRanking(config);
-          
-          if (result.success && result.data) {
-            // Save to database
-            const rankData = {
-              targetId,
-              kind,
-              query,
-              sort: sort || null,
-              device,
-              rank: result.data.rank || null,
-              page: result.data.page || null,
-              position: result.data.position || null,
-              source: 'playwright_scraping',
-              metadata: result.data.metadata
-            };
+      console.log(`[BatchRankCheck:${requestId}] Blog targets: ${blogTargets.length}, Shop targets: ${shopTargets.length}`);
 
-            await storage.insertRankData(rankData);
+      const allResults: any[] = [];
+
+      // Process blog targets with blog scraper
+      if (blogTargets.length > 0) {
+        console.log(`[BatchRankCheck:${requestId}] Processing blog targets with blog scraper`);
+        
+        for (const targetConfig of blogTargets) {
+          try {
+            console.log(`[BatchRankCheck:${requestId}] Processing blog target: ${targetConfig.targetId} - ${targetConfig.query}`);
+            
+            const result = await naverBlogScraper.scrapeNaverBlog({
+              query: targetConfig.query,
+              targetUrl: targetConfig.target,
+              device: targetConfig.device || 'pc',
+              maxPages: 3
+            });
+
+            if (result.success && result.data) {
+              // Save to database with enhanced error handling
+              try {
+                const rankData = {
+                  targetId: targetConfig.targetId,
+                  kind: targetConfig.kind,
+                  query: targetConfig.query,
+                  sort: targetConfig.sort || null,
+                  device: targetConfig.device,
+                  rank: result.data.rank,
+                  page: result.data.page,
+                  position: result.data.position,
+                  source: 'blog_scraper',
+                  metadata: {
+                    title: result.data.title,
+                    url: result.data.url,
+                    snippet: result.data.snippet,
+                    date: result.data.date,
+                    ...result.data.metadata
+                  }
+                };
+
+                await storage.insertRankData(rankData);
+                console.log(`[BatchRankCheck:${requestId}] Successfully saved blog data for target: ${targetConfig.targetId}`);
+              } catch (dbError) {
+                console.error(`[BatchRankCheck:${requestId}] Database save failed for target: ${targetConfig.targetId}`, dbError);
+                // Continue processing even if DB save fails
+              }
+            }
+            
+            allResults.push({
+              targetId: targetConfig.targetId,
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              source: 'blog_scraper'
+            });
+
+            console.log(`[BatchRankCheck:${requestId}] Blog target ${targetConfig.targetId} processed: ${result.success ? 'SUCCESS' : 'FAILED'}`);
+          } catch (error) {
+            console.error(`[BatchRankCheck:${requestId}] Blog target ${targetConfig.targetId} failed:`, error);
+            allResults.push({
+              targetId: targetConfig.targetId,
+              success: false,
+              data: null,
+              error: `Blog scraping failed: ${error instanceof Error ? error.message : String(error)}`,
+              source: 'blog_scraper'
+            });
           }
           
-          results.push({
-            targetId,
-            success: result.success,
-            data: result.data,
-            error: result.error
-          });
+          // Respectful delay between requests
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+
+      // Process shopping targets with scraping service using batch method
+      if (shopTargets.length > 0) {
+        console.log(`[BatchRankCheck:${requestId}] Processing shop targets with scraping service`);
+        
+        try {
+          const shopConfigs = shopTargets.map(targetConfig => ({
+            target: targetConfig.target || '',
+            query: targetConfig.query,
+            device: targetConfig.device as 'mobile' | 'pc',
+            kind: targetConfig.kind as 'blog' | 'shop',
+            sort: targetConfig.sort,
+            maxRetries: 3,
+            backoffMs: 1000,
+            targetId: targetConfig.targetId
+          }));
+
+          const shopResults = await scrapingService.batchScrapeRanking(shopConfigs);
+          
+          // Process shop results
+          for (let i = 0; i < shopResults.results.length; i++) {
+            const result = shopResults.results[i];
+            const targetConfig = shopTargets[i];
+            
+            if (result.success && result.data) {
+              try {
+                const rankData = {
+                  targetId: targetConfig.targetId,
+                  kind: targetConfig.kind,
+                  query: targetConfig.query,
+                  sort: targetConfig.sort || null,
+                  device: targetConfig.device,
+                  rank: result.data.rank || null,
+                  page: result.data.page || null,
+                  position: result.data.position || null,
+                  source: 'playwright_scraping',
+                  metadata: result.data.metadata
+                };
+
+                await storage.insertRankData(rankData);
+                console.log(`[BatchRankCheck:${requestId}] Successfully saved shop data for target: ${targetConfig.targetId}`);
+              } catch (dbError) {
+                console.error(`[BatchRankCheck:${requestId}] Database save failed for shop target: ${targetConfig.targetId}`, dbError);
+              }
+            }
+            
+            allResults.push({
+              targetId: targetConfig.targetId,
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              source: 'playwright_scraping'
+            });
+          }
+          
+          console.log(`[BatchRankCheck:${requestId}] Shop targets batch completed: ${shopResults.successCount}/${shopResults.totalCount} successful`);
         } catch (error) {
-          // Per-target error isolation - continue processing other targets
-          results.push({
-            targetId: targetConfig.targetId,
-            success: false,
-            data: null,
-            error: `Target processing failed: ${String(error)}`
+          console.error(`[BatchRankCheck:${requestId}] Shop targets batch failed:`, error);
+          // Add error results for all shop targets
+          shopTargets.forEach(target => {
+            allResults.push({
+              targetId: target.targetId,
+              success: false,
+              data: null,
+              error: `Shop batch processing failed: ${error instanceof Error ? error.message : String(error)}`,
+              source: 'playwright_scraping'
+            });
           });
         }
-        
-        // Small delay between requests to be respectful
-        await new Promise(resolve => setTimeout(resolve, 2000));
       }
+
+      const successCount = allResults.filter(r => r.success).length;
+      console.log(`[BatchRankCheck:${requestId}] Batch completed: ${successCount}/${allResults.length} targets successful`);
       
       res.json({
         message: "Batch rank check completed",
-        results,
-        successCount: results.filter(r => r.success).length,
-        totalCount: results.length
+        results: allResults,
+        successCount,
+        totalCount: allResults.length,
+        requestId,
+        breakdown: {
+          blogTargets: blogTargets.length,
+          shopTargets: shopTargets.length,
+          blogSuccessful: allResults.filter(r => r.source === 'blog_scraper' && r.success).length,
+          shopSuccessful: allResults.filter(r => r.source === 'playwright_scraping' && r.success).length
+        }
       });
     } catch (error) {
+      console.error(`[BatchRankCheck:${requestId}] Critical batch failure:`, error);
       res.status(500).json({ 
         message: "Batch rank check failed", 
-        error: String(error) 
+        error: error instanceof Error ? error.message : String(error),
+        requestId,
+        stack: process.env.NODE_ENV === 'development' ? (error as Error).stack : undefined
       });
     }
   });

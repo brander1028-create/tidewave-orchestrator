@@ -26,6 +26,26 @@ export interface BlogScrapingConfig {
 
 export class NaverBlogScraper {
   private userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  
+  private getHeaders() {
+    return {
+      'User-Agent': this.userAgent,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Cache-Control': 'max-age=0',
+      'DNT': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'Referer': 'https://www.naver.com/',
+    };
+  }
 
   /**
    * 네이버 블로그 검색 결과를 스크래핑합니다
@@ -39,18 +59,12 @@ export class NaverBlogScraper {
       
       console.log(`[BlogScraper] 네이버 블로그 검색: ${query} (${device})`);
       
-      // HTTP 요청으로 검색 결과 페이지 가져오기
+      // HTTP 요청으로 검색 결과 페이지 가져오기 (enhanced headers to prevent 403)
       const response = await axios.get(searchUrl, {
-        headers: {
-          'User-Agent': this.userAgent,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-        },
-        timeout: 10000,
-        maxRedirects: 5
+        headers: this.getHeaders(),
+        timeout: 15000, // Increased timeout
+        maxRedirects: 5,
+        validateStatus: (status) => status < 500, // Don't throw on 4xx errors
       });
 
       if (response.status !== 200) {
@@ -255,8 +269,9 @@ export class NaverBlogScraper {
     console.log(`[BlogScraper] 페이지 ${page} 스크래핑 중...`);
     
     const response = await axios.get(searchUrl, {
-      headers: { 'User-Agent': this.userAgent },
-      timeout: 10000
+      headers: this.getHeaders(),
+      timeout: 15000,
+      validateStatus: (status) => status < 500
     });
 
     if (response.status !== 200) {
@@ -276,19 +291,70 @@ export class NaverBlogScraper {
   }
 
   /**
-   * URL 정리 (네이버 리다이렉트 URL 처리)
+   * URL 정리 (네이버 리다이렉트 URL 처리 및 정규화)
    */
   private cleanUrl(url: string): string {
     try {
-      // 네이버 리다이렉트 URL 처리
+      // Empty or invalid URLs
+      if (!url || typeof url !== 'string') {
+        return '';
+      }
+
+      // Already clean direct URLs
+      if (url.startsWith('https://blog.naver.com/') && !url.includes('Redirect')) {
+        return this.normalizeNaverBlogUrl(url);
+      }
+
+      // Handle Naver redirect URLs
       if (url.includes('blog.naver.com') && url.includes('Redirect=Log')) {
         const urlObj = new URL(url);
         const redirectUrl = urlObj.searchParams.get('url');
-        return redirectUrl ? decodeURIComponent(redirectUrl) : url;
+        if (redirectUrl) {
+          const decodedUrl = decodeURIComponent(redirectUrl);
+          return this.normalizeNaverBlogUrl(decodedUrl);
+        }
+      }
+
+      // Handle other Naver blog URL patterns
+      if (url.includes('blog.naver.com')) {
+        return this.normalizeNaverBlogUrl(url);
       }
       
+      // Ensure HTTPS for blog.naver.com URLs
+      if (url.includes('blog.naver.com') && url.startsWith('http://')) {
+        url = url.replace('http://', 'https://');
+      }
+
       return url;
     } catch (e) {
+      console.warn('[BlogScraper] URL cleaning failed:', e);
+      return url;
+    }
+  }
+
+  /**
+   * Normalize Naver blog URLs to prevent 403 errors
+   */
+  private normalizeNaverBlogUrl(url: string): string {
+    try {
+      // Remove tracking parameters that might cause 403s
+      const urlObj = new URL(url);
+      
+      // Keep only essential parameters for Naver blog URLs
+      const allowedParams = ['blogId', 'logNo', 'parentCategoryNo', 'categoryNo'];
+      const searchParams = new URLSearchParams();
+      
+      allowedParams.forEach(param => {
+        if (urlObj.searchParams.has(param)) {
+          searchParams.set(param, urlObj.searchParams.get(param)!);
+        }
+      });
+      
+      // Reconstruct clean URL
+      const cleanUrl = `${urlObj.protocol}//${urlObj.hostname}${urlObj.pathname}`;
+      return searchParams.toString() ? `${cleanUrl}?${searchParams}` : cleanUrl;
+    } catch (e) {
+      console.warn('[BlogScraper] URL normalization failed:', e);
       return url;
     }
   }

@@ -390,6 +390,66 @@ export class WebScrapingService extends EventEmitter {
       timestamp: new Date()
     };
   }
+
+  // Batch scraping with Promise.allSettled to prevent single failures from breaking entire batch
+  async batchScrapeRanking(configs: ScrapingConfig[]): Promise<{
+    results: (ScrapingResult & { targetId?: string })[];
+    successCount: number;
+    totalCount: number;
+  }> {
+    if (!this.isInitialized) {
+      await this.initialize();
+    }
+
+    console.log(`[ScrapingService] Starting batch scraping for ${configs.length} targets`);
+    
+    // Use Promise.allSettled to prevent single failures from breaking the batch
+    const promises = configs.map(async (config, index) => {
+      try {
+        console.log(`[ScrapingService] Processing target ${index + 1}/${configs.length}: ${config.query} (${config.kind})`);
+        const result = await this.scrapeRanking(config);
+        
+        return {
+          ...result,
+          targetId: (config as any).targetId, // Pass through targetId if provided
+        };
+      } catch (error) {
+        console.error(`[ScrapingService] Target ${index + 1} failed:`, error);
+        return {
+          success: false,
+          error: `Scraping failed: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: new Date(),
+          targetId: (config as any).targetId,
+        };
+      }
+    });
+
+    const results = await Promise.allSettled(promises);
+    
+    // Extract results from Promise.allSettled
+    const scrapingResults = results.map((result, index) => {
+      if (result.status === 'fulfilled') {
+        return result.value;
+      } else {
+        console.error(`[ScrapingService] Promise rejected for target ${index + 1}:`, result.reason);
+        return {
+          success: false,
+          error: `Promise failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+          timestamp: new Date(),
+          targetId: (configs[index] as any).targetId,
+        };
+      }
+    });
+
+    const successCount = scrapingResults.filter(r => r.success).length;
+    console.log(`[ScrapingService] Batch completed: ${successCount}/${configs.length} successful`);
+
+    return {
+      results: scrapingResults,
+      successCount,
+      totalCount: configs.length,
+    };
+  }
 }
 
 // Singleton instance
