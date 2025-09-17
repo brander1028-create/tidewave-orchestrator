@@ -44,8 +44,8 @@ export default function Exports() {
     to: new Date(),
   });
   // Use React Query to fetch export jobs
-  const { data: exportJobs = [], isLoading, refetch } = useQuery({
-    queryKey: ['/api/mock/exports'],
+  const { data: exportJobs = [], isLoading, refetch } = useQuery<ExportJob[]>({
+    queryKey: ['/api/exports'],
     refetchInterval: 2000, // Refetch every 2 seconds to update progress
   });
 
@@ -53,7 +53,7 @@ export default function Exports() {
   const createExportMutation = useMutation({
     mutationFn: exportApi.startExport,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/mock/exports'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/exports'] });
       toast({
         title: "내보내기 시작됨",
         description: "데이터 내보내기 작업이 시작되었습니다.",
@@ -76,7 +76,7 @@ export default function Exports() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       const job = exportJobs.find(j => j.id === jobId);
-      const filename = job ? `export-${job.createdAt.split('T')[0]}-${jobId.substring(0, 8)}.${job.format}` : `export-${jobId}.csv`;
+      const filename = job ? `export-${new Date(job.createdAt).toISOString().split('T')[0]}-${jobId.substring(0, 8)}.${job.format}` : `export-${jobId}.csv`;
       
       a.style.display = 'none';
       a.href = url;
@@ -138,7 +138,7 @@ export default function Exports() {
     createExportMutation.mutate({
       dataTypes: selectedData,
       format: selectedFormat,
-      dateRange,
+      dateRange: { from: dateRange.from!, to: dateRange.to! },
     });
   };
 
@@ -288,8 +288,8 @@ export default function Exports() {
             <div className="space-y-3">
               <Label>날짜 범위</Label>
               <DatePickerWithRange 
-                dateRange={dateRange}
-                onDateRangeChange={setDateRange}
+                date={dateRange}
+                onSelect={setDateRange}
               />
               <p className="text-xs text-muted-foreground">
                 선택한 기간의 데이터만 내보냅니다.

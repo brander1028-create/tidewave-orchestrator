@@ -125,97 +125,146 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Mock data for demonstration
+  // Real KPI data from API
+  const { data: kpiStats } = useQuery({
+    queryKey: ['/api/dashboard/kpi-stats'],
+    queryFn: async () => {
+      const response = await fetch('/api/dashboard/kpi-stats', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return null;
+      return response.json();
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+
   const kpiData = [
     {
       title: "평균 순위",
-      value: "8.3위",
-      change: { value: -2.1, label: "전일 대비", trend: "up" as const },
+      value: kpiStats?.avgRank ? `${kpiStats.avgRank}위` : "N/A",
+      change: { 
+        value: kpiStats?.rankChange || 0, 
+        label: "전일 대비", 
+        trend: (kpiStats?.rankChange || 0) > 0 ? "down" as const : "up" as const 
+      },
       icon: <Target className="w-4 h-4" />,
     },
     {
       title: "추적 키워드",
-      value: "127개",
-      change: { value: 5, label: "이번 주", trend: "up" as const },
+      value: kpiStats?.totalKeywords ? `${kpiStats.totalKeywords}개` : "0개",
+      change: { 
+        value: kpiStats?.keywordChange || 0, 
+        label: "이번 주", 
+        trend: (kpiStats?.keywordChange || 0) > 0 ? "up" as const : "stable" as const 
+      },
       icon: <Activity className="w-4 h-4" />,
     },
     {
       title: "상위 10위 키워드",
-      value: "45개",
-      change: { value: 3, label: "어제", trend: "up" as const },
+      value: kpiStats?.top10Count ? `${kpiStats.top10Count}개` : "0개",
+      change: { 
+        value: kpiStats?.top10Change || 0, 
+        label: "어제", 
+        trend: (kpiStats?.top10Change || 0) > 0 ? "up" as const : "stable" as const 
+      },
       icon: <TrendingUp className="w-4 h-4" />,
     },
     {
       title: "주의 필요",
-      value: "12개",
-      change: { value: -2, label: "개선됨", trend: "down" as const },
+      value: kpiStats?.attentionCount ? `${kpiStats.attentionCount}개` : "0개",
+      change: { 
+        value: kpiStats?.attentionChange || 0, 
+        label: "개선됨", 
+        trend: (kpiStats?.attentionChange || 0) < 0 ? "down" as const : "up" as const 
+      },
       icon: <AlertTriangle className="w-4 h-4" />,
     },
   ];
 
-  const trendData = Array.from({ length: 30 }, (_, i) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (29 - i));
-    return {
-      date: date.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }),
-      rank: 8 + Math.floor(Math.random() * 6) - 3,
-      score: 93 + Math.floor(Math.random() * 6) - 3,
-    };
+  // Real trend data from rank aggregation
+  const { data: trendData = [] } = useQuery({
+    queryKey: ['/api/dashboard/trend-data'],
+    queryFn: async () => {
+      const response = await fetch('/api/dashboard/trend-data?period=30d', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
+      return data.map((item: any) => ({
+        date: new Date(item.date).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }),
+        rank: parseFloat(item.avgRank) || 0,
+        score: Math.max(0, 100 - (parseFloat(item.avgRank) || 100)),
+      }));
+    },
+    staleTime: 10 * 60 * 1000, // 10 minutes
   });
 
-  const distributionData = [
-    { name: "1-10위", value: 45, color: "#10b981" },
-    { name: "11-30위", value: 52, color: "#f59e0b" },
-    { name: "31위 이하", value: 30, color: "#ef4444" },
-  ];
-
-  const heatmapData = Array.from({ length: 90 }, (_, i) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (89 - i));
-    return {
-      date: date.toISOString().split('T')[0],
-      value: Math.floor(Math.random() * 15),
-    };
+  // Real rank distribution data
+  const { data: distributionData = [] } = useQuery({
+    queryKey: ['/api/dashboard/rank-distribution'],
+    queryFn: async () => {
+      const response = await fetch('/api/dashboard/rank-distribution', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return [
+        { name: "1-10위", value: 0, color: "#10b981" },
+        { name: "11-30위", value: 0, color: "#f59e0b" },
+        { name: "31위 이하", value: 0, color: "#ef4444" },
+      ];
+      return response.json();
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
-  const recentAlerts = [
-    {
-      id: "1",
-      title: "홍삼스틱 순위 급락",
-      description: "8위 → 15위 (-7)",
-      severity: "high",
-      time: "30분 전",
-      trend: "down"
+  // Real heatmap data from daily aggregations
+  const { data: heatmapData = [] } = useQuery({
+    queryKey: ['/api/dashboard/activity-heatmap'],
+    queryFn: async () => {
+      const response = await fetch('/api/dashboard/activity-heatmap?period=90d', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return [];
+      return response.json();
     },
-    {
-      id: "2", 
-      title: "홍삼 추천 Top 5 진입",
-      description: "7위 → 4위 (+3)",
-      severity: "medium",
-      time: "1시간 전",
-      trend: "up"
-    },
-    {
-      id: "3",
-      title: "신규 경쟁사 포스팅 감지",
-      description: "홍삼 관련 5개 신규글",
-      severity: "low", 
-      time: "2시간 전",
-      trend: "stable"
-    },
-  ];
+    staleTime: 30 * 60 * 1000, // 30 minutes
+  });
 
-  const topPerformers = [
-    { keyword: "홍삼 추천", rank: 4, change: 3, trend: "up" },
-    { keyword: "홍삼 효능", rank: 6, change: 1, trend: "up" },
-    { keyword: "홍삼 가격", rank: 9, change: 2, trend: "up" },
-  ];
+  // Real alerts from rolling alerts API
+  const { data: recentAlerts = [] } = useQuery({
+    queryKey: ['/api/alerts/rolling'],
+    queryFn: async () => {
+      const response = await fetch('/api/alerts/rolling?limit=3', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return [];
+      const alerts = await response.json();
+      return alerts.map((alert: any) => ({
+        id: alert.id,
+        title: alert.title || `${alert.rule} 알림`,
+        description: alert.description || `${alert.prevRank}위 → ${alert.currRank}위 (${alert.delta > 0 ? '+' : ''}${alert.delta})`,
+        severity: alert.severity || "medium",
+        time: alert.timestamp ? new Date(alert.timestamp).toLocaleString('ko-KR') : "알 수 없음",
+        trend: alert.delta > 0 ? "down" : alert.delta < 0 ? "up" : "stable"
+      }));
+    },
+    staleTime: 2 * 60 * 1000, // 2 minutes
+  });
 
-  const needsAttention = [
-    { keyword: "홍삼스틱", rank: 15, change: -7, trend: "down" },
-    { keyword: "홍삼 부작용", rank: null, change: null, trend: "stable" },
-    { keyword: "홍삼 복용법", rank: 32, change: -7, trend: "down" },
-  ];
+  // Real top performers from rank snapshots
+  const { data: performanceData } = useQuery({
+    queryKey: ['/api/dashboard/keyword-performance'],
+    queryFn: async () => {
+      const response = await fetch('/api/dashboard/keyword-performance', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return { topPerformers: [], needsAttention: [] };
+      return response.json();
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+
+  const topPerformers = performanceData?.topPerformers || [];
+  const needsAttention = performanceData?.needsAttention || [];
 
   // 🔧 핫픽스 v7.9: 카드 설정 변경 핸들러 - 안전한 저장 패턴 적용
   const handleCardsChange = useCallback((cards: DashboardCardConfig[]) => {

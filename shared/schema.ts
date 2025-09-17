@@ -70,6 +70,7 @@ export const alerts = pgTable("alerts", {
   reason: text("reason"),
   cooldownUntil: timestamp("cooldown_until"),
   seen: boolean("seen").default(false),
+  severity: varchar("severity").notNull().default("medium"), // 'low' | 'medium' | 'high' | 'critical'
 });
 
 // 제출함/타겟/트래킹

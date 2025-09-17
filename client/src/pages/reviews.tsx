@@ -20,17 +20,17 @@ export default function Reviews() {
 
   // Fetch review data for selected product
   const { data: rankings, isLoading: rankingsLoading } = useQuery({
-    queryKey: ['/api/mock/reviews/rankings', selectedProduct],
+    queryKey: ['/api/reviews/rankings', selectedProduct],
     queryFn: () => reviewsApi.getRankings(selectedProduct)
   });
 
   const { data: health, isLoading: healthLoading } = useQuery({
-    queryKey: ['/api/mock/reviews/health', selectedProduct],
+    queryKey: ['/api/reviews/health', selectedProduct],
     queryFn: () => reviewsApi.getHealth(selectedProduct)
   });
 
   const { data: abuse, isLoading: abuseLoading } = useQuery({
-    queryKey: ['/api/mock/reviews/abuse', selectedProduct],
+    queryKey: ['/api/reviews/abuse', selectedProduct],
     queryFn: () => reviewsApi.getAbuseDetection(selectedProduct)
   });
 

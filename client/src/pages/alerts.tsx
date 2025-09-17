@@ -31,18 +31,18 @@ export default function Alerts() {
   const queryClient = useQueryClient();
 
   // Fetch alerts
-  const { data: alerts = [], isLoading } = useQuery({
-    queryKey: ["/api/mock/alerts", showRead ? undefined : false],
+  const { data: alerts = [], isLoading } = useQuery<Alert[]>({
+    queryKey: ["/api/alerts", showRead ? undefined : false],
     refetchInterval: 30000, // Refresh every 30 seconds
   });
 
   // Mark alert as seen mutation
   const markSeenMutation = useMutation({
     mutationFn: async (alertId: string) => {
-      return await apiRequest("POST", `/api/mock/alerts/${alertId}/seen`);
+      return await apiRequest("POST", `/api/alerts/${alertId}/seen`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/mock/alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/alerts"] });
     },
   });
 
@@ -286,7 +286,7 @@ export default function Alerts() {
                                 size="sm"
                                 className="h-8 w-8 p-0"
                                 onClick={() => markSeenMutation.mutate(alert.id)}
-                                disabled={alert.seen}
+                                disabled={alert.seen ?? false}
                                 data-testid={`button-mark-seen-${alert.id}`}
                               >
                                 {alert.seen ? (

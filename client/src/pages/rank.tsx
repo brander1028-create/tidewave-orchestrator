@@ -148,29 +148,52 @@ export default function Rank() {
     },
   });
 
-  // v7.13: Convert blog-keyword pairs to ranking data
+  // Fetch rank snapshots for blog-keyword pairs
+  const { data: rankSnapshots = [], isLoading: rankLoading } = useQuery({
+    queryKey: ['/api/rank-snapshots', 'blog'],
+    queryFn: async () => {
+      const response = await fetch('/api/rank-snapshots?kind=blog', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return [];
+      return response.json();
+    },
+    staleTime: 2 * 60 * 1000, // 2 minutes
+  });
+
+  // v7.13: Convert blog-keyword pairs to ranking data using real rank snapshots
   const convertPairsToRankingData = (pairs: BlogKeywordTarget[]): RankingData[] => {
     return pairs
       .filter(pair => pair.active) // Only show active pairs for blog tab
       .map((pair, index) => {
-        // Use stable data based on pair ID to avoid re-rendering
-        const idNum = parseInt(pair.id?.slice(-1) || '0') || index;
-        const baseRank = [8, 15, 12, 20, 7, 25, 11][idNum % 7] || (idNum % 30) + 1;
-        const baseChange = [3, -7, 0, -5, 8, -2, 1][idNum % 7] || ((idNum % 21) - 10);
+        // Try to find real rank snapshot for this pair
+        const snapshot = rankSnapshots.find(s => 
+          s.targetId === pair.id || 
+          s.query === pair.keyword || 
+          s.query === pair.keywordText
+        );
+        
+        const rank = snapshot?.rank || null;
+        const prevRank = snapshot?.prevRank || rank;
+        const change = (rank && prevRank) ? (prevRank - rank) : 0;
         
         return {
           id: pair.id || (index + 1).toString(),
-          keyword: pair.keywordText || `키워드 ${index + 1}`,
-          rank: baseRank,
-          change: baseChange,
-          page: Math.floor((baseRank - 1) / 10) + 1,
-          position: ((baseRank - 1) % 10) + 1,
-          url: pair.blogUrl || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
-          trend: Array.from({ length: 10 }, (_, i) => baseRank + (i % 5) - 2),
-          status: pair.active ? (baseRank <= 10 ? "active" : baseRank <= 20 ? "warning" : "error") as any : "error" as any,
-          lastCheck: "5분 전",
-          exposed: baseRank <= 15, // 15위까지만 노출
-          streakDays: [4, 12, 1, 8, 0, 15, 6][idNum % 7] || 3
+          keyword: pair.keywordText || pair.keyword || `키워드 ${index + 1}`,
+          rank: rank || 999, // Default to unranked if no data
+          change: change,
+          page: rank ? Math.floor((rank - 1) / 10) + 1 : 99,
+          position: rank ? ((rank - 1) % 10) + 1 : 9,
+          url: pair.blogUrl || '',
+          trend: [], // Will be populated by separate trend API call
+          status: pair.active ? 
+            (rank && rank <= 10 ? "active" : rank && rank <= 20 ? "warning" : "error") as any : 
+            "error" as any,
+          lastCheck: snapshot?.updatedAt ? 
+            new Date(snapshot.updatedAt).toLocaleString('ko-KR') : 
+            "데이터 없음",
+          exposed: rank ? rank <= 15 : false,
+          streakDays: 0 // TODO: Calculate from historical data
         };
       });
   };
@@ -195,10 +218,9 @@ export default function Rank() {
       accessorKey: "keyword",
       header: "키워드",
       cell: ({ row }) => {
-        const idNum = parseInt(row.original.id?.slice(-1) || '0');
-        // Mock data: 키워드별 조회량과 점수
-        const volume = [1200, 850, 2400, 560, 1800, 920, 1500][idNum % 7] || 1000;
-        const score = [85, 72, 91, 68, 88, 74, 82][idNum % 7] || 75;
+        // Use real keyword data or defaults
+        const volume = 0; // TODO: Integrate with keyword API
+        const score = 0; // TODO: Calculate from rank position
         
         return (
           <div className="space-y-2">
@@ -288,16 +310,26 @@ export default function Rank() {
 
   // These functions are now handled by mutations above
 
-  const detailTrendData = selectedRankingDetail ? Array.from({ length: 30 }, (_, i) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (29 - i));
-    return {
-      date: date.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }),
-      rank: selectedRankingDetail.rank + Math.floor(Math.random() * 6) - 3,
-      score: 101 - (selectedRankingDetail.rank + Math.floor(Math.random() * 6) - 3),
-      events: Math.random() > 0.8 ? [{ type: 'rank_change', message: '순위 변동' }] : [],
-    };
-  }) : [];
+  // Fetch real trend data for selected ranking
+  const { data: detailTrendData = [] } = useQuery({
+    queryKey: ['/api/rank-snapshots/history', selectedRankingDetail?.id],
+    queryFn: async () => {
+      if (!selectedRankingDetail?.id) return [];
+      const response = await fetch(`/api/rank-snapshots/history?targetId=${selectedRankingDetail.id}`, {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return [];
+      const history = await response.json();
+      return history.map((item: any) => ({
+        date: new Date(item.timestamp).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }),
+        rank: item.rank,
+        score: 101 - item.rank,
+        events: item.rank !== item.prevRank ? [{ type: 'rank_change', message: '순위 변동' }] : [],
+      }));
+    },
+    enabled: !!selectedRankingDetail?.id,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
 
   return (
     <div className="space-y-6">

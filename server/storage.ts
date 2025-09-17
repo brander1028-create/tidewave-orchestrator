@@ -117,6 +117,7 @@ export interface IStorage {
 
   // v6 Rank Snapshots (실시간 랭킹 스냅샷) - Owner-aware methods for security
   getRankSnapshots(owner: string, targetId?: string, kind?: string, range?: string): Promise<RankSnapshot[]>;
+  getAllRankSnapshots(range?: string): Promise<RankSnapshot[]>; // Dashboard API용 전체 스냅샷 조회
   insertRankSnapshot(owner: string, data: InsertRankSnapshot): Promise<RankSnapshot>;
   getRankSnapshotHistory(owner: string, targetId: string, kind: string, query?: string, sort?: string, device?: string, range?: string): Promise<RankSnapshot[]>;
 
@@ -832,6 +833,39 @@ export class DatabaseStorage implements IStorage {
     })
     .from(rankSnapshots)
     .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
+    .where(and(...conditions))
+    .orderBy(desc(rankSnapshots.timestamp));
+
+    return await query;
+  }
+
+  // Dashboard API용 전체 스냅샷 조회 (owner 제한 없음)
+  async getAllRankSnapshots(range = "30d"): Promise<RankSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const conditions = [
+      gte(rankSnapshots.timestamp, cutoffDate)
+    ];
+
+    const query = db.select({
+      id: rankSnapshots.id,
+      targetId: rankSnapshots.targetId,
+      kind: rankSnapshots.kind,
+      query: rankSnapshots.query,
+      sort: rankSnapshots.sort,
+      device: rankSnapshots.device,
+      timestamp: rankSnapshots.timestamp,
+      rank: rankSnapshots.rank,
+      page: rankSnapshots.page,
+      position: rankSnapshots.position,
+      source: rankSnapshots.source,
+      metadata: rankSnapshots.metadata,
+      pairId: rankSnapshots.pairId,
+      exposed: rankSnapshots.exposed
+    })
+    .from(rankSnapshots)
     .where(and(...conditions))
     .orderBy(desc(rankSnapshots.timestamp));
 
@@ -2881,6 +2915,19 @@ export class MemStorage implements IStorage {
       .filter(snapshot => snapshot.timestamp >= cutoffDate)
       .filter(snapshot => !targetId || snapshot.targetId === targetId)
       .filter(snapshot => !kind || snapshot.kind === kind)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    
+    return snapshots;
+  }
+
+  // Dashboard API용 전체 스냅샷 조회 (owner 제한 없음)
+  async getAllRankSnapshots(range = "30d"): Promise<RankSnapshot[]> {
+    const days = parseInt(range.replace('d', ''));
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const snapshots = Array.from(this.rankSnapshots.values())
+      .filter(snapshot => snapshot.timestamp >= cutoffDate)
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
     
     return snapshots;

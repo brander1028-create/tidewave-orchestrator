@@ -38,18 +38,18 @@ export default function Inbox() {
   const queryClient = useQueryClient();
 
   // Fetch submissions
-  const { data: submissions = [], isLoading } = useQuery({
-    queryKey: ["/api/mock/submissions", selectedTab !== "all" ? selectedTab : undefined],
+  const { data: submissions = [], isLoading } = useQuery<Submission[]>({
+    queryKey: ["/api/submissions", selectedTab !== "all" ? selectedTab : undefined],
     refetchInterval: 30000, // Refresh every 30 seconds
   });
 
   // Mutation for approving/rejecting submissions
   const reviewMutation = useMutation({
     mutationFn: async ({ id, action, comment }: { id: string; action: string; comment?: string }) => {
-      return await apiRequest("POST", `/api/mock/submissions/${id}/${action}`, { comment });
+      return await apiRequest("POST", `/api/submissions/${id}/${action}`, { comment });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/mock/submissions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/submissions"] });
       toast({
         title: reviewAction === "approve" ? "승인 완료" : "반려 완료",
         description: `제출 항목이 ${reviewAction === "approve" ? "승인" : "반려"}되었습니다.`,
@@ -322,7 +322,7 @@ export default function Inbox() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Inbox className="w-5 h-5" />
+            <InboxIcon className="w-5 h-5" />
             제출함 관리
           </CardTitle>
         </CardHeader>

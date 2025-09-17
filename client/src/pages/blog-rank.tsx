@@ -151,47 +151,37 @@ const TossTrendChart = ({ data, change }: { data: number[], change: number }) =>
   );
 };
 
-// Mock data generator
-const generateMockData = (targets: any[]): BlogKeywordData[] => {
+// Convert tracked targets to blog keyword data - simplified without mock dependencies  
+const processTargetsToKeywordData = (targets: any[], snapshots: any[] = []): BlogKeywordData[] => {
   return targets.map((target, index) => {
-    const idNum = parseInt(target.id?.slice(-1) || '0') || index;
-    const volumes = [32000, 18500, 45600, 12300, 28900, 15700, 39200];
-    const scores = [85, 72, 91, 68, 88, 74, 82];
-    const ranks = [8, 15, 3, 25, 12, 18, 6];
-    const changes = [3, -7, 1, -12, 5, -2, 8];
-    const maintainDays = [14, 7, 28, 3, 21, 12, 35];
-    const brands = ["브랜드A", "브랜드B", "브랜드A", "브랜드C", "브랜드A", "브랜드B", "브랜드A"];
-    const groups = ["그룹1", "그룹2", "그룹1", "그룹3", "그룹2", "그룹1", "그룹3"];
-    
     const keyword = target.keywords?.[0] || target.queries?.[0] || target.query || target.title || `키워드 ${index + 1}`;
     
-    // 고정된 timestamp 생성 (실제로는 API에서 받아야 함)
-    const baseTime = Date.now() - (index * 60 * 1000); // 1분씩 차이
-    const lastCheckTime = new Date(baseTime);
+    // Find corresponding rank snapshot
+    const snapshot = snapshots.find((s: any) => 
+      s.targetId === target.id || 
+      s.query === keyword
+    );
     
-    // 10일간 트렌드 데이터 생성 (순위 기반)
-    const baseRank = ranks[idNum % 7] || 15;
-    const trendData = Array.from({ length: 10 }, (_, i) => {
-      const variation = (Math.sin(i * 0.5) + Math.random() * 0.5 - 0.25) * 5;
-      return Math.max(1, Math.min(50, baseRank + variation));
-    });
+    const rank = snapshot?.rank || null;
+    const prevRank = snapshot?.prevRank || rank;
+    const change = (rank && prevRank) ? (prevRank - rank) : 0;
     
     return {
       id: target.id || (index + 1).toString(),
-      active: target.active !== undefined ? target.active : true, // 실제 상태 사용
+      active: target.active !== undefined ? target.active : true,
       keyword: keyword,
-      volume: volumes[idNum % 7] || 15000,
-      score: scores[idNum % 7] || 75,
-      rank: ranks[idNum % 7] || (idNum % 30) + 1,
-      change: changes[idNum % 7] || 0,
-      maintainDays: maintainDays[idNum % 7] || 7,
-      blogId: `blog${index + 1}`,
-      blogUrl: target.url || `blog.naver.com/user${index + 1}/post${(index + 1) * 123}`,
-      trend: trendData, // 10일간 데이터
-      postDate: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toLocaleDateString('ko-KR'),
-      lastCheck: lastCheckTime.toISOString(), // ISO 문자열로 저장
-      brand: brands[idNum % 7] || "브랜드A",
-      group: groups[idNum % 7] || "그룹1"
+      volume: 0, // TODO: Integrate with keyword API
+      score: rank ? Math.max(0, 100 - rank) : 0, // Simple score calculation
+      rank: rank || 999, // Unranked if no data
+      change: change,
+      maintainDays: 0, // TODO: Calculate from historical data
+      blogId: target.id || `blog${index + 1}`,
+      blogUrl: target.url || '',
+      trend: [], // Will be populated separately if needed
+      postDate: target.createdAt ? new Date(target.createdAt).toLocaleDateString('ko-KR') : 'N/A',
+      lastCheck: snapshot?.updatedAt || target.updatedAt || new Date().toISOString(),
+      brand: target.owner || "기본", // Use owner as brand
+      group: target.category || "기본" // Use category as group
     };
   });
 };
@@ -222,6 +212,19 @@ export default function BlogRank() {
     queryKey: ['/api/targets/blog'],
     queryFn: () => manualBlogApi.getAll(),
     staleTime: 5 * 60 * 1000,
+  });
+  
+  // Fetch rank snapshots for blog targets
+  const { data: rankSnapshots = [], isLoading: rankLoading } = useQuery({
+    queryKey: ['/api/rank-snapshots', 'blog'],
+    queryFn: async () => {
+      const response = await fetch('/api/rank-snapshots?kind=blog', {
+        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
+      });
+      if (!response.ok) return [];
+      return response.json();
+    },
+    staleTime: 2 * 60 * 1000, // 2 minutes
   });
 
   // Forms
@@ -293,15 +296,15 @@ export default function BlogRank() {
     },
   });
 
-  // Data processing
-  const mockData = generateMockData(trackedTargets);
+  // Data processing - convert targets to keyword data using real snapshots
+  const keywordData = processTargetsToKeywordData(trackedTargets, rankSnapshots);
   
-  // 브랜드 목록
-  const brands = ["전체", ...Array.from(new Set(mockData.map(item => item.brand)))];
+  // 브랜드 목록 (실제 owner 데이터 기반)
+  const brands = ["전체", ...Array.from(new Set(keywordData.map(item => item.brand)))];
 
   // Filtering
   const filteredData = React.useMemo(() => {
-    let filtered = mockData;
+    let filtered = keywordData;
     
     // 키워드 검색 필터
     if (keywordSearchTerm.trim()) {
@@ -346,7 +349,7 @@ export default function BlogRank() {
     });
     
     return sorted;
-  }, [mockData, selectedBrand, viewMode, sortBy, keywordSearchTerm]);
+  }, [keywordData, selectedBrand, viewMode, sortBy, keywordSearchTerm]);
 
   // 배치 실행 로직
   const runAllChecks = React.useCallback(async () => {

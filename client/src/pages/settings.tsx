@@ -35,17 +35,17 @@ export default function SettingsPage() {
 
   // Fetch current settings
   const { data: serverSettings = [], isLoading } = useQuery({
-    queryKey: ["/api/mock/settings"],
+    queryKey: ["/api/settings"],
   });
 
   // Update settings mutation
   const updateSettingsMutation = useMutation({
     mutationFn: async ({ key, value }: { key: string; value: any }) => {
-      return await apiRequest("POST", "/api/mock/settings", { key, value });
+      return await apiRequest("POST", "/api/settings", { key, value });
     },
     onSuccess: (data, variables) => {
       updateSetting(variables.key, variables.value);
-      queryClient.invalidateQueries({ queryKey: ["/api/mock/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
       toast({
         title: "설정 저장됨",
         description: "설정이 성공적으로 저장되었습니다.",
