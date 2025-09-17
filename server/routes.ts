@@ -2686,7 +2686,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      const target = await storage.createBlogKeywordTarget(validation.data);
+      // v7.13.1: 서버 자동 보강 기능
+      const { blogUrl, keywordText, title, brand, groupName, active } = validation.data;
+      
+      // 1. URL 캐노니컬 변환 (m.blog.naver.com → blog.naver.com)
+      let canonicalUrl = blogUrl;
+      if (blogUrl.includes('m.blog.naver.com')) {
+        canonicalUrl = blogUrl.replace('m.blog.naver.com', 'blog.naver.com');
+      }
+      
+      // 2. 닉네임과 postId 추출 (blog.naver.com/<nickname>/<postId>)
+      let nickname = 'unknown';
+      const urlMatch = canonicalUrl.match(/blog\.naver\.com\/([^\/]+)\/(\d+)/);
+      if (urlMatch) {
+        nickname = urlMatch[1];
+      }
+      
+      // 3. 키워드 정규화 (trim, 소문자, 연속공백 제거)
+      const keywordNorm = keywordText.trim().toLowerCase().replace(/\s+/g, ' ');
+      
+      // 4. URL 정규화
+      const blogUrlNorm = canonicalUrl.toLowerCase().trim();
+      
+      // 5. 제목 자동 수집 (선택사항, 실패해도 등록 성공)
+      let finalTitle = title;
+      if (!title && canonicalUrl.includes('blog.naver.com')) {
+        try {
+          // TODO: 3초 타임아웃으로 메타데이터 수집 (다음 작업에서 구현)
+          console.log(`[v7.13.1] 제목 자동 수집 예정: ${canonicalUrl}`);
+        } catch (error) {
+          console.log(`[v7.13.1] 제목 수집 실패 (계속 진행): ${error}`);
+        }
+      }
+      
+      // 6. 완전한 데이터로 생성
+      const enrichedData = {
+        owner,
+        keywordText,
+        keywordNorm,
+        blogUrl: canonicalUrl, // 캐노니컬 URL 저장
+        blogUrlNorm,
+        nickname,
+        title: finalTitle,
+        brand: brand || null,
+        groupName: groupName || null,
+        active: active ?? true,
+      };
+      
+      const target = await storage.createBlogKeywordTarget(enrichedData);
       res.json(target);
     } catch (error) {
       res.status(500).json({ message: "블로그-키워드 페어 생성에 실패했습니다", error: String(error) });

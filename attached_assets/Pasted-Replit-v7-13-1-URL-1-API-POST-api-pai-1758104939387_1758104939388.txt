@@ -1,0 +1,102 @@
+Replit 패치요청 v7.13.1 (델타) — 제목 옵션화 + URL 자동채움 + 등록 요청 필드 정합성
+1) API 컨트랙트(최소 입력)
+
+엔드포인트: POST /api/pairs
+
+요청 바디(최소):
+
+{
+  "keywordText": "홍삼스틱",
+  "blogUrl": "https://m.blog.naver.com/anctioni/224001422422",
+  "active": true,
+  "brand": "진생가",
+  "group": "브랜딩",
+  "title": null
+}
+
+
+서버 Zod 스키마 수정:
+
+keywordText: z.string().min(1) (필수)
+
+blogUrl: z.string().url() (필수)
+
+title: z.string().min(1).optional() ← 옵션
+
+brand: z.string().optional()
+
+group: z.string().optional()
+
+active: z.boolean().default(true)
+
+서버에서 자동 보강:
+
+URL 캐노니컬: m.blog.naver.com/<nick>/<postId> → blog.naver.com/<nick>/<postId>
+
+닉네임·postId 추출(경로 파싱)
+
+제목 자동 수집(선택): 요청에 title이 없으면 3초 타임아웃으로 메타/OG에서 가져와 저장(실패해도 등록은 성공)
+
+2) 프런트 폼/전송 정합성
+
+폼 필드 매핑 고정:
+
+키워드 → keywordText
+
+블로그 URL → blogUrl
+
+제목(선택) → title (비우면 undefined/null)
+
+브랜드(선택) → brand
+
+그룹(선택) → group
+
+활성화 토글 → active
+
+제목 필드는 “선택(자동 채움)” 표기.
+URL 입력 칸 onBlur 시 GET /api/metadata?url=...(내부) 호출로 제목 미리 채우기(스피너 표시). 실패 시 비워둠.
+
+빨간 토스트 개선: 서버 에러 메시지에 path/expected/received를 한국어로 변환해 표기.
+
+3) 저장/목록 반영
+
+성공 시 queryClient.setQueryData(['pairs'], updater)로 낙관적 업데이트(invalidate 금지), 리스트에 즉시 새 행 추가.
+
+리스트 컬럼: 키워드 [조회량][점수] | 닉네임/제목 | 현재순위 | Δ | 유지 n일 | 최초노출 | 바로가기 | 마지막체크 | 액션
+
+4) 키워드 메타(조회량/점수) 연동
+
+프록시 그대로 사용:
+
+KEYWORDS_API_BASE=https://42ccc512-7f90-450a-a0a0-0b29770596c8-00-1eg5ws086e4j3.kirk.replit.dev/keywords
+
+GET /api/keywords/lookup?texts=홍삼스틱 → [ {text, volume, score} ] (1시간 캐시)
+
+등록 모달/리스트의 키워드 뱃지에 [조회량][점수] 즉시 렌더.
+
+5) 자주 나는 오류 원인/해결
+
+현 오류(스크린샷): 400 invalid_type path=['keywordText']
+→ 프런트가 keywordText를 보내지 않음. 폼 → API 키를 위 매핑으로 고정하면 해결.
+
+URL only 등록 시 제목 없다고 실패
+→ 위 옵션화 + 서버 자동 보강으로 해결.
+
+m.blog.naver.com 저장 후 순위 매칭 실패
+→ 캐노니컬 변환으로 해결.
+
+6) 수락 기준(DoD)
+
+제목 없이 키워드+URL만으로 등록이 성공한다(토스트 초록).
+
+네트워크 탭에서 요청 바디에 keywordText/blogUrl이 포함되고, 서버가 title 자동 채움(또는 빈값 허용)으로 응답한다.
+
+방금 등록한 행이 리스트에 즉시 보임(새로고침 없이).
+
+m.blog…로 넣어도 저장이 **blog.naver…**로 정규화되어 이후 순위 매칭이 된다.
+
+(선택) 메타데이터 API 간단 스펙
+
+GET /api/metadata?url=... → { title?: string, nickname?: string, canonicalUrl: string }
+
+내부 로직: Canonicalize → HTML <title>·og:title 우선 파싱 → 실패 시 null

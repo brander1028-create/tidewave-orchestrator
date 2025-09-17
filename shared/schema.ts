@@ -610,22 +610,20 @@ export const insertDashboardSettingsSchema = createInsertSchema(dashboardSetting
 export type InsertRollingAlert = z.infer<typeof insertRollingAlertSchema>;
 export type InsertDashboardSettings = z.infer<typeof insertDashboardSettingsSchema>;
 
-// v7.13 Blog Keyword Targets 스키마와 타입
+// v7.13.1 Blog Keyword Targets 스키마와 타입 (제목 옵션화)
 export const insertBlogKeywordTargetSchema = createInsertSchema(blogKeywordTargets).omit({
   id: true,
   keywordNorm: true, // 자동 생성
-  blogUrlNorm: true, // 자동 생성
+  blogUrlNorm: true, // 자동 생성  
   nickname: true, // 자동 생성
   createdAt: true,
 }).extend({
   keywordText: z.string().min(1, "키워드를 입력하세요").max(100, "키워드는 100자 이내여야 합니다"),
-  blogUrl: z.string().url("올바른 URL을 입력하세요").refine(url => 
-    url.includes("blog.naver.com"), 
-    "네이버 블로그 URL만 지원합니다"
-  ),
-  title: z.string().max(200, "제목은 200자 이내여야 합니다").optional(),
-  brand: z.string().max(50, "브랜드명은 50자 이내여야 합니다").optional(),
-  groupName: z.string().max(50, "그룹명은 50자 이내여야 합니다").optional(),
+  blogUrl: z.string().url("올바른 URL을 입력하세요"),
+  title: z.string().min(1).optional().nullable().transform(val => val || null), // v7.13.1: null 허용, 자동 채움
+  brand: z.string().optional(), // v7.13.1: 브랜드 옵션
+  groupName: z.string().optional(), // v7.13.1: 그룹 옵션 (SQL 키워드 충돌 방지)  
+  active: z.boolean().default(true), // v7.13.1: 기본 활성화
 });
 
 export const updateBlogKeywordTargetSchema = insertBlogKeywordTargetSchema

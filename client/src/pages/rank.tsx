@@ -58,14 +58,14 @@ interface RankingData {
   streakDays: number;
 }
 
-// v7.13: Form schema for blog-keyword pair (1:1 mapping)
+// v7.13.1: Form schema for blog-keyword pair (제목 옵션화)
 const addBlogKeywordPairSchema = z.object({
-  blogTitle: z.string().min(1, "블로그 제목을 입력해주세요"),
+  keywordText: z.string().min(1, "키워드를 입력해주세요"),
   blogUrl: z.string().url("올바른 블로그 URL을 입력해주세요"),
-  keyword: z.string().min(1, "키워드를 입력해주세요"),
+  title: z.string().optional(), // v7.13.1: 제목 옵션화 (자동 채움)
+  brand: z.string().optional(), // v7.13.1: 브랜드 옵션
+  group: z.string().optional(), // v7.13.1: 그룹 옵션
   active: z.boolean().default(true),
-  notes: z.string().optional(),
-  owner: z.string().default("admin"),
 });
 
 type AddBlogKeywordPairForm = z.infer<typeof addBlogKeywordPairSchema>;
@@ -76,9 +76,18 @@ export default function Rank() {
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
   const queryClient = useQueryClient();
   
-  // v7.13: Fetch blog-keyword pairs from API
+  // v7.13.1: Fetch blog-keyword pairs from API with proper auth
   const { data: blogKeywordPairs = [], isLoading: pairsLoading } = useQuery<BlogKeywordTarget[]>({
     queryKey: ['/api/pairs'],
+    queryFn: async () => {
+      const response = await fetch('/api/pairs', {
+        headers: { 'x-role': 'admin' }
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch pairs');
+      }
+      return response.json();
+    },
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
   
@@ -86,28 +95,44 @@ export default function Rank() {
   const form = useForm<AddBlogKeywordPairForm>({
     resolver: zodResolver(addBlogKeywordPairSchema),
     defaultValues: {
-      blogTitle: "",
+      keywordText: "",
       blogUrl: "",
-      keyword: "",
+      title: "",
+      brand: "",
+      group: "",
       active: true,
-      notes: "",
-      owner: "admin",
     },
   });
   
   // Add blog-keyword pair mutation  
   const addPairMutation = useMutation({
     mutationFn: async (data: AddBlogKeywordPairForm) => {
-      return await blogKeywordPairsApi.create({
-        blogTitle: data.blogTitle,
+      // v7.13.1: 정확한 필드 매핑으로 API 호출
+      const payload = {
+        keywordText: data.keywordText,
         blogUrl: data.blogUrl,
-        keyword: data.keyword,
+        title: data.title || undefined, // 빈 문자열을 undefined로 변환
+        brand: data.brand || undefined,
+        groupName: data.group || undefined, // group -> groupName 매핑
         active: data.active,
-        notes: data.notes || null,
-        owner: data.owner,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        owner: "admin", // 헤더에서 처리됨
+      };
+      
+      const response = await fetch('/api/pairs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-role': 'admin',
+        },
+        body: JSON.stringify(payload),
       });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'API 호출 실패');
+      }
+      
+      return response.json();
     },
     onSuccess: () => {
       toast({
@@ -167,9 +192,8 @@ export default function Rank() {
       .filter(pair => pair.active) // Only show active pairs for blog tab
       .map((pair, index) => {
         // Try to find real rank snapshot for this pair
-        const snapshot = rankSnapshots.find(s => 
+        const snapshot = rankSnapshots.find((s: any) => 
           s.targetId === pair.id || 
-          s.query === pair.keyword || 
           s.query === pair.keywordText
         );
         
@@ -179,7 +203,7 @@ export default function Rank() {
         
         return {
           id: pair.id || (index + 1).toString(),
-          keyword: pair.keywordText || pair.keyword || `키워드 ${index + 1}`,
+          keyword: pair.keywordText || `키워드 ${index + 1}`,
           rank: rank || 999, // Default to unranked if no data
           change: change,
           page: rank ? Math.floor((rank - 1) / 10) + 1 : 99,
@@ -716,7 +740,7 @@ export default function Rank() {
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
               <FormField
                 control={form.control}
-                name="keyword"
+                name="keywordText"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>키워드</FormLabel>
@@ -752,10 +776,10 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="blogTitle"
+                name="title"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>블로그 제목</FormLabel>
+                    <FormLabel>제목 (선택사항, 자동 채움)</FormLabel>
                     <FormControl>
                       <Input 
                         placeholder="블로그 제목을 입력하세요" 
@@ -792,15 +816,33 @@ export default function Rank() {
               
               <FormField
                 control={form.control}
-                name="notes"
+                name="brand"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>특이사항 (선택)</FormLabel>
+                    <FormLabel>브랜드 (선택)</FormLabel>
                     <FormControl>
                       <Input 
-                        placeholder="참고 사항을 입력하세요" 
+                        placeholder="브랜드명을 입력하세요 (예: 진생가)" 
                         {...field}
-                        data-testid="input-notes"
+                        data-testid="input-brand"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={form.control}
+                name="group"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>그룹 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="그룹명을 입력하세요 (예: 브랜딩)" 
+                        {...field}
+                        data-testid="input-group"
                       />
                     </FormControl>
                     <FormMessage />
