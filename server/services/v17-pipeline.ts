@@ -7,6 +7,7 @@ import { getVolumesWithHealth } from './externals-health';
 import { serpScraper } from './serp-scraper';
 import { db } from '../db';
 import { postTierChecks } from '../../shared/schema';
+import { eq, sql } from 'drizzle-orm';
 
 // Import Phase2 engines
 // Phase2 engines
@@ -210,6 +211,11 @@ export async function processPostTitleV17(
   // Step 8: Save to postTierChecks (eligible/adscore/skip_reason 함께 저장)
   console.log(`💾 [v17 Pipeline] Saving ${finalTiers.length} tiers to database`);
   
+  // 데이터 영속화 통계 추적
+  let insertSuccessCount = 0;
+  let insertFailureCount = 0;
+  const insertedTierIds: number[] = [];
+  
   for (const tier of finalTiers) {
     console.log(`🔍 [v17 Debug] Tier ${tier.tier}:`, JSON.stringify(tier, null, 2));
     
@@ -229,7 +235,7 @@ export async function processPostTitleV17(
                      title.toLowerCase().includes(candidate.text.toLowerCase());
     
     try {
-      await db.insert(postTierChecks).values({
+      const [insertResult] = await db.insert(postTierChecks).values({
         jobId,
         inputKeyword,
         blogId,
@@ -246,13 +252,39 @@ export async function processPostTitleV17(
         eligible: candidate.eligible ?? true,
         adscore: candidate.adScore, // ✅ Lowercase column name
         skipReason: candidate.skipReason,
-      });
+      }).returning({ id: postTierChecks.id });
+      
+      insertSuccessCount++;
+      if (insertResult?.id) {
+        insertedTierIds.push(insertResult.id);
+      }
     } catch (insertError) {
+      insertFailureCount++;
       console.error(`❌ [v17 Pipeline] Insert failed for tier ${tier.tier}:`, insertError);
       throw insertError;
     }
     
     console.log(`   💾 [Tier ${tier.tier}] "${candidate.text}" → score ${tier.score}, rank ${candidate.rank || 'NA'}, eligible ${candidate.eligible}`);
+  }
+  
+  // 데이터 영속화 통계 출력
+  console.log(`📊 [v17 Pipeline] Data persistence summary:`);
+  console.log(`   ✅ Successful inserts: ${insertSuccessCount}/${finalTiers.length}`);
+  console.log(`   ❌ Failed inserts: ${insertFailureCount}/${finalTiers.length}`);
+  console.log(`   🆔 DB IDs created: [${insertedTierIds.slice(0, 5).join(', ')}${insertedTierIds.length > 5 ? '...' : ''}]`);
+  console.log(`   📈 Persistence rate: ${((insertSuccessCount / finalTiers.length) * 100).toFixed(1)}%`);
+  
+  // DB 검증: 실제 저장된 데이터 확인
+  if (insertSuccessCount > 0) {
+    try {
+      const verificationCount = await db.select({ count: sql`count(*)`.as('count') })
+        .from(postTierChecks)
+        .where(eq(postTierChecks.jobId, jobId))
+        .then(rows => rows[0]?.count || 0);
+      console.log(`🔍 [v17 Pipeline] DB verification: ${verificationCount} total records for job ${jobId}`);
+    } catch (verifyError) {
+      console.error(`⚠️ [v17 Pipeline] DB verification failed:`, verifyError);
+    }
   }
   
   // Prepare return format
