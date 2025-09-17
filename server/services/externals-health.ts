@@ -32,7 +32,8 @@ export async function getVolumesWithHealth(
       comp_idx: managedKeywords.comp_idx,
       comp_score: managedKeywords.comp_score,
       ad_depth: managedKeywords.ad_depth,
-      est_cpc_krw: managedKeywords.est_cpc_krw
+      est_cpc_krw: managedKeywords.est_cpc_krw,
+      source: managedKeywords.source  // ★ 규칙4: source 필드 추가
     })
       .from(managedKeywords)
       .where(inArray(managedKeywords.text, keywords));
@@ -45,7 +46,48 @@ export async function getVolumesWithHealth(
     
     for (const keyword of keywords) {
       const existing = existingMap.get(keyword);
-      if (existing && existing.updated_at && new Date(existing.updated_at) > thirtyDaysAgo) {
+      
+      // ★ 규칙4: TTL Fresh 판정 - 순서 수정 (architect 권장)
+      let isFresh = false;
+      
+      // 1) 키워드 없음 체크
+      if (!existing) {
+        console.log(`❌ [DB Miss] ${keyword}: 없음`);
+        staleOrMissingKeywords.push(keyword);
+        continue;
+      }
+      
+      // 2) Source 정규화 및 fallback 체크 (TTL보다 우선)
+      const src = (existing?.source ?? '').toString().trim();
+      if (src !== 'api_ok') {
+        console.log(`🔄 [TTL] Force refresh: ${keyword} (fallback: ${src})`);
+        staleOrMissingKeywords.push(keyword);
+        continue;
+      }
+      
+      // 3) 0-벡터 체크 (TTL보다 우선)
+      const isZeroVector = (existing.raw_volume === 0 || existing.raw_volume === null) && 
+                         (existing.ad_depth === 0 || existing.ad_depth === null) && 
+                         (existing.est_cpc_krw === 0 || existing.est_cpc_krw === null || existing.est_cpc_krw === undefined);
+      
+      if (isZeroVector) {
+        console.log(`🔄 [TTL] Force refresh: ${keyword} (zero-vector)`);
+        staleOrMissingKeywords.push(keyword);
+        continue;
+      }
+      
+      // 4) 일반 TTL 체크 (30일)
+      if (existing.updated_at && new Date(existing.updated_at) > thirtyDaysAgo) {
+        // Fresh: 사용 가능
+        isFresh = true;
+      } else {
+        // Stale: 오래됨
+        console.log(`⏰ [DB Stale] ${keyword}: 마지막 업데이트 ${existing.updated_at}`);
+        staleOrMissingKeywords.push(keyword);
+        continue;
+      }
+      
+      if (isFresh) {
         // Fresh: DB에서 사용
         dbVolumes[keyword.toLowerCase()] = {
           pc: Math.round(existing.raw_volume * 0.3), // 임시 분배
@@ -57,14 +99,6 @@ export async function getVolumesWithHealth(
           aveMobileCpc: existing.est_cpc_krw || 0
         };
         console.log(`✅ [DB Hit] ${keyword}: ${existing.raw_volume} (Fresh)`);
-      } else {
-        // Stale/Missing: API 호출 필요
-        staleOrMissingKeywords.push(keyword);
-        if (existing) {
-          console.log(`⏰ [DB Stale] ${keyword}: 마지막 업데이트 ${existing.updated_at}`);
-        } else {
-          console.log(`❌ [DB Miss] ${keyword}: 없음`);
-        }
       }
     }
     
