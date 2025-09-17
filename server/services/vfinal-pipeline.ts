@@ -80,13 +80,11 @@ const MAX_BIGRAMS_PER_BASE = 12;  // base 조합 상한
  */
 export function extractTitleTokens(title: string, cfg: any): string[] {
   const maxTitleTokens = cfg.phase2?.maxTitleTokens || 6;
-  const banSingles = new Set(cfg.phase2?.banSingles || ["맛집","정리","방법","추천","후기","여자","바르","및","과","와","의","이제","중인데","때인가"]);
+  // ★ '맛집' 제거: bestSecondary에서 찾을 수 있어야 함
+  const banSingles = new Set(cfg.phase2?.banSingles || ["정리","방법","추천","후기","여자","바르","및","과","와","의","이제","중인데","때인가"]);
   
   // 조사 패턴
   const tails = /(은|는|이|가|을|를|에|에서|으로|로|과|와|의|및|도|만|까지|부터)$/;
-  
-  // 로컬 지역 패턴
-  const isLocal = (w: string) => /(서울|부산|인천|대구|대전|광주|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)(특별시|광역시|도)?$/.test(w) || /[가-힣]+(시|군|구|동|읍|면|리)$/.test(w);
   
   return title.replace(/[^가-힣a-zA-Z0-9\s]/g, ' ')  // 한글/영문/숫자/공백만 유지
     .split(/\s+/)
@@ -94,8 +92,8 @@ export function extractTitleTokens(title: string, cfg: any): string[] {
     .filter(w => 
       w.length >= 2 && 
       !banSingles.has(w) && 
-      !/^\d+$/.test(w) &&     // 순수 숫자 제외
-      !isLocal(w)              // 로컬 지역 제외
+      !/^\d+$/.test(w)     // 순수 숫자 제외
+      // ★ 로컬 토큰 제거하지 않음: bestSecondary에서 찾을 수 있어야 함
     )
     .slice(0, maxTitleTokens); // 상한 적용
 }
@@ -261,7 +259,102 @@ function filterValidTiers(tiers: any[]): any[] {
 }
 
 /**
- * vFinal 완전 파이프라인
+ * ★ 최종 규칙 적용 함수들
+ */
+
+// 맛집/로컬 감지
+function hasMatjip(tokens: string[]): boolean {
+  return tokens.some(t => t.includes('맛집'));
+}
+
+function hasLocal(tokens: string[]): boolean {
+  const localPattern = /(서울|부산|인천|대구|대전|광주|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주|[가-힣]+(시|군|구|동|읍|면|리))/;
+  return tokens.some(t => localPattern.test(t));
+}
+
+// bestSecondary 선택 규칙
+function pickBestSecondary(allTokens: string[], candidatesWithVolume: Candidate[], t1Text: string): string {
+  console.log(`🔍 [pickBestSecondary] Finding best secondary for T1: "${t1Text}"`);
+  
+  // 우선순위 1: 맛집 (있으면 무조건)
+  if (hasMatjip(allTokens)) {
+    console.log(`   ✅ Found 맛집 in tokens - using as bestSecondary`);
+    return '맛집';
+  }
+  
+  // 우선순위 2: 로컬 (있으면)
+  const localTokens = allTokens.filter(t => hasLocal([t]));
+  if (localTokens.length > 0) {
+    console.log(`   ✅ Found local token: "${localTokens[0]}" - using as bestSecondary`);
+    return localTokens[0];
+  }
+  
+  // 우선순위 3: 조회량 2위 (T1 제외)
+  const volumeSorted = candidatesWithVolume
+    .filter(c => c.text !== t1Text && (c.volume || 0) > 0)
+    .sort((a, b) => (b.volume || 0) - (a.volume || 0));
+  
+  if (volumeSorted.length > 0) {
+    console.log(`   ✅ Found volume #2: "${volumeSorted[0].text}" (volume: ${volumeSorted[0].volume}) - using as bestSecondary`);
+    return volumeSorted[0].text;
+  }
+  
+  // Fallback: 다음 토큰
+  const fallback = allTokens.find(t => t !== t1Text);
+  console.log(`   ⚠️ Fallback to next token: "${fallback || 'none'}"`);
+  return fallback || '';
+}
+
+// 최종 스코어 계산 (0.7·log10(vol)·25 + 0.3·(adScore·100))
+function calculateFinalScore(volume: number, adScore: number): number {
+  const volumeScore = 0.7 * Math.log10(Math.max(1, volume)) * 25;
+  const adScoreScaled = 0.3 * (adScore * 100);
+  return Math.round((volumeScore + adScoreScaled) * 100) / 100;
+}
+
+// 빅그램 생성
+function makeBigram(token1: string, token2: string): string {
+  return token2 ? `${token1} ${token2}` : token1;
+}
+
+// 상업성 확인
+async function ensureCommercial(text: string): Promise<{hasCommerce: boolean, adScore: number}> {
+  try {
+    const existing = await db.select({
+      source: managedKeywords.source,
+      ad_eligible: managedKeywords.ad_eligible
+    })
+      .from(managedKeywords)
+      .where(eq(managedKeywords.text, text))
+      .limit(1);
+    
+    const hasCommerce = existing[0]?.source === 'api_ok' && existing[0]?.ad_eligible === true;
+    
+    // Mock adScore for now
+    const adScore = hasCommerce ? 0.7 : 0.1;
+    
+    return { hasCommerce, adScore };
+  } catch (error) {
+    console.error(`❌ [ensureCommercial] Error for "${text}":`, error);
+    return { hasCommerce: false, adScore: 0.1 };
+  }
+}
+
+// 볼륨 확인
+async function ensureVolume(text: string): Promise<number> {
+  try {
+    const volumeData = await getVolumesWithHealth(db, [text]);
+    const volume = volumeData.volumes[nrm(text)]?.total || 0;
+    console.log(`   📊 [ensureVolume] "${text}" → volume: ${volume}`);
+    return volume;
+  } catch (error) {
+    console.error(`❌ [ensureVolume] Error for "${text}":`, error);
+    return 0;
+  }
+}
+
+/**
+ * ★ vFinal 최종 규칙 완전 적용 파이프라인
  */
 export async function processPostTitleVFinal(
   title: string,
@@ -270,7 +363,7 @@ export async function processPostTitleVFinal(
   postId: number,
   inputKeyword: string
 ): Promise<VFinalPipelineResult> {
-  console.log(`🚀 [vFinal Pipeline] Starting for title: "${title.substring(0, 50)}..."`);
+  console.log(`🚀 [vFinal Final Rules] Starting for title: "${title.substring(0, 50)}..."`);
   
   const cfg = await getAlgoConfig();
   const K = cfg.phase2?.tiersPerPost || 4;
@@ -345,41 +438,55 @@ export async function processPostTitleVFinal(
   
   console.log(`✅ [vFinal] Pre-enriched ${stats.preEnriched}/${stats.candidatesGenerated} single tokens`);
   
-  // Step 3: T1 선정 (최고 볼륨 우선, 동점시 길이)
-  const sortedSingles = singles.sort((a, b) => {
-    const volA = a.volume || 0;
-    const volB = b.volume || 0;
-    if (volB !== volA) return volB - volA;  // 볼륨 높은순
-    return b.length - a.length;  // 길이 긴순
-  });
+  // ★ Step 3: T1 선정 (최고 볼륨, 단일 금지어 제외)
+  const sortedSingles = singles
+    .filter(c => {
+      // 단일 금지: T1에는 '맛집', 로컬 단독 사용 금지
+      if (c.text === '맛집') return false;
+      if (hasLocal([c.text])) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const volA = a.volume || 0;
+      const volB = b.volume || 0;
+      if (volB !== volA) return volB - volA;  // 볼륨 높은순
+      return b.length - a.length;  // 길이 긴순
+    });
+  
+  if (sortedSingles.length === 0) {
+    console.log(`❌ [T1 Selection] No valid single tokens after filtering`);
+    return { tiers: [], stats };
+  }
   
   const T1 = sortedSingles[0];
-  const second = sortedSingles[1] || null;
   stats.firstSelected = 1;
+  console.log(`🎯 [T1 Final] "${T1.text}" (volume: ${T1.volume || 0})`);
   
-  console.log(`🎯 [T1 Selection] "${T1.text}" (volume: ${T1.volume || 0})`);
+  // ★ Step 4: T2 = T1 + bestSecondary (맛집 > 로컬 > 조회량 2위)
+  const bestSecondary = pickBestSecondary(toks, singles, T1.text);
+  const t2Text = makeBigram(T1.text, bestSecondary);
+  console.log(`🎯 [T2 Final] "${t2Text}"`);
   
-  // Step 4: T2, T3, T4 구성 (결정론적 bigram 시퀀스)
+  // ★ Step 5: T3/T4 = T1과 제목 상위 토큰의 빅그램
+  const topTokens = toks.filter(t => t !== T1.text && t !== bestSecondary).slice(0, 2);
+  const t3Text = topTokens[0] ? makeBigram(T1.text, topTokens[0]) : null;
+  const t4Text = topTokens[1] ? makeBigram(T1.text, topTokens[1]) : null;
+  
+  console.log(`🎯 [T3 Final] "${t3Text || 'none'}"`); 
+  console.log(`🎯 [T4 Final] "${t4Text || 'none'}"`);
+  
+  // ★ Step 6: Deterministic bigram assembly (T2/T3/T4만)
   const base = T1.text;
+  // toCandidateFromBigram helper already defined above
+  
   const bigramSeq: Candidate[] = [];
+  if (t2Text) bigramSeq.push(toCandidateFromBigram(t2Text));
+  if (t3Text) bigramSeq.push(toCandidateFromBigram(t3Text));
+  if (t4Text) bigramSeq.push(toCandidateFromBigram(t4Text));
   
-  // T2: T1 + second (고정)
-  if (second) {
-    const t2Text = `${base} ${second.text}`;
-    bigramSeq.push(toCandidateFromBigram(t2Text));
-    console.log(`🎯 [T2 Fixed] "${t2Text}" (T1 + second highest)`);
-  }
+  console.log(`🏭 [Bigram Assembly] Created ${bigramSeq.length} deterministic bigrams`);
   
-  // T3, T4: T1 + 나머지 조합 (상위 4개까지)
-  const others = sortedSingles.slice(2, 6);
-  for (const tok of others) {
-    const bigramText = `${base} ${tok.text}`;
-    bigramSeq.push(toCandidateFromBigram(bigramText));
-  }
-  
-  console.log(`🏭 [Bigram Generation] Generated ${bigramSeq.length} deterministic bigrams`);
-  
-  // Step 5: Bigram Pre-enrich
+  // Step 7: Bigram Pre-enrich
   if (bigramSeq.length > 0) {
     const bigramTexts = bigramSeq.map(c => c.text);
     const bigramVolumeData = await getVolumesWithHealth(db, bigramTexts);
@@ -398,7 +505,7 @@ export async function processPostTitleVFinal(
   
   stats.bigramsExpanded = bigramSeq.length;
   
-  // Step 6: totalScore 계산 (70% 볼륨 + 30% adScore)
+  // Step 8: totalScore 계산 (70% 볼륨 + 30% adScore)
   const allCandidates = [T1, ...bigramSeq];
   allCandidates.forEach(candidate => {
     const vol = candidate.volume || 0;
@@ -407,11 +514,10 @@ export async function processPostTitleVFinal(
     candidate.totalScore = 0.7 * volScore + 0.3 * (adScore * 100);
   });
   
-  // Step 7: T2, T3, T4 선정 (bigram 중 점수순)
-  const T2 = bigramSeq[0] || null;  // 고정: T1 + second
-  const remainingBigrams = bigramSeq.slice(1).sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
-  const T3 = remainingBigrams[0] || null;
-  const T4 = remainingBigrams[1] || null;
+  // Step 9: T2, T3, T4 직접 설정 (deterministic order)
+  const T2 = bigramSeq[0] || null;  // t2Text (T1 + bestSecondary)
+  const T3 = bigramSeq[1] || null;  // t3Text (T1 + topToken1)
+  const T4 = bigramSeq[2] || null;  // t4Text (T1 + topToken2)
   
   // Step 8: shortlist 구성 [T1, T2, T3, T4]
   let shortlist = [T1, T2, T3, T4].filter(Boolean) as Candidate[];
