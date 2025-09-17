@@ -2059,11 +2059,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         for (const [text, v] of Object.entries<any>(volumeResults.volumes)) {
           const rawVolume = safeParseNumber(v.total ?? v.volumeMonthly ?? 0);
           const adDepth   = safeParseNumber(v.plAvgDepth ?? v.adWordsCnt ?? 0);
-          const estCpc    = safeParseNumber(v.avePcCpc ?? v.cpc ?? 0);
+          const estCpc    = safeParseNumber(v.avePcCpc ?? v.aveMobileCpc ?? 0);
           const compIdx   = v.compIdx ?? '중간';
 
+          // 🔥 강화된 필터링 적용
           if (rawVolume < minVolume) continue;
           if (hasAdsOnly && adDepth <= 0) continue;
+          
+          // 클릭률 필터링 추가
+          const clickRate = safeParseNumber(v.plClickRate ?? 0) / 100;
+          if (clickRate === 0.0) {
+            console.log(`⏭️ Seed "${text}" click rate 0.0% - zero performance, skipping`);
+            continue;
+          }
+          if (clickRate < 0.001) { // 0.1% 미만 제외
+            console.log(`⏭️ Seed "${text}" click rate ${(clickRate * 100).toFixed(1)}% < 0.1% - skipping`);
+            continue;
+          }
+          
+          // CPC 필터링 추가
+          if (estCpc === 0) {
+            console.log(`⏭️ Seed "${text}" CPC 0원 - zero value, skipping`);
+            continue;
+          }
+          if (estCpc < 50) { // 50원 미만 제외
+            console.log(`⏭️ Seed "${text}" CPC ${estCpc}원 < 50원 - skipping`);
+            continue;
+          }
 
           keywordsToInsert.push({
             text,
@@ -2095,7 +2117,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         chunkSize,
         concurrency,
         stopIfNoNewPct,
-        strict
+        strict,
+        minClickRate: 0.001, // 0.1% 이상 (보수적 시작값)
+        minCpc: 50 // 50원 이상 (의미있는 상업적 가치)
       });
 
       // Initialize with seeds (명세서: 프론티어 = seeds ∪ expandAll(seeds))

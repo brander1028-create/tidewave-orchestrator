@@ -314,7 +314,7 @@ export function expandAllKeywords(seeds: string[], options: {
         totalLimit: 15000 // LK 모드는 더 많은 조합 생성
       });
       
-      lkVariants.forEach(variant => {
+      lkVariants.forEach((variant: string) => {
         const normalized = normalizeKeyword(variant);
         if (normalized.length > 1) {
           allExpanded.add(normalized);
@@ -389,6 +389,8 @@ export class BFSKeywordCrawler {
   private hasAdsOnly: boolean;
   private chunkSize: number;
   private concurrency: number;
+  private minClickRate: number;
+  private minCpc: number;
   
   // Phase 3: 단일 실행 가드용 타임스탬프
   public lastUpdated: Date = new Date();
@@ -432,6 +434,8 @@ export class BFSKeywordCrawler {
     concurrency: number;
     stopIfNoNewPct?: number;
     strict?: boolean;
+    minClickRate?: number;
+    minCpc?: number;
   }) {
     this.maxTarget = config.target;
     this.maxHops = config.maxHops;
@@ -439,6 +443,8 @@ export class BFSKeywordCrawler {
     this.hasAdsOnly = config.hasAdsOnly;
     this.chunkSize = config.chunkSize;
     this.concurrency = config.concurrency;
+    this.minClickRate = config.minClickRate ?? 0.0; // 기본값: 0.0% (필터링 없음)
+    this.minCpc = config.minCpc ?? 0; // 기본값: 0원 (필터링 없음)
     // 새로운 매개변수들은 추후 구현에서 활용 예정
   }
 
@@ -576,6 +582,16 @@ export class BFSKeywordCrawler {
         
         const rawVolume = safeParseNumber(volumeData.total);
         const hasAds = safeParseNumber(volumeData.plAvgDepth) > 0;
+        const clickRate = safeParseNumber(volumeData.plClickRate) / 100; // API는 0-100, 우리는 0-1
+        const cpc = safeParseNumber(volumeData.avePcCpc ?? volumeData.aveMobileCpc ?? 0);
+        
+        // 🔥 강화된 필터 적용 - 모든 모드에서 기본 성능 체크
+        if (rawVolume <= 0) {
+          console.log(`⏭️  "${keyword}" volume 0 - zero volume, skipping`);
+          this.progress.skipped++;
+          this.progress.attempted++;
+          continue;
+        }
         
         // 필터 적용 - ONLY in searchads mode (Phase 1: 임시 저장 정책)
         if (mode === 'searchads') {
@@ -586,6 +602,36 @@ export class BFSKeywordCrawler {
           
           if (this.hasAdsOnly && !hasAds) {
             console.log(`⏭️  "${keyword}" has no ads - skipping`);
+            continue;
+          }
+          
+          // 🆕 클릭률 필터링 (0.0% = 무조건 제외)
+          if (clickRate === 0.0) {
+            console.log(`⏭️  "${keyword}" click rate 0.0% - zero performance, skipping`);
+            this.progress.skipped++;
+            this.progress.attempted++;
+            continue;
+          }
+          
+          if (clickRate < this.minClickRate) {
+            console.log(`⏭️  "${keyword}" click rate ${(clickRate * 100).toFixed(1)}% < ${(this.minClickRate * 100).toFixed(1)}% - skipping`);
+            this.progress.skipped++;
+            this.progress.attempted++;
+            continue;
+          }
+          
+          // 🆕 CPC 필터링 (0원 = 의미 없는 키워드 제외)
+          if (cpc === 0 && this.minCpc > 0) {
+            console.log(`⏭️  "${keyword}" CPC 0원 - zero value, skipping`);
+            this.progress.skipped++;
+            this.progress.attempted++;
+            continue;
+          }
+          
+          if (cpc < this.minCpc) {
+            console.log(`⏭️  "${keyword}" CPC ${cpc}원 < ${this.minCpc}원 - skipping`);
+            this.progress.skipped++;
+            this.progress.attempted++;
             continue;
           }
         } else {
@@ -679,6 +725,8 @@ export function createGlobalCrawler(config: {
   concurrency: number;
   stopIfNoNewPct?: number;
   strict?: boolean;
+  minClickRate?: number;
+  minCpc?: number;
 }): BFSKeywordCrawler {
   globalCrawler = new BFSKeywordCrawler(config);
   return globalCrawler;
