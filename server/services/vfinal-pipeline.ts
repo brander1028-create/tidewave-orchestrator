@@ -34,6 +34,7 @@ export interface VFinalPipelineResult {
     reEnriched: number;
     reSelected: number;
     gateFiltered: number;
+    eligibleAfterGate: number;
     tiersAssigned: number;
   };
 }
@@ -327,6 +328,8 @@ export async function processPostTitleVFinal(
   
   // Step 6: 2-B1 부족시 bigram 확장 (상태머신 3단계)
   const eligibleAfterGate = gatedCandidates.filter(c => c.eligible).length;
+  stats.eligibleAfterGate = eligibleAfterGate; // ★ Task 8: eligibleAfterGate 통계 기록
+  
   if (eligibleAfterGate < K) {
     console.log(`🔧 [2-B1] Insufficient eligible candidates (${eligibleAfterGate}/${K}), expanding with bigrams...`);
     
@@ -551,7 +554,10 @@ export async function processPostTitleVFinal(
   };
   
   console.log(`✅ [vFinal Pipeline] Completed - Generated ${result.tiers.length} tiers`);
-  console.log(`📊 [vFinal Stats] Generated:${stats.candidatesGenerated}, PreEnriched:${stats.preEnriched}, FirstSelected:${stats.firstSelected}, BigramsExpanded:${stats.bigramsExpanded}, ReEnriched:${stats.reEnriched}, ReSelected:${stats.reSelected}, GateFiltered:${stats.gateFiltered}, TiersAssigned:${stats.tiersAssigned}`);
+  // ★ Task 8: eligibleAfterGate 통계 추가
+  stats.eligibleAfterGate = eligibleAfterGate;
+  
+  console.log(`📊 [vFinal Stats] Generated:${stats.candidatesGenerated}, PreEnriched:${stats.preEnriched}, FirstSelected:${stats.firstSelected}, BigramsExpanded:${stats.bigramsExpanded}, ReEnriched:${stats.reEnriched}, ReSelected:${stats.reSelected}, GateFiltered:${stats.gateFiltered}, EligibleAfterGate:${stats.eligibleAfterGate}, TiersAssigned:${stats.tiersAssigned}`);
   
   return result;
 }
