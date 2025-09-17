@@ -102,31 +102,12 @@ export class NgramsEngine implements Phase2Engine {
       });
     }
 
-    // Fill empty tiers if needed
-    if (cfg.features.tierAutoFill) {
-      while (tiers.length < tiersPerPost) {
-        // Create empty candidate for empty tier
-        const emptyCandidate: Candidate = {
-          text: "",
-          frequency: 0,
-          position: 0,
-          length: 0,
-          compound: false,
-          volume: null,
-          rank: null,
-          totalScore: 0,
-          eligible: true,
-        };
-        
-        tiers.push({
-          tier: tiers.length + 1,
-          candidate: emptyCandidate,
-          score: 0,
-        });
-      }
-    }
+    // ★ Empty tier creation removed to fix vFinal filtering issues
+    // Previously tierAutoFill would create empty candidates with text=""
+    // Now we only return actual candidates found, vFinal pipeline handles missing tiers
+    console.log(`📊 [N-grams Engine] Returning ${tiers.length}/${tiersPerPost} actual candidate tiers`);
 
-    return tiers;
+    return tiers.filter(tier => tier.candidate && tier.candidate.text && tier.candidate.text.trim().length > 0);
   }
 
   private isValidNgram(ngram: string): boolean {

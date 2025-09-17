@@ -92,34 +92,15 @@ export class HybridEngine implements Phase2Engine {
       });
     }
 
-    // Apply intelligent tier filling
+    // ★ Empty tier creation removed to fix vFinal filtering issues
+    // Apply intelligent tier filling only with real candidates
     if (cfg.features.tierAutoFill && cfg.phase2.preferCompound) {
       this.fillTiersIntelligently(tiers, sorted, tiersPerPost);
-    } else if (cfg.features.tierAutoFill) {
-      // Standard empty tier filling
-      while (tiers.length < tiersPerPost) {
-        // Create empty candidate for empty tier
-        const emptyCandidate: Candidate = {
-          text: "",
-          frequency: 0,
-          position: 0,
-          length: 0,
-          compound: false,
-          volume: null,
-          rank: null,
-          totalScore: 0,
-          eligible: true,
-        };
-        
-        tiers.push({
-          tier: tiers.length + 1,
-          candidate: emptyCandidate,
-          score: 0,
-        });
-      }
     }
+    // Note: Standard empty tier filling removed - vFinal pipeline handles missing tiers
+    console.log(`📊 [Hybrid Engine] Returning ${tiers.length}/${tiersPerPost} actual candidate tiers`);
 
-    return tiers;
+    return tiers.filter(tier => tier.candidate && tier.candidate.text && tier.candidate.text.trim().length > 0);
   }
 
   private applyHybridRanking(candidates: Candidate[], cfg: AlgoConfig): Candidate[] {

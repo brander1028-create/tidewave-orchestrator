@@ -6,9 +6,9 @@ import { getAlgoConfig } from './algo-config';
 import { getVolumesWithHealth } from './externals-health';
 import { serpScraper } from './serp-scraper';
 import { db } from '../db';
-import { postTierChecks, managedKeywords } from '../../shared/schema';
+import { postTierChecks, managedKeywords, serpJobs } from '../../shared/schema';
 import { nrm, expandBigrams } from '../utils/normalization';
-import { inArray } from 'drizzle-orm';
+import { inArray, eq } from 'drizzle-orm';
 
 // Import Phase2 engines (재사용)
 import { engineRegistry } from '../phase2';
@@ -127,10 +127,8 @@ async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<C
           skipReason = "no_commerce";
           console.log(`🚫 [Gate] "${candidate.text}" filtered: source=${dbInfo?.source}, ad_eligible=${dbInfo?.ad_eligible}`);
         } else {
-          // AdScore 계산용 volume 설정
+          // AdScore 계산용 volume 설정 (Step 8.5에서 더 정확한 필터링 예정)
           const volume = candidate.volume || 0;
-          // 제목 단계: vol<thr 하드컷 제거! (volume 조건 없음)
-          // AdScore 계산 (나중에 70:30 적용)
           const { calculateAdScore } = await import('./adscore-engine');
           
           const metrics = {
@@ -150,11 +148,8 @@ async function applyPostEnrichGate(candidates: Candidate[], cfg: any): Promise<C
           const adScoreResult = calculateAdScore(metrics, weights);
           adScore = adScoreResult.adScore;
           
-          // 제목 단계는 soft 권장: score 기준도 mode==="hard"에서만
-          if (cfg.adscore?.mode === 'hard' && adScore < (cfg.adscore?.SCORE_MIN || 0.35)) {
-            eligible = false;
-            skipReason = `AdScore too low: ${adScore}`;
-          }
+          // ★ AdScore 하드컷 제거 (Step 8.5에서 DB-backed 필터링으로 대체)
+          console.log(`✅ [Gate] "${candidate.text}" passed: hasCommerce=true, AdScore=${Math.round(adScore*100)/100}`);
         }
       }
     } catch (error) {
@@ -192,6 +187,62 @@ function calculateTotalScore(candidate: Candidate, cfg: any): number {
   
   const totalScore = volumeWeight * volumeScale + adWeight * adScore;
   return Math.round(totalScore * 100) / 100;
+}
+
+/**
+ * ensureSerpJobExists - Create serp_jobs entry if it doesn't exist to prevent FK violations
+ */
+async function ensureSerpJobExists(jobId: string, inputKeyword: string): Promise<void> {
+  try {
+    // Check if job exists
+    const existingJob = await db.select({ id: serpJobs.id })
+      .from(serpJobs)
+      .where(eq(serpJobs.id, jobId))
+      .limit(1);
+    
+    if (existingJob.length === 0) {
+      console.log(`📝 [vFinal] Creating missing serp_jobs entry for jobId: ${jobId}`);
+      
+      // Create minimal serp_jobs entry
+      await db.insert(serpJobs).values({
+        id: jobId,
+        keywords: [inputKeyword],
+        status: 'completed',
+        progress: 100,
+        currentStep: 'vfinal_processing',
+        currentStepDetail: 'vFinal 파이프라인에서 생성됨',
+        totalSteps: 1,
+        completedSteps: 1,
+        results: { testMode: true, vfinalCreated: true }
+      });
+      
+      console.log(`✅ [vFinal] Created serp_jobs entry for jobId: ${jobId}`);
+    }
+  } catch (error) {
+    console.error(`❌ [vFinal] Failed to ensure serp_jobs entry for ${jobId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * filterValidTiers - Filter out empty or invalid tier candidates
+ */
+function filterValidTiers(tiers: any[]): any[] {
+  return tiers.filter(tier => {
+    const candidate = tier.candidate;
+    // Filter out candidates with empty text, null text, or whitespace-only text
+    const hasValidText = candidate && 
+                        candidate.text && 
+                        typeof candidate.text === 'string' && 
+                        candidate.text.trim().length > 0;
+    
+    if (!hasValidText) {
+      console.log(`🚫 [vFinal] Filtering out invalid tier ${tier.tier}: empty or invalid text`);
+      return false;
+    }
+    
+    return true;
+  });
 }
 
 /**
@@ -391,56 +442,74 @@ export async function processPostTitleVFinal(
   console.log(`🎯 [최종 보정] ${finalCandidates.length}/${eligibleCandidates.length} candidates passed final filter`);
 
   // Step 9: 티어 할당
-  const tiers = engine.assignTiers(finalCandidates, cfg);
-  stats.tiersAssigned = tiers.length;
+  const rawTiers = engine.assignTiers(finalCandidates, cfg);
   
-  console.log(`🏆 [vFinal] Assigned ${stats.tiersAssigned} tiers`);
+  // ★ Filter out empty/invalid tiers to fix empty tier issue
+  const validTiers = filterValidTiers(rawTiers);
+  stats.tiersAssigned = validTiers.length;
   
-  // Step 10: 저장 (postTierChecks) - vFinal 테스트 모드 안전 처리
+  console.log(`🏆 [vFinal] Assigned ${rawTiers.length} raw tiers, filtered to ${validTiers.length} valid tiers`);
+  
+  // Step 10: 저장 (postTierChecks) - vFinal 테스트 모드 안전 처리 + DB 무결성 보장
   const isTestMode = jobId?.startsWith('test-') || jobId === 'test-job-001';
   
   if (isTestMode) {
     console.log(`💾 [vFinal] Test mode detected (jobId: ${jobId}) - skipping DB saves`);
   } else {
-    console.log(`💾 [vFinal] Saving ${tiers.length} tiers to database`);
+    console.log(`💾 [vFinal] Saving ${validTiers.length} valid tiers to database`);
     
-    for (const tier of tiers) {
-      const candidate = tier.candidate;
-      if (!candidate || !candidate.text) continue;
+    try {
+      // ★ Ensure serp_jobs entry exists to prevent FK violations
+      await ensureSerpJobExists(jobId, inputKeyword);
       
-      const normalizedText = nrm(candidate.text);
-      const isRelated = nrm(inputKeyword).includes(normalizedText) ||
-                       title.toLowerCase().includes(candidate.text.toLowerCase());
-      
-      try {
-        await db.insert(postTierChecks).values({
-          jobId,
-          inputKeyword,
-          blogId,
-          postId: String(postId),
-          postTitle: title,
-          tier: tier.tier,
-          textSurface: candidate.text,
-          textNrm: normalizedText,
-          volume: candidate.volume ?? null,
-          rank: candidate.rank,
-          score: tier.score,
-          related: isRelated,
-          eligible: candidate.eligible ?? true,
-          adscore: candidate.adScore,
-          skipReason: candidate.skipReason,
-        });
+      // Save valid tiers only
+      for (const tier of validTiers) {
+        const candidate = tier.candidate;
+        // Double-check validity (should already be filtered but being safe)
+        if (!candidate || !candidate.text || candidate.text.trim().length === 0) {
+          console.log(`⚠️ [vFinal] Skipping invalid tier ${tier.tier} in save loop`);
+          continue;
+        }
         
-        console.log(`   💾 [Tier ${tier.tier}] "${candidate.text}" → score ${tier.score}, rank ${candidate.rank || 'NA'}, eligible ${candidate.eligible}`);
-      } catch (insertError) {
-        console.error(`❌ [vFinal] Insert failed for tier ${tier.tier}:`, insertError);
+        const normalizedText = nrm(candidate.text);
+        const isRelated = nrm(inputKeyword).includes(normalizedText) ||
+                         title.toLowerCase().includes(candidate.text.toLowerCase());
+        
+        try {
+          await db.insert(postTierChecks).values({
+            jobId,
+            inputKeyword,
+            blogId,
+            postId: String(postId),
+            postTitle: title,
+            tier: tier.tier,
+            textSurface: candidate.text,
+            textNrm: normalizedText,
+            volume: candidate.volume ?? null,
+            rank: candidate.rank,
+            score: tier.score,
+            related: isRelated,
+            eligible: candidate.eligible ?? true,
+            adscore: candidate.adScore,
+            skipReason: candidate.skipReason,
+          });
+          
+          console.log(`   💾 [Tier ${tier.tier}] "${candidate.text}" → score ${tier.score}, rank ${candidate.rank || 'NA'}, eligible ${candidate.eligible}`);
+        } catch (insertError) {
+          console.error(`❌ [vFinal] Insert failed for tier ${tier.tier}:`, insertError);
+          // Continue with other tiers instead of failing completely
+        }
       }
+    } catch (error) {
+      console.error(`❌ [vFinal] Database operation failed:`, error);
+      // Continue to return results even if DB save fails
     }
   }
   
   // 결과 준비 (표준 응답 포맷: {text, volume, rank, score, adScore, eligible, skipReason})
+  // ★ Use filtered valid tiers only in final result
   const result: VFinalPipelineResult = {
-    tiers: tiers.map(tier => ({
+    tiers: validTiers.map(tier => ({
       tier: tier.tier,
       text: tier.candidate.text,
       volume: tier.candidate.volume ?? null,

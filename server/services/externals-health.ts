@@ -153,8 +153,8 @@ export async function getVolumesWithHealth(
           const fromApi = raw_volume > 0 || ctr > 0 || comp_idx || ad_depth > 0;
           const source = fromApi ? 'api_ok' : 'fallback';
           
-          // ★ 규칙1: 상업성 하드 필터 (adDepth>0 && ctr>0)
-          const ad_eligible = ad_depth > 0 && ctr > 0;
+          // ★ 규칙1: 상업성 하드 필터 (adDepth>0, CTR 완화)
+          const ad_eligible = ad_depth > 0; // CTR 조건 일시 완화
           
           keywordsToUpsert.push({
             text,
