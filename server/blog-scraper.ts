@@ -342,8 +342,10 @@ export class NaverBlogScraper {
         };
       }
 
-      // 첫 번째 결과 반환 (일반 검색)
+      // 첫 번째 결과 반환 (일반 검색 - targetUrl 없음)
+      console.log(`[SERP 일반 검색] targetUrl 없음 - 첫 번째 결과 반환`);
       console.log(`[BlogScraper] 첫 번째 검색 결과: ${results[0].title} (순위 ${results[0].rank})`);
+      console.log(`[SERP 주의] targetUrl이 제공되지 않아 일반 검색 모드로 실행됨`);
       return {
         success: true,
         data: results[0],
@@ -381,11 +383,33 @@ export class NaverBlogScraper {
   }
 
   /**
-   * v7.19 최종: SERP Core 추출 - 경계/셀렉터/평탄화 보강
+   * v7.20 긴급수정: SERP Core 추출 - 범위 제한 + 제목링크 필수
    */
   private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc', query: string = '') {
-    // 1) DOM 블록 순서 보존 (document order)
-    const blocks = Array.from($('section, article, li, div.total_wrap, div'));
+    // 1) 범위 제한: #main_pack 우선, 없으면 안전한 fallback
+    const mainPack = $('#main_pack');
+    let blocks: any[];
+    
+    if (mainPack.length > 0) {
+      console.log('[SERP 긴급수정] #main_pack 범위로 제한');
+      // PC/Mobile별 정확한 블로그 결과 셀렉터
+      const blogContainers = device === 'pc' 
+        ? mainPack.find('.lst_total .bx, .api_subject_bx, .total_wrap .total_group, .blog_list .item')
+        : mainPack.find('.lst_total .bx, .api_subject_bx, .total_wrap .total_group');
+      blocks = Array.from(blogContainers.get());
+    } else {
+      console.log('[SERP 긴급수정] #main_pack 없음 - 안전한 fallback 사용');
+      // 안전한 fallback: 블로그 전용 셀렉터만 사용 (광고/부가기능 제외)
+      const blogSelectors = [
+        '.lst_total .bx',          // PC 블로그 결과
+        '.api_subject_bx',         // API 블로그 결과  
+        '.total_wrap .total_group', // 통합 결과
+        '.blog_list .item',        // 블로그 리스트
+        'li[data-cr-area*="blog"]', // 모바일 블로그
+        'article[data-cr-area*="blog"]' // article 형태
+      ];
+      blocks = Array.from($(blogSelectors.join(', ')).get());
+    }
     const boundaryEl = blocks.find(block => this.isSearchFeedBoundary($, block));
     const boundaryIdx = boundaryEl ? blocks.findIndex(b => 
       b === boundaryEl || 
@@ -396,21 +420,29 @@ export class NaverBlogScraper {
     const core: any[] = [], feed: any[] = [];
     const seen = new Set<string>();
 
-    // 아이템 추가 함수 (중복 제거 + 앵커 Fallback)
+    // 아이템 추가 함수 (제목 링크 필수 + 중복 제거)
     const pushItem = (node: any, arr: any[]) => {
       const $node = $(node);
-      const anchor = $node.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').first();
-      if (!anchor.length) return;
       
-      const href = anchor.attr('href') || '';
+      // ★ 긴급수정: 제목 링크만 허용 (일반 앵커 fallback 제거)
+      const titleAnchor = $node.find('a.title_link[href*="blog.naver.com"], .api_txt_lines.total_tit[href*="blog.naver.com"], a[class*="title"][href*="blog.naver.com"]').first();
+      if (!titleAnchor.length) {
+        console.log('[SERP] 제목링크 없음 - 제외:', $node.text().substring(0, 50));
+        return;
+      }
+      
+      const href = titleAnchor.attr('href') || '';
       const url = this.canonicalizeBlogUrl(href);
       if (seen.has(url)) return;
       seen.add(url);
       
+      // textFrom으로 정확한 제목 추출
+      const title = this.textFrom($, titleAnchor[0]) || $node.text().trim();
+      
       arr.push({
         url,
         nickname: this.extractNickname(url),
-        title: $node.text().trim(),
+        title: title,
         pos: arr.length
       });
     };
@@ -427,9 +459,10 @@ export class NaverBlogScraper {
       // ★ 핵심: 경계 이후 = feed (인덱스 기반)
       const isFeed = (boundaryIdx >= 0) && (i > boundaryIdx);
       
-      // 카드팩 평탄화 처리
+      // ★ 안전한 카드팩 평탄화 재활성화 (document order 유지)
       if (this.isCardPack($, block)) {
-        const items = this.blogItemNodesIn($, block);
+        console.log('[SERP] 카드팩 발견 - 내부 아이템 순차 처리');
+        const items = this.blogItemNodesInSafe($, block);
         for (const item of items) {
           pushItem(item, isFeed ? feed : core);
         }
@@ -438,14 +471,25 @@ export class NaverBlogScraper {
       }
     }
 
-    // 앵커 Fallback (Core가 비어있을 때)
+    // ★ 안전한 앵커 Fallback (오직 core가 비어있는 경우만)
     if (core.length === 0) {
-      $('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').each((_, anchor) => {
-        const node = $(anchor).closest('li, article, div.total_wrap, div')[0] || $(anchor).parent()[0];
-        if (node && this.isBlogCard($, node)) {
+      console.log(`[SERP 블록 상태] blocks=${blocks.length}, core=${core.length} - fallback 고려중`);
+      
+      if (blocks.length === 0) {
+        console.log('[SERP 긴급수정] 완전 비어있음 - 안전한 앵커 fallback 시도');
+      // 블로그 전용 앵커만 찾기 (제목 링크 필수)
+      const titleAnchors = $('a.title_link[href*="blog.naver.com"], .api_txt_lines.total_tit[href*="blog.naver.com"], a[class*="title"][href*="blog.naver.com"]');
+      titleAnchors.each((_, anchor) => {
+        const node = $(anchor).closest('li, article, div.bx, div.total_group')[0] || $(anchor).parent()[0];
+        if (node) {
           pushItem(node, core);
         }
       });
+        console.log('[SERP] 앵커 fallback 결과:', core.length);
+      } else {
+        console.log(`[SERP 경고] blocks=${blocks.length}개 있지만 core=0 - 블록 처리에 문제가 있을 수 있음`);
+      }
+    }
     }
 
     // 경계 없으면 Core 15개 제한
@@ -453,10 +497,22 @@ export class NaverBlogScraper {
       core.splice(15);
     }
     
-    // 필수 로그
+    // ★ 긴급수정 로그 강화
     const firstCoreUrl = core[0]?.url || 'none';
-    console.log(`[SERP] q="${query}" boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length} firstCore=${firstCoreUrl}`);
-    console.log(`[BlogScraper] 파싱된 결과 수: ${core.length}`);
+    const firstCoreTitle = core[0]?.title?.substring(0, 30) || 'none';
+    // ★ 진단 로깅 강화 (상위 10개 결과 + targetUrl 매칭 추적)
+    console.log(`[SERP 긴급수정] q="${query}" blocks=${blocks.length} boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length}`);
+    console.log(`[SERP] 1위 결과: "${firstCoreTitle}" -> ${firstCoreUrl}`);
+    
+    // 상위 10개 결과 로깅
+    console.log('[SERP] 상위 10개 결과:');
+    core.slice(0, 10).forEach((item, idx) => {
+      const shortTitle = item.title?.substring(0, 30) || 'no-title';
+      const shortUrl = item.url?.substring(item.url.lastIndexOf('/') + 1, item.url.lastIndexOf('/') + 20) || 'no-url';
+      console.log(`  ${idx + 1}위: "${shortTitle}" -> .../${shortUrl}`);
+    });
+    
+    console.log(`[BlogScraper] 최종 파싱 결과: ${core.length}개`);
     
     // Core 결과 반환 (기존 형식 호환)
     return core.map((item, index) => ({
@@ -466,7 +522,10 @@ export class NaverBlogScraper {
       title: item.title,
       url: this.cleanUrl(item.url),
       snippet: item.snippet || '',
-      date: item.date || ''
+      date: item.date || '',
+      // 디버깅용 추가 정보
+      nickname: item.nickname,
+      rawUrl: item.url
     }));
   }
 
@@ -512,7 +571,34 @@ export class NaverBlogScraper {
   }
 
   /**
-   * v7.20: 컨테이너 안의 개별 블로그 카드 노드들 선택
+   * v7.21 안전한 카드팩 처리: 제목 링크 필수 + document order 유지
+   */
+  private blogItemNodesInSafe($: cheerio.CheerioAPI, el: any): any[] {
+    const $el = $(el);
+    
+    // 내부 블로그 아이템들을 document order로 찾기
+    const candidates = $el.find('li, article, div.bx, div.total_group');
+    const items: any[] = [];
+    
+    candidates.each((_, node) => {
+      const $node = $(node);
+      
+      // ★ 안전 조건: 제목 링크 필수
+      const titleLink = $node.find('a.title_link[href*="blog.naver.com"], .api_txt_lines.total_tit[href*="blog.naver.com"], a[class*="title"][href*="blog.naver.com"]').first();
+      if (titleLink.length === 0) return;
+      
+      // 광고/모듈 제외
+      if ($node.is('[data-ad], [data-nclick*="ad"], .ad_section, .place_section, .shop_section')) return;
+      
+      items.push(node);
+    });
+    
+    console.log(`[SERP] 카드팩 내 안전 아이템: ${items.length}개`);
+    return items;
+  }
+
+  /**
+   * v7.20: 컨테이너 안의 개별 블로그 카드 노드들 선택 (기존)
    */
   private blogItemNodesIn($: cheerio.CheerioAPI, el: any): any[] {
     const $el = $(el);
