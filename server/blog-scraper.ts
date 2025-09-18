@@ -441,8 +441,19 @@ export class NaverBlogScraper {
       return out;
     };
     
-    // ★ 5) 문서 순서대로 블록 수집 (사용자 스펙)
-    const allBlocks = Array.from($('section, article, li, div.total_wrap, div').get());
+    // ★ 5) 문서 순서대로 블록 수집 - Core 영역 우선 (사용자 스펙)
+    // Core 영역 우선 검색 (#main_pack 내부)
+    const mainPack = $('#main_pack');
+    let allBlocks: any[];
+    
+    if (mainPack.length > 0) {
+      console.log('[SERP v8.0] #main_pack 범위로 Core 영역 우선 검색');
+      allBlocks = Array.from(mainPack.find('section, article, li, div.total_wrap, div').get());
+    } else {
+      console.log('[SERP v8.0] fallback: 전체 문서 검색');
+      allBlocks = Array.from($('section, article, li, div.total_wrap, div').get());
+    }
+    
     const boundaryEl = allBlocks.find(isSearchFeedBoundary);
     const boundaryIdx = boundaryEl ? allBlocks.findIndex(b => 
       b === boundaryEl || (b.contains && b.contains(boundaryEl)) || (boundaryEl.contains && boundaryEl.contains(b))
@@ -477,7 +488,10 @@ export class NaverBlogScraper {
       const block = allBlocks[i];
       
       // 경계 노드 스킵
-      if (boundaryIdx >= 0 && (block === boundaryEl || (boundaryEl.contains && boundaryEl.contains(block)))) continue;
+      if (boundaryIdx >= 0 && (block === boundaryEl || (boundaryEl.contains && boundaryEl.contains(block)))) {
+        console.log(`[SERP] SKIP 경계 노드 (idx=${i})`);
+        continue;
+      }
       
       // 경계 이후는 feed
       const isFeed = (boundaryIdx >= 0) && (i > boundaryIdx);
@@ -485,13 +499,14 @@ export class NaverBlogScraper {
       // ★★ 카드팩 평탄화: 컨테이너 내부 아이템을 순서대로 1..N (사용자 요구사항 핵심!)
       if (isCardPack(block)) {
         packCount++;
-        console.log(`[SERP] PACK[#${packCount}] 발견 - 평탄화 시작`);
+        console.log(`[SERP] PACK[#${packCount}] 발견 (idx=${i}, ${isFeed ? 'FEED' : 'CORE'}) - 평탄화 시작`);
         const items = blogItemsIn(block);
-        console.log(`[SERP] PACK[#${packCount}] items=${items.length}`);
+        console.log(`[SERP] PACK[#${packCount}] items=${items.length} → ${isFeed ? 'FEED' : 'CORE'}`);
         for (const item of items) {
           pushItem(item, isFeed ? feed : core);
         }
       } else if (isBlogCard(block)) {
+        console.log(`[SERP] 단일 블로그카드 (idx=${i}, ${isFeed ? 'FEED' : 'CORE'})`);
         pushItem(block, isFeed ? feed : core);
       }
     }
@@ -499,6 +514,15 @@ export class NaverBlogScraper {
     // 경계 없으면 Core 15개 제한
     if (boundaryIdx < 0) {
       core.splice(15);
+    }
+    
+    // ★ 긴급 수정: Core가 비어있고 Feed에 결과가 있으면 Feed를 Core로 승격 (실제 결과가 경계 후에 있는 경우)
+    if (core.length === 0 && feed.length > 0) {
+      console.log(`[SERP 긴급수정] CORE=0, FEED=${feed.length} 발견 - Feed를 Core로 승격`);
+      // Feed의 상위 15개를 Core로 승격
+      core.push(...feed.slice(0, 15));
+      feed.length = 0; // Feed 비우기
+      console.log(`[SERP 긴급수정] 승격 완료: CORE=${core.length}`);
     }
     
     // ★ 7) 필수 로깅 (사용자 스펙)
