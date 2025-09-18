@@ -287,20 +287,112 @@ export async function processPostTitleV17(
     });
   }
   
-  // Step 6: ★ 결정론적 티어 할당 (Phase2 엔진 대신)
-  console.log(`🎯 [v17 Deterministic] Assigning tiers deterministically...`);
+  // Step 6: ★ 최종 규칙 적용 (T1=단일 + T2/T3/T4=빅그램)
+  console.log(`🎯 [v17 Final Rules] Applying final tier rules: T1=single + T2/T3/T4=bigrams...`);
   
-  // Filter only eligible candidates and sort by totalScore
-  const eligibleCandidates = rankedCandidates.filter(c => c.eligible);
-  const sortedCandidates = eligibleCandidates.sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+  // Helper functions from vFinal
+  const hasMatjip = (tokens: string[]): boolean => tokens.some(t => t.includes('맛집'));
+  const hasLocal = (tokens: string[]): boolean => {
+    const localPattern = /(서울|부산|인천|대구|대전|광주|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주|[가-힣]+(시|군|구|동|읍|면|리))/;
+    return tokens.some(t => localPattern.test(t));
+  };
   
-  // Create deterministic tiers (max 4 to prevent explosion)
-  const maxTiers = Math.min(cfg.phase2?.tiersPerPost || 4, 4);
-  const tiers: Tier[] = sortedCandidates.slice(0, maxTiers).map((candidate, index) => ({
-    tier: index + 1,
-    candidate: candidate,
-    score: candidate.totalScore || 0
-  }));
+  const pickBestSecondary = (allTokens: string[], candidatesWithVolume: Candidate[], t1Text: string): string => {
+    console.log(`🔍 [pickBestSecondary] Finding best secondary for T1: "${t1Text}"`);
+    
+    // 우선순위 1: 맛집 (있으면 무조건)
+    if (hasMatjip(allTokens)) {
+      console.log(`   ✅ Found 맛집 in tokens - using as bestSecondary`);
+      return '맛집';
+    }
+    
+    // 우선순위 2: 로컬 (있으면)
+    const localTokens = allTokens.filter(t => hasLocal([t]));
+    if (localTokens.length > 0) {
+      console.log(`   ✅ Found local token: "${localTokens[0]}" - using as bestSecondary`);
+      return localTokens[0];
+    }
+    
+    // 우선순위 3: 조회량 2위 (T1 제외)
+    const volumeSorted = candidatesWithVolume
+      .filter(c => c.text !== t1Text && (c.volume || 0) > 0)
+      .sort((a, b) => (b.volume || 0) - (a.volume || 0));
+    
+    if (volumeSorted.length > 0) {
+      console.log(`   ✅ Found volume #2: "${volumeSorted[0].text}" (volume: ${volumeSorted[0].volume}) - using as bestSecondary`);
+      return volumeSorted[0].text;
+    }
+    
+    // Fallback: 다음 토큰
+    const fallback = allTokens.find(t => t !== t1Text);
+    console.log(`   ⚠️ Fallback to next token: "${fallback || 'none'}"`);
+    return fallback || '';
+  };
+  
+  const makeBigram = (token1: string, token2: string): string => token2 ? `${token1} ${token2}` : token1;
+  
+  // ★ T1 선정: 단일 토큰 중 최고 볼륨 (맛집/로컬 단독 제외)
+  const singleCandidates = rankedCandidates.filter(c => 
+    c.eligible && 
+    !c.compound && 
+    c.text !== '맛집' && 
+    !hasLocal([c.text])
+  ).sort((a, b) => (b.volume || 0) - (a.volume || 0));
+  
+  // ★ 티어 변수 선언 (스코프 문제 해결)
+  let tiers: Tier[] = [];
+  
+  if (singleCandidates.length === 0) {
+    console.log(`❌ [v17 Final Rules] No valid single tokens for T1`);
+    tiers = [];
+  } else {
+    const T1 = singleCandidates[0];
+    console.log(`🎯 [T1 Final] "${T1.text}" (volume: ${T1.volume || 0})`);
+    
+    // ★ T2/T3/T4 빅그램 생성
+    const allTokens = rankedCandidates.map(c => c.text);
+    const bestSecondary = pickBestSecondary(allTokens, rankedCandidates, T1.text);
+    const t2Text = makeBigram(T1.text, bestSecondary);
+    
+    const topTokens = allTokens.filter(t => t !== T1.text && t !== bestSecondary).slice(0, 2);
+    const t3Text = topTokens[0] ? makeBigram(T1.text, topTokens[0]) : null;
+    const t4Text = topTokens[1] ? makeBigram(T1.text, topTokens[1]) : null;
+    
+    console.log(`🎯 [T2 Final] "${t2Text}"`);
+    console.log(`🎯 [T3 Final] "${t3Text || 'none'}"`);
+    console.log(`🎯 [T4 Final] "${t4Text || 'none'}"`);
+    
+    // ★ 빅그램 센디데이트 생성
+    const createBigramCandidate = (text: string, baseVolume: number = 0): Candidate => ({
+      text,
+      frequency: 1,
+      position: 0,
+      length: text.length,
+      compound: true,
+      volume: baseVolume, // 예상 볼륨 (SearchAds에서 업데이트 필요)
+      totalScore: 0.7 * Math.log10(Math.max(1, baseVolume)) * 25,
+      adScore: 0.5, // Mock
+      eligible: true,
+      rank: null
+    });
+    
+    tiers = [
+      { tier: 1, candidate: T1, score: T1.totalScore || 0 }
+    ];
+    
+    if (t2Text) {
+      const t2Candidate = createBigramCandidate(t2Text, T1.volume || 0);
+      tiers.push({ tier: 2, candidate: t2Candidate, score: t2Candidate.totalScore || 0 });
+    }
+    if (t3Text) {
+      const t3Candidate = createBigramCandidate(t3Text, Math.floor((T1.volume || 0) * 0.5));
+      tiers.push({ tier: 3, candidate: t3Candidate, score: t3Candidate.totalScore || 0 });
+    }
+    if (t4Text) {
+      const t4Candidate = createBigramCandidate(t4Text, Math.floor((T1.volume || 0) * 0.3));
+      tiers.push({ tier: 4, candidate: t4Candidate, score: t4Candidate.totalScore || 0 });
+    }
+  } // ★ else 블록 닫기
   
   console.log(`🎯 [v17 Deterministic] Created ${tiers.length} deterministic tiers (max 4)`);
   
