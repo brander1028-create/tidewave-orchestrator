@@ -408,7 +408,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v6 Blog Targets API
   app.get("/api/blog-targets", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -432,7 +432,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/blog-targets/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -450,7 +450,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/blog-targets", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -477,7 +477,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/blog-targets/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -505,7 +505,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/blog-targets/:id/keywords", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -542,7 +542,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/blog-targets/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -562,7 +562,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 표준: GET /api/targets/blog?expand=keywords
   app.get("/api/targets/blog", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -579,7 +579,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/targets/blog/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -603,7 +603,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 표준: POST /api/targets/blog
   app.post("/api/targets/blog", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -637,7 +637,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/targets/blog/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -670,7 +670,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/targets/blog/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -690,7 +690,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/targets/blog/:id/keywords", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -728,7 +728,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v6 Product Targets API
   app.get("/api/product-targets", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -742,7 +742,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/product-targets/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -760,7 +760,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/product-targets", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -787,7 +787,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/product-targets/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -814,7 +814,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/product-targets/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -853,7 +853,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/rank-snapshots", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -875,7 +875,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/rank/history/:targetId", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -901,7 +901,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v6 Metric Snapshots API  
   app.get("/api/metric-snapshots", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -920,7 +920,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/metric-snapshots", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -967,7 +967,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/metric/history/:productKey", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -996,7 +996,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/insights/periodic", async (req, res) => {
     try {
       
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -1042,7 +1042,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v6 Review State API
   app.get("/api/review-state/:productKey", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -1062,7 +1062,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/review-state/:productKey", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -1088,7 +1088,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v6-4: 실제 네이버 블로그 SERP 크롤링 API
   app.post("/api/rank/blog/check", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2134,7 +2134,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7 Groups API - 키워드 그룹 시스템
   app.get("/api/groups", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2149,7 +2149,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/groups/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2167,7 +2167,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/groups", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2194,7 +2194,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/groups/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2221,7 +2221,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/groups/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2241,7 +2241,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/groups/:id/keywords", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2262,7 +2262,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/groups/:id/keywords", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2295,7 +2295,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/groups/:id/keywords/:keyword", async (req, res) => {
     try {
       const { id, keyword } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2321,7 +2321,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/groups/:id/index", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2345,7 +2345,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 키워드 보관소 API
   app.get("/api/db/keywords", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2359,7 +2359,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/db/keywords/:keyword/status", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2385,7 +2385,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 타겟 관리 API
   app.get("/api/db/targets", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2399,7 +2399,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/db/targets/:id/schedule", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2425,7 +2425,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 스냅샷 집계 API
   app.get("/api/db/snapshots/agg", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2441,7 +2441,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 수집 규칙 API
   app.get("/api/db/collection-rules", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2455,7 +2455,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/db/collection-rules", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2478,7 +2478,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/db/collection-rules/:id", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2504,7 +2504,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/db/collection-rules/:id", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2525,7 +2525,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7.11: Operations Stats API for Cost Guard
   app.get("/api/ops/stats", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2564,7 +2564,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7.11: Auto-Suspend Management API
   app.post("/api/ops/auto-suspend", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2612,7 +2612,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/db/token-usage", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2627,7 +2627,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7 Dashboard APIs - Rolling Alerts for Top Ticker
   app.get("/api/alerts/rolling", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2644,7 +2644,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/alerts/rolling", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2670,7 +2670,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/alerts/rolling/:id", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2696,7 +2696,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7 Dashboard APIs - Dashboard Settings for Editable Card Grid
   app.get("/api/dashboard/settings", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2710,7 +2710,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/dashboard/settings", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -3020,7 +3020,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7.13 Owner-aware 보안 API들
   app.get("/api/pairs/:id", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = req.headers['x-owner'] as string;
       const { id } = req.params;
       
       if (!owner) {

@@ -16,19 +16,8 @@ import type {
 export const http = (path: string, init: RequestInit = {}) => {
   const h = new Headers(init.headers || {});
   
-  // v7.18: 헤더 강제 설정 (localStorage 무시)
-  const role = 'admin';
-  const owner = 'system';
-  
-  h.set('x-role', role);
-  h.set('x-owner', owner);
-  
-  // localStorage도 동기화
-  localStorage.setItem('role', role);
-  localStorage.setItem('owner', owner);
-  
-  // 디버깅: 헤더 확인
-  console.log(`[http] ${path} - 헤더 설정: x-role=${role}, x-owner=${owner}`);
+  // v7.18: 표준화된 owner 헤더 통일 (x-owner=system)
+  h.set('x-owner', 'system');
   
   return fetch(path, { ...init, headers: h, credentials: 'include' });
 };

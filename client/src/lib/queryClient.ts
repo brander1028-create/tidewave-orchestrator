@@ -18,10 +18,8 @@ export async function apiRequest(
   if (data) {
     headers.set("Content-Type", "application/json");
   }
-  // 모든 요청에 권한 헤더 자동 주입
-  headers.set('x-role', localStorage.getItem('role') ?? 'system');
-  const owner = localStorage.getItem('owner');
-  if (owner) headers.set('x-owner', owner);
+  // v7.18: 표준화된 owner 헤더 통일 (x-owner=system)
+  headers.set('x-owner', 'system');
   
   const res = await fetch(url, {
     method,
@@ -41,8 +39,13 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
+    // v7.18: 기본 쿼리 함수에도 표준화된 헤더 적용
+    const headers = new Headers();
+    headers.set('x-owner', 'system');
+    
     const res = await fetch(queryKey.join("/") as string, {
       credentials: "include",
+      headers,
     });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
