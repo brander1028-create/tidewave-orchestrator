@@ -141,7 +141,10 @@ export interface IStorage {
   deleteBlogKeywordTargetByOwner(owner: string, id: string): Promise<boolean>;
   // v7.16: Pairs 기반 Plan API용 추가 메서드들
   findPairsByIds(owner: string, ids: string[]): Promise<BlogKeywordTarget[]>;
+  // v7.18: Owner 미필터 버전 추가 (선택 우선용)
+  findPairsByIds(ids: string[]): Promise<BlogKeywordTarget[]>;
   getActivePairs(owner: string): Promise<BlogKeywordTarget[]>;
+  getPairsByOwner(owner: string): Promise<BlogKeywordTarget[]>;
   updateReviewState(owner: string, data: InsertReviewState): Promise<ReviewState>;
   
   // v7 Group CRUD operations (키워드 그룹 관리) - Owner-aware methods for security
@@ -876,6 +879,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async insertRankSnapshot(owner: string, data: InsertRankSnapshot): Promise<RankSnapshot> {
+    console.log(`[insertRankSnapshot] 시작: owner=${owner}, targetId=${data.targetId}, pairId=${data.pairId}, rank=${data.rank}`);
+    
     // First verify that targetId belongs to the owner by checking blogTargets
     const targetOwnership = await db.select({ id: blogTargets.id })
       .from(blogTargets)
@@ -886,12 +891,17 @@ export class DatabaseStorage implements IStorage {
       ))
       .limit(1);
 
+    console.log(`[insertRankSnapshot] 권한 체크: ${targetOwnership.length}개 매칭`);
+
     if (targetOwnership.length === 0) {
+      console.log(`[insertRankSnapshot] 권한 없음: targetId=${data.targetId}, owner=${owner}`);
       throw new Error('Unauthorized: Target does not belong to the specified owner or is inactive');
     }
 
     // Only insert if ownership is verified
+    console.log(`[insertRankSnapshot] DB 삽입 시도:`, data);
     const [snapshot] = await db.insert(rankSnapshots).values(data).returning();
+    console.log(`[insertRankSnapshot] 성공: snapshot.id=${snapshot.id}, timestamp=${snapshot.timestamp}`);
     return snapshot;
   }
 
@@ -1680,15 +1690,29 @@ export class DatabaseStorage implements IStorage {
   }
 
   // v7.16: Pairs 기반 Plan API용 추가 메서드들
-  async findPairsByIds(owner: string, ids: string[]): Promise<BlogKeywordTarget[]> {
-    if (ids.length === 0) return [];
-    return await db.select()
-      .from(blogKeywordTargets)
-      .where(and(
-        eq(blogKeywordTargets.owner, owner),
-        inArray(blogKeywordTargets.id, ids)
-      ))
-      .orderBy(desc(blogKeywordTargets.createdAt));
+  async findPairsByIds(ownerOrIds: string | string[], ids?: string[]): Promise<BlogKeywordTarget[]> {
+    // 오버로드 처리
+    if (Array.isArray(ownerOrIds)) {
+      // findPairsByIds(ids: string[])
+      const idsToFind = ownerOrIds;
+      if (idsToFind.length === 0) return [];
+      return await db.select()
+        .from(blogKeywordTargets)
+        .where(inArray(blogKeywordTargets.id, idsToFind))
+        .orderBy(desc(blogKeywordTargets.createdAt));
+    } else {
+      // findPairsByIds(owner: string, ids: string[])
+      const owner = ownerOrIds;
+      const idsToFind = ids || [];
+      if (idsToFind.length === 0) return [];
+      return await db.select()
+        .from(blogKeywordTargets)
+        .where(and(
+          eq(blogKeywordTargets.owner, owner),
+          inArray(blogKeywordTargets.id, idsToFind)
+        ))
+        .orderBy(desc(blogKeywordTargets.createdAt));
+    }
   }
 
   async getActivePairs(owner: string): Promise<BlogKeywordTarget[]> {
@@ -1698,6 +1722,13 @@ export class DatabaseStorage implements IStorage {
         eq(blogKeywordTargets.owner, owner),
         eq(blogKeywordTargets.active, true)
       ))
+      .orderBy(desc(blogKeywordTargets.createdAt));
+  }
+
+  async getPairsByOwner(owner: string): Promise<BlogKeywordTarget[]> {
+    return await db.select()
+      .from(blogKeywordTargets)
+      .where(eq(blogKeywordTargets.owner, owner))
       .orderBy(desc(blogKeywordTargets.createdAt));
   }
 }
@@ -2959,11 +2990,20 @@ export class MemStorage implements IStorage {
   }
 
   async insertRankSnapshot(owner: string, data: InsertRankSnapshot): Promise<RankSnapshot> {
-    // Verify that targetId belongs to the owner by checking blogTargets
-    const targetOwnership = Array.from(this.blogTargets.values())
+    console.log(`[insertRankSnapshot] 시작: owner=${owner}, targetId=${data.targetId}, pairId=${data.pairId}, rank=${data.rank}`);
+    
+    // v7.18 수정: blogKeywordTargets (pairs)와 blogTargets 모두에서 권한 확인
+    const blogTargetOwnership = Array.from(this.blogTargets.values())
       .find(target => target.id === data.targetId && target.owner === owner && target.active);
+    
+    const pairOwnership = Array.from(this.blogKeywordTargets.values())
+      .find(pair => pair.id === data.targetId && pair.owner === owner && pair.active);
+
+    const targetOwnership = blogTargetOwnership || pairOwnership;
+    console.log(`[insertRankSnapshot] 권한 체크: blogTargets=${blogTargetOwnership ? '1' : '0'}개, pairs=${pairOwnership ? '1' : '0'}개, 총 ${targetOwnership ? '1' : '0'}개 매칭`);
 
     if (!targetOwnership) {
+      console.log(`[insertRankSnapshot] 권한 없음: targetId=${data.targetId}, owner=${owner}`);
       throw new Error('Unauthorized: Target does not belong to the specified owner or is inactive');
     }
 
@@ -3803,6 +3843,35 @@ export class MemStorage implements IStorage {
   async getActivePairs(owner: string): Promise<BlogKeywordTarget[]> {
     const results = Array.from(this.blogKeywordTargets.values())
       .filter(target => target.owner === owner && target.active)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return results;
+  }
+
+  // v7.18: findPairsByIds 오버로드 구현
+  async findPairsByIds(ownerOrIds: string | string[], ids?: string[]): Promise<BlogKeywordTarget[]> {
+    if (Array.isArray(ownerOrIds)) {
+      // findPairsByIds(ids: string[]) - owner 미필터
+      const idsToFind = ownerOrIds;
+      if (idsToFind.length === 0) return [];
+      const results = Array.from(this.blogKeywordTargets.values())
+        .filter(target => idsToFind.includes(target.id))
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return results;
+    } else {
+      // findPairsByIds(owner: string, ids: string[]) - owner 필터
+      const owner = ownerOrIds;
+      const idsToFind = ids || [];
+      if (idsToFind.length === 0) return [];
+      const results = Array.from(this.blogKeywordTargets.values())
+        .filter(target => target.owner === owner && idsToFind.includes(target.id))
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return results;
+    }
+  }
+
+  async getPairsByOwner(owner: string): Promise<BlogKeywordTarget[]> {
+    const results = Array.from(this.blogKeywordTargets.values())
+      .filter(target => target.owner === owner)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return results;
   }

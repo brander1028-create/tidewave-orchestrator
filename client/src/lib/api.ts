@@ -12,24 +12,23 @@ import type {
   InsertManualBlogEntry
 } from "@shared/schema";
 
-// 🔧 핫픽스 v7.9: API 클라이언트 인터셉터 - 권한 헤더 자동 주입
+// v7.18: API 클라이언트 인터셉터 - 권한 헤더 강제 주입 + 디버깅
 export const http = (path: string, init: RequestInit = {}) => {
   const h = new Headers(init.headers || {});
   
-  // v7.17 권한 헤더 문제 수정: owner를 system으로 통일
-  const role = localStorage.getItem('role') || 'admin';
-  const owner = localStorage.getItem('owner') || 'system';
+  // v7.18: 헤더 강제 설정 (localStorage 무시)
+  const role = 'admin';
+  const owner = 'system';
   
   h.set('x-role', role);
   h.set('x-owner', owner);
   
-  // 초기화되지 않은 경우 localStorage에 기본값 저장 (v7.17: owner=system 통일)
-  if (!localStorage.getItem('role')) {
-    localStorage.setItem('role', 'admin');
-  }
-  if (!localStorage.getItem('owner')) {
-    localStorage.setItem('owner', 'system');
-  }
+  // localStorage도 동기화
+  localStorage.setItem('role', role);
+  localStorage.setItem('owner', owner);
+  
+  // 디버깅: 헤더 확인
+  console.log(`[http] ${path} - 헤더 설정: x-role=${role}, x-owner=${owner}`);
   
   return fetch(path, { ...init, headers: h, credentials: 'include' });
 };

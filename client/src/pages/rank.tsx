@@ -410,6 +410,7 @@ export default function Rank() {
             body: JSON.stringify({
               targets: [{
                 targetId: t.pair_id, // v7.17: pair_id를 targetId로 사용
+                pairId: t.pair_id, // v7.18: 스냅샷 삽입을 위한 pairId 추가
                 query: t.keyword,
                 kind: 'blog',
                 device: 'mobile'

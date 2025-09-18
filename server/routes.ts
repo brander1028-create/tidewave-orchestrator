@@ -49,6 +49,7 @@ const V713_CONFIG = {
 // Scraping validation schemas
 const scrapingConfigSchema = z.object({
   targetId: z.string().min(1),
+  pairId: z.string().optional(), // v7.18: 배치 처리에서 스냅샷 연결을 위한 pairId 지원
   query: z.string().min(1),
   kind: z.enum(['blog', 'shop']),
   device: z.enum(['mobile', 'pc']),
@@ -123,10 +124,15 @@ const updateCollectionStateSchema = z.object({
   autoStopped: z.boolean().optional(),
 }).strict();
 
-// v7.16: 키워드 lookup 핸들러 함수 (리다이렉트 없이 헤더 유지)
+// v7.18: 키워드 lookup 핸들러 함수 (헤더 통일 + 디버깅)
 async function keywordLookupHandler(req: any, res: any) {
   try {
-    const owner = req.headers['x-role'] as string;
+    const xOwner = req.headers['x-owner'];
+    const xRole = req.headers['x-role']; 
+    const owner = (xOwner || xRole) as string;
+    
+    console.log(`[KeywordLookup] 헤더 체크: x-owner=${xOwner}, x-role=${xRole}, final owner=${owner}`);
+    
     if (!owner) {
       return res.status(401).json({ message: "권한이 없습니다" });
     }
@@ -827,7 +833,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v6 Rank Snapshots API
   app.get("/api/rank-snapshots", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      const owner = (req.headers['x-owner'] || req.headers['x-role']) as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -1163,29 +1169,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // v7.16: 계획 API - pairs 기반으로 수정 (blog_targets 대신 pairs 테이블 사용)
+  // v7.18: 계획 API - pairs 기반 + 선택 우선 + owner 불일치 허용
   app.get("/api/rank/plan", async (req, res) => {
     try {
-      const owner = req.headers['x-owner'] || req.headers['x-role'] || 'admin';
-      const ids = []
-        .concat(req.query.pair_ids || req.query.target_ids || [])
-        .map(String)
-        .filter(Boolean);
+      const owner = String(req.headers['x-owner'] || req.headers['x-role'] || 'system');
 
-      // 1) 선택된 pair_ids가 있으면 그걸로, 없으면 owner의 active pairs 전부
-      const pairs = ids.length
-        ? await storage.findPairsByIds(owner, ids)
-        : await storage.getActivePairs(owner);
+      // 1) 선택 우선: pair_ids[]가 있으면 owner 필터 없이 id 매칭 (수동 실행용)
+      const pair_ids = req.query.pair_ids;
+      const target_ids = req.query.target_ids;
+      
+      let ids: string[] = [];
+      if (pair_ids) {
+        if (Array.isArray(pair_ids)) {
+          ids = pair_ids.map(String).filter(Boolean);
+        } else if (typeof pair_ids === 'string') {
+          ids = [pair_ids];
+        }
+      } else if (target_ids) {
+        if (Array.isArray(target_ids)) {
+          ids = target_ids.map(String).filter(Boolean);
+        } else if (typeof target_ids === 'string') {
+          ids = [target_ids];
+        }
+      }
+
+      let pairs = [];
+      if (ids.length) {
+        pairs = await storage.findPairsByIds(ids); // ★ owner 미필터 (명시 선택 우선)
+      } else {
+        // 2) 선택이 없으면 owner의 active 페어
+        pairs = await storage.getActivePairs(owner);
+
+        // 3) 그래도 0이면 owner 전체 페어(수동 실행은 허용)
+        if (!pairs.length) {
+          pairs = await storage.getPairsByOwner(owner);
+        }
+      }
+
+      // 로그 강화 + 페어 내용 출력
+      console.info(`[RankPlan] owner=${owner} ids=${ids.length} pairs=${pairs.length}`);
+      console.info(`[RankPlan] 페어 상세:`, pairs.map(p => `id=${p.id}, owner=${p.owner}, keyword=${p.keywordText}, active=${p.active}`));
 
       const tasks = pairs.map(p => ({
-        pair_id : p.id,
-        keyword : p.keywordText,
-        nickname: p.nickname || '',
+        pair_id: p.id,
+        keyword: p.keywordText,
+        nickname: p.nickname || ''
       }));
 
-      console.log(`[RankPlan] pairs 기반 계획 조회: ${tasks.length}개 작업, pairs ${pairs.length}개`);
-
-      res.json({ total: tasks.length, tasks });
+      console.info(`[RankPlan] 최종 작업:`, tasks);
+      return res.json({ total: tasks.length, tasks });
 
     } catch (error) {
       console.error('[RankPlan] 오류:', error);
@@ -1378,7 +1410,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (blogTargets.length > 0) {
         console.log(`[BatchRankCheck:${requestId}] Processing blog targets with blog scraper`);
         
-        for (const targetConfig of blogTargets) {
+        for (let targetIndex = 0; targetIndex < blogTargets.length; targetIndex++) {
+          const targetConfig = blogTargets[targetIndex];
+          const originalTarget = targets.find(t => t.targetId === targetConfig.targetId);
           try {
             console.log(`[BatchRankCheck:${requestId}] Processing blog target: ${targetConfig.targetId} - ${targetConfig.query}`);
             
@@ -1413,6 +1447,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 await storage.insertRankData(rankData);
                 console.log(`[BatchRankCheck:${requestId}] Successfully saved blog data for target: ${targetConfig.targetId}`);
+                
+                // 배치 처리에서도 스냅샷 삽입 - v7.18 픽스
+                const snapshotData = {
+                  targetId: targetConfig.targetId,
+                  pairId: originalTarget?.pairId || null, // v7.18: 원본 요청에서 pairId 가져오기
+                  kind: 'blog' as const,
+                  query: targetConfig.query,
+                  rank: result.data.rank || null,
+                  page: result.data.page || 1,
+                  position: result.data.position || null,
+                  device: targetConfig.device,
+                  exposed: result.data.rank !== null && result.data.rank <= 100, // 상위 100위까지 노출
+                  source: 'batch_blog_scraper',
+                  metadata: {
+                    title: result.data.title,
+                    url: result.data.url,
+                    snippet: result.data.snippet,
+                    date: result.data.date,
+                    ...result.data.metadata
+                  }
+                };
+
+                const owner = req.headers['x-owner'] || req.headers['x-role'] || 'system';
+                await storage.insertRankSnapshot(String(owner), snapshotData);
+                console.log(`[BatchRankCheck:${requestId}] Successfully saved snapshot for target: ${targetConfig.targetId}, rank: ${result.data.rank}`);
               } catch (dbError) {
                 console.error(`[BatchRankCheck:${requestId}] Database save failed for target: ${targetConfig.targetId}`, dbError);
                 // Continue processing even if DB save fails
@@ -2770,7 +2829,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7.13 Blog-Keyword Pairs APIs - 1:1 매핑 통합 관리
   app.get("/api/pairs", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      // v7.18: x-owner 우선 사용으로 plan API와 통일
+      const owner = (req.headers['x-owner'] || req.headers['x-role']) as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2784,7 +2844,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/pairs", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
+      // v7.18: x-owner 우선 사용으로 plan API와 통일
+      const owner = (req.headers['x-owner'] || req.headers['x-role']) as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2911,7 +2972,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/pairs/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      // v7.18: x-owner 우선 사용으로 plan API와 통일
+      const owner = (req.headers['x-owner'] || req.headers['x-role']) as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }
@@ -2938,7 +3000,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/pairs/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const owner = req.headers['x-role'] as string;
+      // v7.18: x-owner 우선 사용으로 plan API와 통일
+      const owner = (req.headers['x-owner'] || req.headers['x-role']) as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
       }

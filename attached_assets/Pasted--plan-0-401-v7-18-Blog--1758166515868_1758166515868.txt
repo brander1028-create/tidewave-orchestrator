@@ -1,0 +1,160 @@
+체크가 안 도는 이유는 “선택/활성/오너 불일치로 plan=0” + “메타 401” 두 가지가 핵심이에요. 아래 v7.18 한방 패치 그대로 적용하면 바로 돌아갑니다. (Blog-only 실행 + 진행표시까지 포함)
+
+🔧 v7.18 — plan=Pairs 고정 + 선택/활성/오너 정렬 + 메타 401 종결 + 편집/활성 토글
+A) 서버(Express)
+A-1) 키워드 메타 잘못된 경로를 리다이렉트 없이 내부 처리 (헤더 보존)
+// server/routes.ts – 키워드 메타 라우트 근처에 추가
+app.get('/api/keywords/lookup/:text', async (req, res) => {
+  const t = decodeURIComponent(req.params.text || '').trim();
+  if (!t) return res.status(400).json({ message: 'text required' });
+  // 내부 핸들러 직접 호출(리다이렉트 금지: 401 원인 차단)
+  req.query.texts = t;
+  return keywordsLookupHandler(req, res);
+});
+
+A-2) /api/rank/plan을 pairs 기반 + 선택 우선 + owner 불일치 허용 으로 재정의
+// server/routes.ts
+app.get('/api/rank/plan', async (req, res) => {
+  const owner = String(req.headers['x-owner'] || 'system');
+
+  // 1) 선택 우선: pair_ids[]가 있으면 owner 필터 없이 id 매칭 (수동 실행용)
+  const ids = []
+    .concat(req.query.pair_ids || req.query.target_ids || [])
+    .map(String)
+    .filter(Boolean);
+
+  let pairs = [];
+  if (ids.length) {
+    pairs = await storage.findPairsByIds(ids); // ★ owner 미필터 (명시 선택 우선)
+  } else {
+    // 2) 선택이 없으면 owner의 active 페어
+    pairs = await storage.getActivePairs(owner);
+
+    // 3) 그래도 0이면 owner 전체 페어(수동 실행은 허용)
+    if (!pairs.length) pairs = await storage.getPairsByOwner(owner);
+  }
+
+  // 로그 강화
+  console.info(`[RankPlan] owner=${owner} ids=${ids.length} pairs=${pairs.length}`);
+
+  const tasks = pairs.map(p => ({ pair_id: p.id, keyword: p.keywordText, nickname: p.nickname || '' }));
+  return res.json({ total: tasks.length, tasks });
+});
+
+
+storage.ts에 아래 메서드가 반드시 있어야 합니다
+findPairsByIds(ids: string[]) (owner 미필터), getActivePairs(owner: string), getPairsByOwner(owner: string)
+(MemStorage/DB 둘 다 구현)
+
+A-3) 쇼핑 임시 차단(미구현 보호)
+// .env
+FEATURE_SHOP_RANK=false
+
+app.post('/api/rank/shop/check', (req,res)=>{
+  if (process.env.FEATURE_SHOP_RANK !== 'true') {
+    return res.status(501).json({ ok:false, reason:'shop_rank_disabled' });
+  }
+});
+
+B) 클라이언트(React)
+B-1) 오너/롤 헤더 통일 주입 (모든 요청 동일)
+// client/src/lib/api.ts (http 래퍼 내부)
+const role  = localStorage.getItem('role')  ?? 'Admin';
+const owner = localStorage.getItem('owner') ?? 'system';  // ★ 통일
+h.set('x-role', role);
+h.set('x-owner', owner);
+
+
+한 번만 실행: localStorage.owner='system'
+
+B-2) 실행 러너 = Blog-only + 진행표시 + “선택 없으면 ‘표시 중’ 전부”
+// client/src/pages/blog-rank.tsx 핵심만
+const [isRunning,setIsRunning]=useState(false);
+const [prog,setProg]=useState({done:0,total:0,percent:0,now:''});
+const [rowBusy,setRowBusy]=useState<Record<string,boolean>>({});
+const CONC=3;
+
+function visiblePairs(): Pair[] { return pairs /* 현재 테이블에 보이는 목록 */; }
+function selectedPairs(): Pair[] { return selected /* 체크박스 선택 목록 */; }
+
+async function planBlogTasks() {
+  const sel = selectedPairs();
+  const body = sel.length ? `?pair_ids[]=${sel.map(p=>p.id).join('&pair_ids[]=')}` : '';
+  const r = await http('/api/rank/plan' + body);
+  if (r.ok) return r.json();
+  const src = sel.length ? sel : visiblePairs();
+  return { total: src.length, tasks: src.map(p=>({pair_id:p.id, keyword:p.keywordText, nickname:p.nickname})) };
+}
+
+async function runAllChecks(){
+  setIsRunning(true); setProg({done:0,total:0,percent:0,now:'준비중…'});
+  const plan = await planBlogTasks();
+  if(!plan.total){ toast('체크할 대상 없음'); setIsRunning(false); return; }
+
+  setProg(p=>({...p,total:plan.total,now:'시작합니다'}));
+  let i=0, done=0, cancelled=false;
+  async function worker(){
+    while(!cancelled && i<plan.tasks.length){
+      const t=plan.tasks[i++]; setRowBusy(s=>({...s,[t.pair_id]:true}));
+      setProg(p=>({...p,now:`${t.keyword} · ${t.nickname}`}));
+      try { await api.rank.blogCheck({ pair_ids:[t.pair_id] }); } // ★ BLOG ONLY
+      catch(e){ addFail(t,e); }
+      finally{
+        setRowBusy(s=>({...s,[t.pair_id]:false}));
+        done++; setProg({done,total:plan.total,percent:Math.round(done*100/plan.total),now:t.nickname});
+      }
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(CONC,plan.total)}).map(()=>worker()));
+  toast(`완료: ${done}/${plan.total}`); setIsRunning(false);
+}
+
+
+버튼 라벨: isRunning ? \체크 중… (${prog.done}/${prog.total})` : '전체 체크 시작'`
+
+진행바 width=${prog.percent}%, 현재 작업 텍스트 지금: ${prog.now}
+
+행별 로딩: rowBusy[p.id] && <Spinner/>
+
+B-3) 행 ‘활성화’ 토글 & 일괄 실행 가이드
+
+테이블에 활성화(ON/OFF) 스위치 추가 → PATCH /api/pairs/:id {active:true|false}
+
+선택 없음 + active 0개일 때 하단 배너:
+“체크할 대상 없음 — [현재 목록 전체 실행] [활성화 켜기]”
+
+B-4) URL 편집(톱니) → PATCH 성공 시 낙관적 업데이트
+// onSuccess(updated)
+queryClient.setQueryData(['pairs'], (old:any)=> old?.map((p:any)=>p.id===updated.id? {...p,...updated}:p));
+setSelectedRankingDetail(null); // 모달 닫기
+
+C) 지금 바로 확인할 3줄(스모크)
+
+메타 401 사라짐
+
+GET /api/keywords/lookup/홍삼스틱 200
+# 또는
+GET /api/keywords/lookup?texts=홍삼스틱 200
+
+
+plan > 0
+
+GET /api/rank/plan?pair_ids[]=<첫째ID>&pair_ids[]=<둘째ID>  → {"total":2,"tasks":[...]}
+
+
+실행 Blog-only + 진행표시
+
+네트워크: /api/rank/blog/check N회 (shop 없음)
+
+UI: 버튼 스피너·(a/N)%·현재 작업·행별 로딩 표시
+
+왜 지금 “페어 없음/시작 안 함”이 뜨는지
+
+plan이 blog_targets를 보거나, owner가 ‘admin’ vs ‘system’로 엇갈리거나, 선택 없음+active=0이면 무조건 0건이 됩니다.
+
+이번 패치는
+① pair_ids 있으면 owner 무시 → 선택 즉시 실행,
+② 없으면 active by owner → 그래도 0이면 owner 전체로 보완,
+③ 클라가 선택 없으면 현재 목록으로 강제 실행,
+④ 헤더 x-owner를 통일해 owner 미스매치 차단,
+⑤ 메타 401은 내부 처리로 종결.
