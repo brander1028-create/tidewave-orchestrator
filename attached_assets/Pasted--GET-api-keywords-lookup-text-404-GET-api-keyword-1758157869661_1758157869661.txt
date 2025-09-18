@@ -1,0 +1,113 @@
+무엇이 “안 된” 상태? (근본)
+
+키워드 메타 호출 경로 오타
+
+로그: GET /api/keywords/lookup/<text> → 404
+
+정상은 GET /api/keywords/lookup?texts=키1,키2
+
+순위 실행 러너가 Blog-only가 아님
+
+버튼 누르면 쇼핑까지 돌리려다 실패/중단(쇼핑은 아직 disable이어야 함).
+
+진행표시/로딩 상태 미배선
+
+버튼 눌러도 스피너/퍼센트/현재 작업/행별 로딩이 안 뜸 → “반응없음”처럼 보임.
+
+한 번에 고치는 최소 패치(3가지)
+1) 키워드 메타 경로 강제(오경로→정상 리라이트)
+
+server/routes.ts 최상단 가까이:
+
+app.get('/api/keywords/lookup/:text', (req, res) => {
+  const t = decodeURIComponent(req.params.text || '');
+  return res.redirect(307, `/api/keywords/lookup?texts=${encodeURIComponent(t)}`);
+});
+
+
+프런트가 잘못 날려도 항상 정상 쿼리로 전환.
+
+2) 쇼핑 임시 OFF
+
+.env
+
+FEATURE_SHOP_RANK=false
+
+
+server/routes.ts (/api/rank/shop/check)
+
+if (process.env.FEATURE_SHOP_RANK !== 'true') {
+  return res.status(501).json({ ok:false, reason:'shop_rank_disabled' });
+}
+
+
+실행 플로우에서 쇼핑 호출 자체를 차단.
+
+3) 실행 러너: Blog-only + 진행표시 와이어링
+
+client/src/pages/blog-rank.tsx (핵심만)
+
+const [isRunning, setIsRunning] = useState(false);
+const [prog, setProg] = useState({done:0,total:0,percent:0,now:''});
+const [rowLoading, setRowLoading] = useState<Record<string,boolean>>({});
+const CONCURRENCY = 3;
+
+async function planBlogTasks(pairs: Pair[]) {
+  try {
+    const r = await http('/api/rank/plan?kind=blog');
+    if (r.ok) return await r.json(); // {total,tasks:[{pair_id,keyword,nickname}]}
+  } catch {}
+  return { total: pairs.length, tasks: pairs.map(p => ({pair_id:p.id, keyword:p.keywordText, nickname:p.nickname})) };
+}
+
+async function runAllChecks() {
+  const selected = getSelectedPairs();
+  setIsRunning(true); setProg({done:0,total:0,percent:0,now:'준비중…'});
+
+  const plan = await planBlogTasks(selected);
+  if (!plan.total) { toast('체크할 대상 없음'); setIsRunning(false); return; }
+
+  setProg(p => ({...p,total:plan.total,now:'시작합니다'}));
+  let i=0, done=0, cancelled=false;
+  const tasks = [...plan.tasks];
+
+  async function worker(){
+    while(!cancelled && i<tasks.length){
+      const t = tasks[i++]; setRowLoading(s=>({...s,[t.pair_id]:true}));
+      setProg(p=>({...p,now:`${t.keyword} · ${t.nickname}`}));
+      try { await api.rank.blogCheck({ pair_ids:[t.pair_id] }); } // 🔹 Blog-only
+      catch(e){ addFail(t,e); }
+      finally{
+        setRowLoading(s=>({...s,[t.pair_id]:false}));
+        done++; setProg({done,total:plan.total,percent:Math.round(done*100/plan.total),now:t.nickname});
+      }
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(CONCURRENCY, plan.total)}).map(()=>worker()));
+  toast(`완료: ${done}/${plan.total}`); setIsRunning(false);
+}
+
+
+UI 라벨/프로그레스:
+
+버튼 라벨: isRunning ? \체크 중… (${prog.done}/${prog.total})` : '전체 체크 시작'`
+
+버튼 우측 얇은 진행바: width=${prog.percent}%
+
+현재 작업 텍스트: 지금: ${prog.now}
+
+행별 로딩: rowLoading[pair.id] && <Spinner />
+
+지금 당장 확인(스모크 3단계)
+
+키워드 메타 404 사라졌나?
+
+curl -s "http://localhost:3000/api/keywords/lookup?texts=홍삼스틱,오메가3" | jq .
+# (이제 200 JSON, 더 이상 /lookup/경로 404 로그가 없어야 정상)
+
+
+실행 시 쇼핑 안 부르나?
+네트워크 탭/서버 로그에 /api/rank/blog/check만 보여야 함. /api/rank/shop/check는 501로 차단.
+
+진행표시 보이나?
+버튼 누르면 즉시 스피너 + (a/N)% + 현재 작업 + 행별 로딩이 떠야 함.
