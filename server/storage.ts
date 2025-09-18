@@ -57,7 +57,7 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { db } from "./db";
-import { eq, desc, asc, and, gte, lte, sql } from "drizzle-orm";
+import { eq, desc, asc, and, gte, lte, sql, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // Rank operations
@@ -139,6 +139,9 @@ export interface IStorage {
   getBlogKeywordTargetById(owner: string, id: string): Promise<BlogKeywordTarget | null>;
   updateBlogKeywordTargetByOwner(owner: string, id: string, updates: Partial<BlogKeywordTarget>): Promise<BlogKeywordTarget | null>;
   deleteBlogKeywordTargetByOwner(owner: string, id: string): Promise<boolean>;
+  // v7.16: Pairs 기반 Plan API용 추가 메서드들
+  findPairsByIds(owner: string, ids: string[]): Promise<BlogKeywordTarget[]>;
+  getActivePairs(owner: string): Promise<BlogKeywordTarget[]>;
   updateReviewState(owner: string, data: InsertReviewState): Promise<ReviewState>;
   
   // v7 Group CRUD operations (키워드 그룹 관리) - Owner-aware methods for security
@@ -1674,6 +1677,28 @@ export class DatabaseStorage implements IStorage {
     } catch (error) {
       return false;
     }
+  }
+
+  // v7.16: Pairs 기반 Plan API용 추가 메서드들
+  async findPairsByIds(owner: string, ids: string[]): Promise<BlogKeywordTarget[]> {
+    if (ids.length === 0) return [];
+    return await db.select()
+      .from(blogKeywordTargets)
+      .where(and(
+        eq(blogKeywordTargets.owner, owner),
+        inArray(blogKeywordTargets.id, ids)
+      ))
+      .orderBy(desc(blogKeywordTargets.createdAt));
+  }
+
+  async getActivePairs(owner: string): Promise<BlogKeywordTarget[]> {
+    return await db.select()
+      .from(blogKeywordTargets)
+      .where(and(
+        eq(blogKeywordTargets.owner, owner),
+        eq(blogKeywordTargets.active, true)
+      ))
+      .orderBy(desc(blogKeywordTargets.createdAt));
   }
 }
 
@@ -3764,6 +3789,22 @@ export class MemStorage implements IStorage {
       return true;
     }
     return false;
+  }
+
+  // v7.16: Pairs 기반 Plan API용 추가 메서드들
+  async findPairsByIds(owner: string, ids: string[]): Promise<BlogKeywordTarget[]> {
+    if (ids.length === 0) return [];
+    const results = Array.from(this.blogKeywordTargets.values())
+      .filter(target => target.owner === owner && ids.includes(target.id))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return results;
+  }
+
+  async getActivePairs(owner: string): Promise<BlogKeywordTarget[]> {
+    const results = Array.from(this.blogKeywordTargets.values())
+      .filter(target => target.owner === owner && target.active)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return results;
   }
 }
 

@@ -122,11 +122,107 @@ const updateCollectionStateSchema = z.object({
   autoStopped: z.boolean().optional(),
 }).strict();
 
+// v7.16: 키워드 lookup 핸들러 함수 (리다이렉트 없이 헤더 유지)
+async function keywordLookupHandler(req: any, res: any) {
+  try {
+    const owner = req.headers['x-role'] as string;
+    if (!owner) {
+      return res.status(401).json({ message: "권한이 없습니다" });
+    }
+
+    const texts = req.query.texts as string;
+    if (!texts) {
+      return res.status(400).json({ message: "texts 파라미터가 필요합니다" });
+    }
+
+    const keywords = texts.split(',').map(t => t.trim()).filter(Boolean);
+    if (keywords.length === 0) {
+      return res.status(400).json({ message: "최소 1개 키워드가 필요합니다" });
+    }
+
+    // v7.13: 외부 키워드 API 연동 [조회량][점수] 데이터 제공
+    let keywordData;
+    
+    try {
+      // 외부 키워드 API 호출
+      const response = await axios.post(`${V713_CONFIG.KEYWORDS_API_BASE}/lookup`, {
+        keywords: keywords,
+        fields: ['volume', 'score', 'trend', 'competition']
+      }, {
+        timeout: 5000, // 5초 타임아웃
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'BlogRankMonitor-v7.13'
+        }
+      });
+      
+      keywordData = response.data;
+      
+      // API 응답 검증 및 정규화
+      if (!Array.isArray(keywordData)) {
+        throw new Error('Invalid API response: expected array');
+      }
+      
+      keywordData = keywordData.map((item, index) => ({
+        keyword: keywords[index] || item.keyword,
+        volume: typeof item.volume === 'number' ? item.volume : 0,
+        score: typeof item.score === 'number' ? Math.min(100, Math.max(0, item.score)) : 50,
+        trend: ['up', 'down', 'stable'].includes(item.trend) ? item.trend : 'stable',
+        competition: ['low', 'medium', 'high'].includes(item.competition) ? item.competition : 'medium',
+        lastUpdated: new Date().toISOString()
+      }));
+      
+    } catch (apiError) {
+      console.warn(`[키워드 API] 외부 API 호출 실패, fallback 사용:`, apiError instanceof Error ? apiError.message : String(apiError));
+      
+      // Fallback: 외부 API 실패시 기본 데이터 제공
+      keywordData = keywords.map(keyword => {
+        const baseVolume = keyword.includes('홍삼') ? 15000 : 5000;
+        const volume = baseVolume + Math.floor(Math.random() * 10000);
+        
+        let score = 70 + Math.floor(Math.random() * 25); // 70-95 범위
+        if (keyword.includes('추천') || keyword.includes('효능')) score += 5;
+        if (keyword.includes('부작용')) score -= 10;
+        
+        return {
+          keyword,
+          volume,
+          score: Math.min(100, Math.max(20, score)),
+          trend: Math.random() > 0.5 ? 'up' : Math.random() > 0.3 ? 'down' : 'stable',
+          competition: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)],
+          lastUpdated: new Date().toISOString(),
+          fallback: true // fallback 데이터 표시
+        };
+      });
+    }
+
+    // Cache-Control: 1시간 캐시
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.json(keywordData);
+
+  } catch (error) {
+    res.status(500).json({ 
+      message: "키워드 조회에 실패했습니다", 
+      error: String(error) 
+    });
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
-  // v7.13.2: 키워드 메타 경로 강제 리다이렉트 (오경로→정상 리라이트)
-  app.get('/api/keywords/lookup/:text', (req, res) => {
-    const t = decodeURIComponent(req.params.text || '');
-    return res.redirect(307, `/api/keywords/lookup?texts=${encodeURIComponent(t)}`);
+  // v7.16: 키워드 메타 경로 직접 처리 (헤더 유지를 위해 리다이렉트 제거)
+  app.get('/api/keywords/lookup/:text', async (req, res) => {
+    const text = decodeURIComponent(req.params.text || '').trim();
+    if (!text) return res.status(400).json({message:'text required'});
+    // 기존 lookup 핸들러를 재사용하기 위해 query.texts 설정
+    req.query.texts = text;
+    // 실제 키워드 lookup 로직 실행 (헤더 유지됨)
+    return keywordLookupHandler(req, res);
+  });
+
+  // v7.16: 히스토리 별칭 제공 (404 제거) - /api/rank-snapshots/history → /api/rank/history
+  app.get('/api/rank-snapshots/history', (req, res) => {
+    const { pair_id, range } = req.query;
+    return res.redirect(307, `/api/rank/history?pair_id=${encodeURIComponent(String(pair_id||''))}&range=${encodeURIComponent(String(range||'30d'))}`);
   });
 
   // Real CRUD API routes for user data management
@@ -1026,95 +1122,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // v7.12.2: 계획 API - 배치 실행 전 작업 계획 조회
+  // v7.16: 계획 API - pairs 기반으로 수정 (blog_targets 대신 pairs 테이블 사용)
   app.get("/api/rank/plan", async (req, res) => {
     try {
-      const owner = req.headers['x-role'] as string;
-      if (!owner) {
-        return res.status(401).json({ message: "권한이 없습니다" });
-      }
+      const owner = req.headers['x-owner'] || req.headers['x-role'] || 'admin';
+      const ids = []
+        .concat(req.query.pair_ids || req.query.target_ids || [])
+        .map(String)
+        .filter(Boolean);
 
-      const { kind = 'blog', target_ids, query_override } = req.query;
-      
-      // target_ids 파라미터 처리 (문자열 또는 배열, 쉼표 구분 지원)
-      let targetIds: string[] = [];
-      if (target_ids) {
-        if (Array.isArray(target_ids)) {
-          targetIds = target_ids as string[];
-        } else {
-          // 쉼표로 구분된 문자열 지원
-          targetIds = (target_ids as string).split(',').map(id => id.trim()).filter(Boolean);
-        }
-      }
-      
-      console.log('[DEBUG] Parsed targetIds:', targetIds);
+      // 1) 선택된 pair_ids가 있으면 그걸로, 없으면 owner의 active pairs 전부
+      const pairs = ids.length
+        ? await storage.findPairsByIds(owner, ids)
+        : await storage.getActivePairs(owner);
 
-      // query_override 파라미터 처리 (쉼표 구분 지원)
-      let queryOverrides: string[] = [];
-      if (query_override) {
-        if (Array.isArray(query_override)) {
-          queryOverrides = query_override as string[];
-        } else {
-          // 쉼표로 구분된 문자열 지원
-          queryOverrides = (query_override as string).split(',').map(q => q.trim()).filter(Boolean);
-        }
-      }
+      const tasks = pairs.map(p => ({
+        pair_id : p.id,
+        keyword : p.keywordText,
+        nickname: p.nickname || '',
+      }));
 
-      // 블로그 타겟 조회 (owner-aware)
-      const allTargets = await storage.getBlogTargetsWithKeywords(owner);
-      let filteredTargets = allTargets;
+      console.log(`[RankPlan] pairs 기반 계획 조회: ${tasks.length}개 작업, pairs ${pairs.length}개`);
 
-      // target_ids 필터 적용
-      if (targetIds.length > 0) {
-        console.log('[DEBUG] Filtering targets. Available target IDs:', allTargets.map(t => t.id));
-        console.log('[DEBUG] Looking for target IDs:', targetIds);
-        filteredTargets = allTargets.filter(target => targetIds.includes(target.id));
-        console.log('[DEBUG] Filtered targets count:', filteredTargets.length);
-      }
-
-      // 각 타겟별 작업 계획 생성
-      const tasks: { target_id: string; nickname: string; query: string; }[] = [];
-
-      for (const target of filteredTargets) {
-        const nickname = target.title || target.url || `타겟 ${target.id.slice(-4)}`;
-        
-        if (queryOverrides.length > 0) {
-          // query_override가 있으면 각 키워드별로 작업 생성
-          for (const query of queryOverrides) {
-            tasks.push({
-              target_id: target.id,
-              nickname,
-              query
-            });
-          }
-        } else {
-          // query_override가 없으면 타겟의 기본 키워드들 사용
-          const targetKeywords = target.keywords || target.queries || [];
-          if (targetKeywords.length > 0) {
-            for (const query of targetKeywords) {
-              tasks.push({
-                target_id: target.id,
-                nickname,
-                query
-              });
-            }
-          } else {
-            // 키워드가 없으면 기본 작업 하나 생성
-            tasks.push({
-              target_id: target.id,
-              nickname,
-              query: target.title || '기본 키워드'
-            });
-          }
-        }
-      }
-
-      console.log(`[RankPlan] ${kind} 계획 조회: ${tasks.length}개 작업, 타겟 ${filteredTargets.length}개`);
-
-      res.json({
-        total: tasks.length,
-        tasks
-      });
+      res.json({ total: tasks.length, tasks });
 
     } catch (error) {
       console.error('[RankPlan] 오류:', error);
@@ -1473,91 +1503,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // v7.10: Keywords Lookup API with Volume & Score (1h cache)
-  app.get("/api/keywords/lookup", async (req, res) => {
-    try {
-      const owner = req.headers['x-role'] as string;
-      if (!owner) {
-        return res.status(401).json({ message: "권한이 없습니다" });
-      }
-
-      const texts = req.query.texts as string;
-      if (!texts) {
-        return res.status(400).json({ message: "texts 파라미터가 필요합니다" });
-      }
-
-      const keywords = texts.split(',').map(t => t.trim()).filter(Boolean);
-      if (keywords.length === 0) {
-        return res.status(400).json({ message: "최소 1개 키워드가 필요합니다" });
-      }
-
-      // v7.13: 외부 키워드 API 연동 [조회량][점수] 데이터 제공
-      let keywordData;
-      
-      try {
-        // 외부 키워드 API 호출
-        const response = await axios.post(`${V713_CONFIG.KEYWORDS_API_BASE}/lookup`, {
-          keywords: keywords,
-          fields: ['volume', 'score', 'trend', 'competition']
-        }, {
-          timeout: 5000, // 5초 타임아웃
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'BlogRankMonitor-v7.13'
-          }
-        });
-        
-        keywordData = response.data;
-        
-        // API 응답 검증 및 정규화
-        if (!Array.isArray(keywordData)) {
-          throw new Error('Invalid API response: expected array');
-        }
-        
-        keywordData = keywordData.map((item, index) => ({
-          keyword: keywords[index] || item.keyword,
-          volume: typeof item.volume === 'number' ? item.volume : 0,
-          score: typeof item.score === 'number' ? Math.min(100, Math.max(0, item.score)) : 50,
-          trend: ['up', 'down', 'stable'].includes(item.trend) ? item.trend : 'stable',
-          competition: ['low', 'medium', 'high'].includes(item.competition) ? item.competition : 'medium',
-          lastUpdated: new Date().toISOString()
-        }));
-        
-      } catch (apiError) {
-        console.warn(`[키워드 API] 외부 API 호출 실패, fallback 사용:`, apiError instanceof Error ? apiError.message : String(apiError));
-        
-        // Fallback: 외부 API 실패시 기본 데이터 제공
-        keywordData = keywords.map(keyword => {
-          const baseVolume = keyword.includes('홍삼') ? 15000 : 5000;
-          const volume = baseVolume + Math.floor(Math.random() * 10000);
-          
-          let score = 70 + Math.floor(Math.random() * 25); // 70-95 범위
-          if (keyword.includes('추천') || keyword.includes('효능')) score += 5;
-          if (keyword.includes('부작용')) score -= 10;
-          
-          return {
-            keyword,
-            volume,
-            score: Math.min(100, Math.max(20, score)),
-            trend: Math.random() > 0.5 ? 'up' : Math.random() > 0.3 ? 'down' : 'stable',
-            competition: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)],
-            lastUpdated: new Date().toISOString(),
-            fallback: true // fallback 데이터 표시
-          };
-        });
-      }
-
-      // Cache-Control: 1시간 캐시
-      res.set('Cache-Control', 'public, max-age=3600');
-      res.json(keywordData);
-
-    } catch (error) {
-      res.status(500).json({ 
-        message: "키워드 조회에 실패했습니다", 
-        error: String(error) 
-      });
-    }
-  });
+  // v7.10: Keywords Lookup API with Volume & Score (1h cache) - 새 핸들러 사용
+  app.get("/api/keywords/lookup", keywordLookupHandler);
 
   // Dashboard API endpoints - real data aggregations
   

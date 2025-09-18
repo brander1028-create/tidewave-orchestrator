@@ -1,0 +1,190 @@
+좋다—로그로 원인 3개가 딱 보였어. 그리고 지금 “안됨”의 핵심은 전부 경로/매핑/편집 없음이라 코드 한두 군데만 손보면 바로 살아난다.
+
+무엇이 문제인지 (로그 근거)
+
+키워드 메타 401
+GET /api/keywords/lookup/<텍스트> → 307 → GET /api/keywords/lookup 401
+→ 리다이렉트 뒤에 x-role 헤더가 날아가서 401. (= 리다이렉트 쓰지 말고 직접 처리해야 함)
+
+랭크 계획 0건
+RankPlan: blog 계획 조회: 0개 작업
+→ plan이 아직 blog_targets 테이블을 보고 있는데, 우리는 1:1 pairs(blog_keyword_targets) 로 바뀜.
+→ pair_ids로 들어온 ID(예: 57a..., 07d...)를 blog_targets에서 못 찾아서 0건.
+
+URL 수정 기능 없음
+→ 등록한 페어의 URL/제목/닉네임/브랜드/그룹을 편집할 PATCH UI가 없음.
+
+🔧 핫픽스 v7.16 — “메타 401 제거 + plan을 pairs로 + URL 편집”
+
+아래를 그대로 적용하세요. (서버 3개, 클라 3개)
+
+A. 서버(Express)
+A-1) 키워드 메타 오경로를 직접 처리(리다이렉트 금지)
+// server/routes.ts (키워드 메타 라우트들 선언부 근처)
+app.get('/api/keywords/lookup/:text', async (req, res) => {
+  const text = decodeURIComponent(req.params.text || '').trim();
+  if (!text) return res.status(400).json({message:'text required'});
+  // 기존 lookup 핸들러를 재사용
+  req.query.texts = text;               // 내부 핸들러가 ?texts=...을 읽도록 세팅
+  return app._router.handle(req, res);  // 또는 직접 lookup 함수 호출
+});
+
+
+이렇게 하면 리다이렉트 없이 동일 요청에서 헤더(x-role)가 유지되어 401이 사라집니다.
+
+A-2) /api/rank/plan을 pairs 기반으로 수정
+// server/routes.ts
+app.get('/api/rank/plan', async (req, res) => {
+  const owner = req.headers['x-owner'] || 'admin';
+  const ids = []
+    .concat(req.query.pair_ids || req.query.target_ids || [])
+    .map(String);
+
+  // 1) 선택된 pair_ids가 있으면 그걸로, 없으면 owner의 active pairs 전부
+  const pairs = ids.length
+    ? await db.pairs.findMany({ where:{ owner, id:{in: ids} } })
+    : await db.pairs.findMany({ where:{ owner, active:true } });
+
+  const tasks = pairs.map(p => ({
+    pair_id : p.id,
+    keyword : p.keywordText,
+    nickname: p.nickname || '',
+  }));
+
+  return res.json({ total: tasks.length, tasks });
+});
+
+
+이제 57a.../07d... 같은 pair_id가 그대로 task로 잡혀서 total>0로 나옵니다.
+
+A-3) 히스토리 별칭(알리어스) 제공 (404 제거)
+// /api/rank-snapshots/history → /api/rank/history 별칭
+app.get('/api/rank-snapshots/history', (req,res) => {
+  const { pair_id, range } = req.query;
+  return res.redirect(307, `/api/rank/history?pair_id=${encodeURIComponent(String(pair_id||''))}&range=${encodeURIComponent(String(range||'30d'))}`);
+});
+
+
+기존 클라가 잘못 친 경로도 동작하도록 안전망.
+
+B. 클라이언트(React)
+B-1) 실행 러너를 Blog-only + 진행표시로 고정
+
+client/src/pages/blog-rank.tsx:
+
+const [isRunning,setIsRunning] = useState(false);
+const [prog,setProg] = useState({done:0,total:0,percent:0,now:''});
+const [rowBusy,setRowBusy] = useState<Record<string,boolean>>({});
+const CONC=3;
+
+async function planBlogTasks(selected: Pair[]){
+  const r = await http('/api/rank/plan'); // 서버가 pairs 기반으로 반환
+  if(r.ok) return r.json();
+  // 실패시 Fallback: 선택 행 자체로
+  return { total: selected.length, tasks: selected.map(p=>({pair_id:p.id,keyword:p.keywordText,nickname:p.nickname})) };
+}
+
+async function runAllChecks(){
+  const selected = getSelectedPairs();
+  setIsRunning(true); setProg({done:0,total:0,percent:0,now:'준비중…'});
+
+  const plan = await planBlogTasks(selected);
+  if(!plan.total){ toast('체크할 대상 없음'); setIsRunning(false); return; }
+  setProg(p=>({...p,total:plan.total,now:'시작합니다'}));
+
+  let i=0, done=0, cancelled=false;
+  async function worker(){
+    while(!cancelled && i<plan.tasks.length){
+      const t = plan.tasks[i++]; setRowBusy(s=>({...s,[t.pair_id]:true}));
+      setProg(p=>({...p,now:`${t.keyword} · ${t.nickname}`}));
+      try { await api.rank.blogCheck({ pair_ids:[t.pair_id] }); }
+      catch(e){ addFail(t,e); }
+      finally{
+        setRowBusy(s=>({...s,[t.pair_id]:false}));
+        done++; setProg({done,total:plan.total,percent:Math.round(done*100/plan.total),now:t.nickname});
+      }
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(CONC,plan.total)}).map(()=>worker()));
+  toast(`완료: ${done}/${plan.total}`); setIsRunning(false);
+}
+
+
+버튼 라벨: isRunning ? \체크 중… (${prog.done}/${prog.total})` : '전체 체크 시작'`
+
+얇은 진행바 width: ${prog.percent}%
+
+“지금: ${prog.now}”
+
+행 아이콘: rowBusy[pair.id] && <Spinner/>
+
+쇼핑 호출은 절대 하지 않음(서버도 501로 막음)
+
+B-2) 키워드 메타 단일 경로 사용 (새 훅/직접 fetch 금지)
+
+client/src/lib/api.ts:
+
+export async function lookupKeywordMeta(texts:string[]){
+  const q = encodeURIComponent(texts.join(','));
+  const r = await http(`/api/keywords/lookup?texts=${q}`);
+  if(!r.ok) throw new Error(`kw lookup ${r.status}`);
+  return r.json();
+}
+
+
+전역 grep으로 /keywords/lookup/ 패턴, volume:0 하드코드, 로컬 fetch 사용을 전부 위 함수로 교체.
+
+B-3) URL 편집(톱니바퀴) 추가
+
+행 우측 톱니 아이콘 → 모달 <EditPairDialog>
+
+필드: blogUrl(필수), title(선택), nickname(자동/수정가능), brand(선택), group(선택), active 토글
+
+blogUrl onBlur → GET /api/metadata?url=...로 canonical+title 자동채움
+
+저장: PATCH /api/pairs/:id (서버에서 canonical+닉네임 재검증)
+
+성공 시 낙관적 업데이트로 행 즉시 반영
+
+더보기 메뉴에 삭제(삭제/비활성) 추가
+
+서버에 없다면 간단 PATCH 라우트:
+
+app.patch('/api/pairs/:id', zod(editSchema), async (req,res)=>{
+  const owner = req.headers['x-owner']||'admin';
+  const id = String(req.params.id);
+  const { blogUrl, title, nickname, brand, group, active } = req.body;
+  const { canonicalUrl, nickname:autoNick } = await canonicalize(blogUrl || '');
+  const data = { title: nullIfEmpty(title), nickname: nickname||autoNick, brand, group, active };
+  if (blogUrl) data.blogUrl = canonicalUrl;
+  const saved = await db.pairs.update({ where:{id,owner}, data });
+  res.json(saved);
+});
+
+C. 스모크(이 3가지만 확인)
+
+메타 401 종결
+
+로그에 GET /api/keywords/lookup/<text> 307 대신
+GET /api/keywords/lookup/<text> 200 또는 GET /api/keywords/lookup?texts=... 200
+
+plan > 0
+
+GET /api/rank/plan → {"total":N>0,"tasks":[...]}
+
+버튼 누르면 (a/N)% 진행/현재작업/행별스피너가 표시
+
+URL 편집 가능
+
+톱니 → URL 바꿔 저장 → 목록 즉시 갱신
+
+왜 지금 “안됨”처럼 보였나?
+
+메타는 리다이렉트 401 때문에 뱃지가 비고,
+
+plan은 blog_targets vs pairs 불일치로 0건이 되어 러너가 할 일이 없고,
+
+진행 표시가 없어 “아무 일도 안 한 것처럼” 보였던 거야.
+
+위 v7.16만 박으면 눈에 보이는 실행 + 편집 가능 상태로 바로 올라옵니다.
+적용 후 로그 3줄(lookup 200, plan total>0, blogCheck 호출)만 캡쳐해줘—그 다음에 서치피드 경계/유지기간 배지까지 마무리하자.

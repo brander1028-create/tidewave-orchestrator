@@ -10,8 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { DataTable } from "@/components/ui/data-table";
 import { Sparkline } from "@/components/ui/sparkline";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage, FormDescription } from "@/components/ui/form";
 import { RankTrendChart } from "@/components/charts/rank-trend-chart";
 import { 
   KeywordChip, 
@@ -34,7 +34,8 @@ import {
   X,
   Eye,
   RefreshCw,
-  Bell
+  Bell,
+  Edit3
 } from "lucide-react";
 import { ColumnDef } from "@tanstack/react-table";
 import { targetsApi, scrapingApi, rankApi, blogKeywordPairsApi } from "@/lib/api";
@@ -68,7 +69,19 @@ const addBlogKeywordPairSchema = z.object({
   active: z.boolean().default(true),
 });
 
+// v7.16: 편집 폼 스키마
+const editBlogKeywordPairSchema = z.object({
+  keywordText: z.string().min(1, "키워드를 입력해주세요"),
+  blogUrl: z.string().url("올바른 블로그 URL을 입력해주세요"),
+  title: z.string().optional(),
+  nickname: z.string().optional(),
+  brand: z.string().optional(),
+  groupName: z.string().optional(),
+  active: z.boolean().default(true),
+});
+
 type AddBlogKeywordPairForm = z.infer<typeof addBlogKeywordPairSchema>;
+type EditBlogKeywordPairForm = z.infer<typeof editBlogKeywordPairSchema>;
 
 export default function Rank() {
   const [selectedTab, setSelectedTab] = React.useState("blog");
@@ -81,6 +94,10 @@ export default function Rank() {
   const [rowLoading, setRowLoading] = React.useState<Record<string,boolean>>({});
   const CONCURRENCY = 3;
   const queryClient = useQueryClient();
+  
+  // v7.16: 편집 기능 상태들
+  const [editingPair, setEditingPair] = React.useState<BlogKeywordTarget | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = React.useState(false);
   
   // v7.13.1: Fetch blog-keyword pairs from API with proper auth
   const { data: blogKeywordPairs = [], isLoading: pairsLoading } = useQuery<BlogKeywordTarget[]>({
@@ -106,6 +123,20 @@ export default function Rank() {
       title: "",
       brand: "",
       group: "",
+      active: true,
+    },
+  });
+  
+  // v7.16: 편집 폼
+  const editForm = useForm<EditBlogKeywordPairForm>({
+    resolver: zodResolver(editBlogKeywordPairSchema),
+    defaultValues: {
+      keywordText: "",
+      blogUrl: "",
+      title: "",
+      nickname: "",
+      brand: "",
+      groupName: "",
       active: true,
     },
   });
@@ -221,6 +252,125 @@ export default function Rank() {
       });
     },
   });
+
+  // v7.16: 편집 pair mutation (강화된 캐시 관리)
+  const editPairMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: EditBlogKeywordPairForm }) => {
+      console.log('편집 요청 시작:', { id, data });
+      const response = await fetch(`/api/pairs/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-role': 'admin',
+        },
+        body: JSON.stringify(data),
+      });
+      console.log('편집 응답:', response.status, response.ok);
+      if (!response.ok) throw new Error('편집 실패');
+      const result = await response.json();
+      console.log('편집 결과:', result);
+      return result;
+    },
+    onMutate: async ({ id, data }) => {
+      // 낙관적 업데이트: UI를 즉시 업데이트
+      console.log('낙관적 업데이트 시작');
+      await queryClient.cancelQueries({ queryKey: ['/api/pairs'] });
+      
+      const previousPairs = queryClient.getQueryData(['/api/pairs']);
+      
+      queryClient.setQueryData(['/api/pairs'], (old: any[]) => {
+        if (!old) return old;
+        return old.map((pair: any) => 
+          pair.id === id ? { ...pair, ...data } : pair
+        );
+      });
+      
+      return { previousPairs };
+    },
+    onSuccess: async (updatedPair, { id, data }) => {
+      console.log('편집 성공, 캐시 새로고침 시작');
+      
+      // 모든 관련 쿼리 무효화
+      await queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
+      await queryClient.invalidateQueries({ queryKey: ['/api/rank'] });
+      
+      // 강제 리페치
+      await queryClient.refetchQueries({ queryKey: ['/api/pairs'] });
+      
+      toast({
+        title: "편집 완료",
+        description: "블로그-키워드 페어가 성공적으로 수정되었습니다.",
+      });
+      
+      // 모든 모달 닫기
+      setIsEditModalOpen(false);
+      setEditingPair(null);
+      setSelectedRankingDetail(null);
+      
+      console.log('편집 완료, UI 상태 초기화');
+    },
+    onError: (error, variables, context) => {
+      console.error('편집 실패:', error);
+      
+      // 낙관적 업데이트 롤백
+      if (context?.previousPairs) {
+        queryClient.setQueryData(['/api/pairs'], context.previousPairs);
+      }
+      
+      toast({
+        title: "편집 실패",
+        description: "페어 수정 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+    onSettled: () => {
+      // 항상 최종적으로 쿼리 무효화
+      queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
+    },
+  });
+
+  // v7.16: 편집 시작 함수
+  const handleEditPair = (rankingData: RankingData) => {
+    const pair = blogKeywordPairs.find(p => p.id === rankingData.id);
+    if (pair) {
+      setEditingPair(pair);
+      editForm.reset({
+        keywordText: pair.keywordText,
+        blogUrl: pair.blogUrl,
+        title: pair.title || "",
+        nickname: pair.nickname || "",
+        brand: pair.brand || "",
+        groupName: pair.groupName || "",
+        active: pair.active,
+      });
+      setIsEditModalOpen(true);
+    }
+  };
+
+  // v7.16: 메타데이터 자동 수집 함수
+  const handleMetadataCollection = async (url: string) => {
+    if (!url || !url.startsWith('http')) return;
+    
+    setMetadataLoading(true);
+    try {
+      const response = await fetch(`/api/metadata?url=${encodeURIComponent(url)}`, {
+        headers: { 'x-role': 'admin' }
+      });
+      if (response.ok) {
+        const metadata = await response.json();
+        if (metadata.title) {
+          editForm.setValue('title', metadata.title);
+        }
+        if (metadata.nickname) {
+          editForm.setValue('nickname', metadata.nickname);
+        }
+      }
+    } catch (error) {
+      console.error('메타데이터 수집 실패:', error);
+    } finally {
+      setMetadataLoading(false);
+    }
+  };
 
   // v7.13.2: Blog 작업 계획 조회 함수
   async function planBlogTasks(pairs: BlogKeywordTarget[]) {
@@ -785,9 +935,21 @@ export default function Rank() {
       <Dialog open={!!selectedRankingDetail} onOpenChange={() => setSelectedRankingDetail(null)}>
         <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>
-              순위 상세 분석 - {selectedRankingDetail?.keyword}
-            </DialogTitle>
+            <div className="flex items-center justify-between">
+              <DialogTitle>
+                순위 상세 분석 - {selectedRankingDetail?.keyword}
+              </DialogTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-2"
+                onClick={() => selectedRankingDetail && handleEditPair(selectedRankingDetail)}
+                data-testid="button-edit-pair"
+              >
+                <Edit3 className="w-4 h-4" />
+                편집
+              </Button>
+            </div>
           </DialogHeader>
           
           {selectedRankingDetail && (
@@ -1083,6 +1245,190 @@ export default function Rank() {
                   data-testid="button-submit-target"
                 >
                   {addPairMutation.isPending ? "추가 중..." : "추가"}
+                </Button>
+              </div>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
+      {/* v7.16: 편집 모달 */}
+      <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>블로그-키워드 페어 편집</DialogTitle>
+            <DialogDescription>
+              페어 정보를 수정할 수 있습니다.
+            </DialogDescription>
+          </DialogHeader>
+          <Form {...editForm}>
+            <form onSubmit={editForm.handleSubmit((data) => {
+              if (editingPair) {
+                editPairMutation.mutate({ id: editingPair.id, data });
+              }
+            })} className="space-y-4">
+              <FormField
+                control={editForm.control}
+                name="keywordText"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>키워드 *</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="검색할 키워드를 입력하세요" 
+                        {...field}
+                        data-testid="input-edit-keyword"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={editForm.control}
+                name="blogUrl"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>블로그 URL *</FormLabel>
+                    <FormControl>
+                      <div className="flex gap-2">
+                        <Input 
+                          placeholder="https://blog.naver.com/example" 
+                          {...field}
+                          onBlur={() => handleMetadataCollection(field.value)}
+                          data-testid="input-edit-blog-url"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => handleMetadataCollection(field.value)}
+                          disabled={metadataLoading}
+                          data-testid="button-edit-metadata"
+                        >
+                          {metadataLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : "메타데이터"}
+                        </Button>
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={editForm.control}
+                name="title"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>제목 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="블로그 제목이 자동으로 입력됩니다" 
+                        {...field}
+                        data-testid="input-edit-title"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={editForm.control}
+                name="nickname"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>별명 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="별명을 입력하세요" 
+                        {...field}
+                        data-testid="input-edit-nickname"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={editForm.control}
+                name="brand"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>브랜드 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="브랜드명을 입력하세요 (예: 네이버, 카카오)" 
+                        {...field}
+                        data-testid="input-edit-brand"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <FormField
+                control={editForm.control}
+                name="groupName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>그룹 (선택)</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="그룹명을 입력하세요 (예: 브랜딩)" 
+                        {...field}
+                        data-testid="input-edit-group"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={editForm.control}
+                name="active"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-base">활성 상태</FormLabel>
+                      <FormDescription>
+                        이 페어를 순위 체크에 포함할지 선택하세요
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        data-testid="switch-edit-active"
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              
+              <div className="flex gap-2 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setIsEditModalOpen(false);
+                    setEditingPair(null);
+                  }}
+                  className="flex-1"
+                  data-testid="button-cancel-edit"
+                >
+                  취소
+                </Button>
+                <Button 
+                  type="submit" 
+                  className="flex-1"
+                  disabled={editPairMutation.isPending}
+                  data-testid="button-submit-edit"
+                >
+                  {editPairMutation.isPending ? "수정 중..." : "수정"}
                 </Button>
               </div>
             </form>
