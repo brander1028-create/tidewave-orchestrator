@@ -7,6 +7,9 @@ import { upsertMany } from '../store/keywords';
 import { compIdxToScore, calculateOverallScore } from './scoring-config.js';
 import { sql, inArray, gt, gte } from 'drizzle-orm';
 
+// 🔒 비상 차단: 모든 외부 API 호출 차단
+const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true' || true; // 임시 강제
+
 /**
  * v10 A번: DB→API→업서트→동일 응답 재스코어 파이프라인 구현
  * 1) KEYWORD_DB 조회(TTL 30d) → hit면 사용
@@ -17,6 +20,20 @@ export async function getVolumesWithHealth(
   db: NodePgDatabase<any>, 
   keywords: string[]
 ): Promise<SearchAdResult> {
+  if (DET_ONLY) {                      // 🔒 강제 DB-only
+    console.log(`🎯 [DETERMINISTIC MODE] DB-only mode forced for ${keywords.length} keywords`);
+    const rows = await db.select().from(managedKeywords).where(inArray(managedKeywords.text, keywords));
+    const volumes: Record<string, any> = {};
+    rows.forEach(row => {
+      volumes[row.text] = {
+        total: row.raw_volume || 0,
+        compIdx: row.comp_idx || '낮음',
+        plAvgDepth: row.ad_depth || 0,
+        avePcCpc: row.est_cpc_krw || 0
+      };
+    });
+    return { volumes, http:{} };
+  }
   try {
     console.log(`🔍 [v10 A번] DB→API→업서트 파이프라인 시작: ${keywords.length}개 키워드`);
     

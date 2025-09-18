@@ -2,6 +2,9 @@
 import { getVolumes } from "./searchad";       // 실제 SearchAds 함수 import
 import { nrm } from "../utils/normalization";  // 정규화 함수
 
+// 🔒 비상 차단: 모든 SearchAds 호출 차단
+const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true' || true; // 임시 강제
+
 // 1-1) 키워드 클린업 (허용 문자만)
 function cleanKeyword(k: string) {
   // 허용 문자만(한글/영문/숫자/공백). 나머지는 제거.
@@ -30,6 +33,7 @@ export async function robustBulkVolumes(
   keywords: string[],
   opts?: { logPrefix?: string; minimalVariant?: boolean }
 ) {
+  if (DET_ONLY) return { rows:[], http:{}, stats:{blocked:'deterministic'} }; // 🔒 모든 SearchAds 호출 차단
   let i = 0, batch = Math.min(8, Math.max(1, keywords.length));
   const volumes: Record<string, any> = {};
   let minimal = !!opts?.minimalVariant;

@@ -24,9 +24,10 @@ import multer from 'multer';
 
 // ✅ 파이프라인 고정: v17-deterministic만 사용
 const DETERMINISTIC_ONLY = true;
+const PIPELINE_MODE: 'v17-deterministic'|'legacy' = 'v17-deterministic';
 
 // ✅ Health-Probe에서 SearchAds 차단
-const HEALTH_PROBE_SEARCHADS = false;
+const HEALTH_PROBE_SEARCHADS = (process.env.HEALTH_PROBE_SEARCHADS || 'false') === 'true';
 
 // ✅ SearchAds 호출 예산 하드캡
 const JOB_BUDGET = 10;
@@ -245,15 +246,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         keywords, minRank, maxRank, postsPerBlog, titleExtract, enableLKMode, preferCompound, targetCategory
       }, null, 2));
       
-      // === v17 설정 로드 (핫리로드) + 안전 폴백 ===
-      const { getAlgoConfig } = await import("./services/algo-config");
-      const cfg = await getAlgoConfig();
-      const override = (req.query.pipeline ?? "").toString();
-      const forceLegacy = override === "legacy";
-      // ✅ DETERMINISTIC_ONLY: 무조건 v17-deterministic 사용
-      const useV17 = DETERMINISTIC_ONLY || override === 'v17';
-      console.log(`🔧 [DEBUG] DETERMINISTIC_ONLY=${DETERMINISTIC_ONLY}, override="${override}", forceLegacy=${forceLegacy}, useV17=${useV17}`);
-      console.log(`🔧 pipeline= v17-DETERMINISTIC | DETERMINISTIC_ONLY=${DETERMINISTIC_ONLY} | override=${override}`);
+      // === 라우팅 하나로 고정: v17-deterministic만 사용 ===
+      console.log(`🎯 [FIXED PIPELINE] mode=${PIPELINE_MODE} | DETERMINISTIC_ONLY=${DETERMINISTIC_ONLY}`);
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
       }
@@ -282,87 +276,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         progress: 0
       });
 
-      // === v17-deterministic 파이프라인만 실행 ===
-      console.log(`🔍 [DEBUG] Checking DETERMINISTIC_ONLY condition: ${DETERMINISTIC_ONLY}`);
-      if (DETERMINISTIC_ONLY) {
-        console.log(`🎯 [DETERMINISTIC MODE] Starting v17-deterministic pipeline only`);
-        const { processSerpAnalysisJobWithV17Assembly } = await import("./services/v17-pipeline");
-        
-        // v17 assembly를 사용한 안정적 처리
-        const v17Promise = processSerpAnalysisJobWithV17Assembly(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
-          enableLKMode,
-          preferCompound,
-          targetCategory,
-          v17Mode: true,
-          useV17Assembly: true
-        });
-        
-        // 결과 반환
-        v17Promise.then(() => {
-          console.log('✅ [v17-DETERMINISTIC] pipeline finished successfully');
-        }).catch(error => {
-          console.error('❌ [v17-DETERMINISTIC] pipeline failed:', error);
-        });
-        
-        res.json({ 
-          jobId: job.id,
-          message: "SERP analysis started successfully (v17-deterministic mode)"
-        });
-        return;
-      } else if (useV17) {
-        try {
-          // 0) (선택) 키워드 레벨 사전 확장: DB→API→upsert→메모리 merge
-          if (cfg.features.preEnrich) {
-            console.log(`🚀 [PRE-ENRICH] Starting volume enrichment for ${keywords.length} keywords`);
-            const kws = keywords.map(k => k.trim()).filter(Boolean);
-            await getVolumesWithHealth(db, kws);
-            console.log(`✅ [PRE-ENRICH] Volume data enriched for keywords: ${kws.join(', ')}`);
-          }
-          // ★ v17 진짜 빠른 경로: 결과 조립 후 DB 저장  
-          console.log(`🚀 [v17] Starting REAL fast-path pipeline...`);
-          
-          // ★ v17 assembly를 사용한 robust 비동기 처리 (catch + fallback)
-          const { processSerpAnalysisJobWithV17Assembly } = await import("./services/v17-pipeline");
-          const v17Promise = processSerpAnalysisJobWithV17Assembly(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
-            enableLKMode,
-            preferCompound,
-            targetCategory,
-            v17Mode: true,
-            useV17Assembly: true
-          });
-          
-          // ★ Robust error handling with fallback
-          v17Promise.then(() => {
-            console.log('✅ [v17] fast-path finished successfully');
-          }).catch(error => {
-            console.error('[SAFE-FALLBACK] v17 failed → legacy', error);
-            // Fallback to legacy processing
-            processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
-              enableLKMode,
-              preferCompound,
-              targetCategory
-            });
-          });
-        } catch (e) {
-          console.error("[SAFE-FALLBACK] v17 failed → legacy", e);
-          processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
-            enableLKMode,
-            preferCompound,
-            targetCategory
-          });
-        }
-      } else {
-        // v16 레거시 파이프라인
-        processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
-          enableLKMode,
-          preferCompound,
-          targetCategory
-        });
-      }
+      // === 고정된 파이프라인: v17-deterministic만 실행 ===
+      processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+        mode: PIPELINE_MODE, // 👈
+        enableLKMode,
+        preferCompound,
+        targetCategory,
+        deterministic: true,
+        v17Mode: true
+      });
 
       res.json({ 
         jobId: job.id,
-        message: "SERP analysis started successfully"
+        message: `SERP analysis started successfully (${PIPELINE_MODE})`
       });
 
     } catch (error) {
@@ -1520,7 +1446,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // ✅ SearchAds 차단이 활성화된 경우 probe 방지
       let healthData;
-      if (!HEALTH_PROBE_SEARCHADS && force) {
+      if (!HEALTH_PROBE_SEARCHADS) {
         console.log(`🚫 [Health-Probe] SearchAds probing disabled by HEALTH_PROBE_SEARCHADS=false`);
         // SearchAds 체크 없이 최소한의 헬스체크만 수행
         const { checkOpenAPI, checkKeywordsDB } = await import('./services/health');
@@ -1683,10 +1609,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Start analysis in background (reuse existing function) with LK Mode options
+      console.log(`🎯 [FIXED PIPELINE] Starting ${PIPELINE_MODE} for job ${job.id}`);
       processSerpAnalysisJob(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+        mode: PIPELINE_MODE, // 👈 v17-deterministic 고정
         enableLKMode,
         preferCompound,
-        targetCategory
+        targetCategory,
+        deterministic: true,
+        v17Mode: true
       });
 
       // 시작 성공 → 정상 기록
@@ -2984,6 +2914,7 @@ export async function processSerpAnalysisJob(
     targetCategory?: string;
     deterministic?: boolean;
     v17Mode?: boolean;
+    mode?: 'v17-deterministic'|'legacy';
   } = {}
 ) {
   try {
@@ -2996,13 +2927,17 @@ export async function processSerpAnalysisJob(
     const job = await storage.getSerpJob(jobId);
     if (!job) return;
 
-    // Extract LK Mode options and deterministic flag
-    const { enableLKMode = false, preferCompound = true, targetCategory, deterministic = false, v17Mode = false } = lkOptions;
+    // Extract LK Mode options and mode
+    const { enableLKMode = false, preferCompound = true, targetCategory, deterministic = false, v17Mode = false, mode } = lkOptions;
     
-    // ✅ DETERMINISTIC MODE: Force v17-only execution when deterministic=true
-    if (deterministic || DETERMINISTIC_ONLY) {
-      console.log(`🎯 [DETERMINISTIC ENFORCED] deterministic=${deterministic}, DETERMINISTIC_ONLY=${DETERMINISTIC_ONLY}, forcing v17-only pipeline`);
+    // ✅ MODE ENFORCED: Only execute if mode is v17-deterministic
+    if (mode !== 'v17-deterministic') {
+      console.log(`🚫 [MODE GUARD] Skipping execution - mode=${mode}, only v17-deterministic allowed`);
+      return;
     }
+    
+    console.log(`🎯 [v17-DETERMINISTIC] Starting pipeline for job ${jobId}`);
+    console.log(`🎯 [DETERMINISTIC ENFORCED] deterministic=${deterministic || DETERMINISTIC_ONLY}, forcing v17-only pipeline`);
 
     await storage.updateSerpJob(jobId, {
       status: "running",

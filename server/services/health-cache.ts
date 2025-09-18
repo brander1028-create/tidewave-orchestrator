@@ -2,6 +2,9 @@ import { checkOpenAPI, checkSearchAds, checkKeywordsDB } from './health';
 import { metaGet, metaSet } from '../store/meta';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
+// 🚫 SearchAds 헬스체크 차단 플래그
+const ENABLE_SEARCHADS_PROBE = (process.env.HEALTH_PROBE_SEARCHADS || 'false') === 'true';
+
 type HealthData = {
   openapi: Awaited<ReturnType<typeof checkOpenAPI>>;
   searchads: Awaited<ReturnType<typeof checkSearchAds>>;
@@ -40,7 +43,7 @@ export async function markHealthFail(db: NodePgDatabase<any>, reason?: string) {
 export async function probeHealth(db: NodePgDatabase<any>): Promise<HealthData> {
   console.log('🏥 Running forced health probe...');
   const [openapi, searchads, keywordsdb] = await Promise.all([
-    checkOpenAPI(), checkSearchAds(), checkKeywordsDB()
+    checkOpenAPI(), checkSearchAds(ENABLE_SEARCHADS_PROBE), checkKeywordsDB()
   ]);
   const h: HealthData = { 
     openapi, 

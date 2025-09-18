@@ -35,7 +35,16 @@ export async function checkOpenAPI(): Promise<HealthOpen> {
 /**
  * Check SearchAds API health with small sample
  */
-export async function checkSearchAds(): Promise<HealthSearchAds> {
+export async function checkSearchAds(enableSearchAds: boolean = true): Promise<HealthSearchAds> {
+  if (!enableSearchAds) {
+    console.log('🚫 [Health-Probe] SearchAds probing disabled - returning fallback mode');
+    return { 
+      mode: 'fallback', 
+      stats: { requested: 0, ok: 0, http: {} }, 
+      reason: 'SearchAds probing disabled by configuration' 
+    };
+  }
+  
   console.log('🏥 Health check: Testing SearchAds API with sample keywords...');
   
   // Small sample keywords for health check
@@ -93,9 +102,12 @@ export async function checkKeywordsDB(): Promise<HealthKeywordsDB> {
 export async function checkAllServices() {
   console.log('🏥 Running comprehensive health check...');
   
+  // 🚫 비상 차단: DETERMINISTIC_ONLY 모드에서는 SearchAds 호출 금지
+  const enableSearchAds = process.env.DETERMINISTIC_ONLY !== 'true';
+  
   const [openapi, searchads, keywordsdb] = await Promise.all([
     checkOpenAPI(),
-    checkSearchAds(),
+    checkSearchAds(enableSearchAds),
     checkKeywordsDB()
   ]);
   
@@ -114,8 +126,11 @@ export async function getHealthWithPrompt(db: NodePgDatabase<any>) {
   const now = Date.now();
 
   // Get health status for all services
+  // 🚫 비상 차단: DETERMINISTIC_ONLY 모드에서는 SearchAds 호출 금지
+  const enableSearchAds = process.env.DETERMINISTIC_ONLY !== 'true';
+  
   const openapi = await checkOpenAPI();
-  const searchads = await checkSearchAds();
+  const searchads = await checkSearchAds(enableSearchAds);
   const keywordsdb = await checkKeywordsDB();
 
   // Check if all required keys are present

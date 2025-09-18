@@ -137,6 +137,24 @@ async function fetchBatch(
 }
 
 export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult> {
+  // 🚫 Defense-in-depth: DETERMINISTIC_ONLY 모드에서는 즉시 fallback 반환
+  if (process.env.DETERMINISTIC_ONLY === 'true') {
+    console.log(`🚫 [Defense-in-depth] SearchAds API blocked by DETERMINISTIC_ONLY for ${rawKeywords.length} keywords`);
+    const fallbackVolumes: Record<string, Vol> = {};
+    rawKeywords.forEach(k => {
+      const keyword = k.trim();
+      if (keyword) {
+        fallbackVolumes[keyword] = { pc: 0, mobile: 0, total: 0 };
+      }
+    });
+    return { 
+      volumes: fallbackVolumes, 
+      mode: 'fallback',
+      stats: { requested: 0, ok: 0, fail: 0, http: {} },
+      reason: 'SearchAds API blocked by DETERMINISTIC_ONLY mode'
+    };
+  }
+
   let API_KEY = process.env.SEARCHAD_API_KEY!;
   const SECRET = process.env.SEARCHAD_SECRET_KEY!;
   const CUSTOMER = process.env.SEARCHAD_CUSTOMER_ID!;
