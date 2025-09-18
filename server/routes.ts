@@ -618,8 +618,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json(v17Results);
       }
       
-      console.log(`🔧 [Legacy Assembly] No v17 data found for job ${req.params.jobId}, using legacy assembly`);
+      console.log(`🔧 [Results API] No v17 data found for job ${req.params.jobId}, returning empty results (readOnly mode)`);
+      
+      // ★ readOnly 모드: v17 데이터가 없으면 외부 API 호출 없이 빈 결과 반환
+      // Legacy assembly 경로의 SearchAds 호출을 완전히 우회하여 vFinal 오류 방지
+      return res.json({
+        jobId: req.params.jobId,
+        status: "completed",
+        inputKeywords: Array.isArray(job.keywords) ? job.keywords : [job.keywords].filter(Boolean),
+        summaryByKeyword: [],
+        testMode: false,
+        message: "No analysis data available - please re-run analysis with updated pipeline"
+      });
 
+      /* ★ Legacy Assembly 코드 주석 처리 (vFinal 오류 방지)
       // Get job parameters (P = postsPerBlog, T = tiersPerPost)
       const P = job.postsPerBlog || 10;
       const T = 4; // Default tier count as per requirements
@@ -649,27 +661,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const keyword of inputKeywords) {
         searchVolumes[keyword] = keywordVolumeMap[keyword] ?? null;
         
-        // If volume is missing, try API fallback and upsert immediately
+        // ★ 결과 조회 시 SearchAds API 폴백 제거 (안정성 확보)
+        // API 폴백은 분석 시에만 실행하고, 결과 조회 시에는 기존 데이터만 사용
         if (searchVolumes[keyword] === null) {
-          try {
-            console.log(`🔄 API fallback for missing volume: ${keyword}`);
-            const result = await upsertKeywordsFromSearchAds(keyword, 1);
-            if (result.count > 0) {
-              // Re-fetch the volume from DB after upsert
-              const volumeMap = await getKeywordVolumeMap([keyword]);
-              const apiVolume = volumeMap[keyword];
-              if (apiVolume !== null && apiVolume !== undefined) {
-                searchVolumes[keyword] = apiVolume;
-                console.log(`✅ API fallback success: ${keyword} → ${apiVolume}`);
-              } else {
-                console.log(`⚠️ API fallback upserted but volume still null: ${keyword}`);
-              }
-            } else {
-              console.log(`⚠️ API fallback returned no data for: ${keyword}`);
-            }
-          } catch (e) {
-            console.log(`❌ API fallback failed for keyword: ${keyword}`, e);
-          }
+          console.log(`⚠️ Volume missing for "${keyword}" - using null (no API fallback during results fetch)`);
         }
       }
 
@@ -881,6 +876,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`📊 v8 SERP Results (Job ${job.id}):`, JSON.stringify(response, null, 2));
       res.json(response);
+      */
+      
+      // ★ Legacy Assembly 블록 주석 처리 완료 - vFinal 오류 방지
 
     } catch (error) {
       console.error('Error fetching v8 SERP results:', error);

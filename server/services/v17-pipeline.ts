@@ -12,8 +12,24 @@ import { autoEnrichFromTitle } from './auto-keyword-enrichment';
 // Import Phase2 types only (engines replaced with deterministic logic)
 import { Candidate, Tier } from '../phase2/types';
 
-// Import deterministic title token extraction from vFinal
-import { extractTitleTokens } from './vfinal-pipeline';
+// ★ 자체 구현: vFinal 의존성 제거
+function extractTitleTokens(title: string, cfg: any): string[] {
+  const maxTitleTokens = cfg.phase2?.maxTitleTokens || 6;
+  const banSingles = new Set(cfg.phase2?.banSingles || ["정리","방법","추천","후기","여자","바르","및","과","와","의","이제","중인데","때인가"]);
+  
+  // 조사 패턴
+  const tails = /(은|는|이|가|을|를|에|에서|으로|로|과|와|의|및|도|만|까지|부터)$/;
+  
+  return title.replace(/[^가-힣a-zA-Z0-9\s]/g, ' ')  // 한글/영문/숫자/공백만 유지
+    .split(/\s+/)
+    .map(w => w.replace(tails, ''))  // 조사 제거
+    .filter(w => 
+      w.length >= 2 && 
+      !banSingles.has(w) && 
+      !/^\d+$/.test(w)     // 순수 숫자 제외
+    )
+    .slice(0, maxTitleTokens);  // 상한 적용
+}
 
 /**
  * Decide whether to activate canary configuration based on ratio and keywords
@@ -349,14 +365,41 @@ export async function processPostTitleV17(
     const T1 = singleCandidates[0];
     console.log(`🎯 [T1 Final] "${T1.text}" (volume: ${T1.volume || 0})`);
     
-    // ★ T2/T3/T4 빅그램 생성
-    const allTokens = rankedCandidates.map(c => c.text);
-    const bestSecondary = pickBestSecondary(allTokens, rankedCandidates, T1.text);
-    const t2Text = makeBigram(T1.text, bestSecondary);
+    // ★ T2/T3/T4 빅그램 생성 (Architect 요구사항: 실제 pairwise 조합)
+    const titleTokens = extractTitleTokens(title, cfg); // 제목에서 직접 토큰 추출
+    console.log(`🔧 [Bigram Generation] Title tokens: ${titleTokens.join(', ')}`);
     
-    const topTokens = allTokens.filter(t => t !== T1.text && t !== bestSecondary).slice(0, 2);
-    const t3Text = topTokens[0] ? makeBigram(T1.text, topTokens[0]) : null;
-    const t4Text = topTokens[1] ? makeBigram(T1.text, topTokens[1]) : null;
+    // pairwise 빅그램 생성 (Architect 권장: bigrams = pairwise(toks))
+    const bigrams: string[] = [];
+    for (let i = 0; i < titleTokens.length; i++) {
+      for (let j = i + 1; j < titleTokens.length; j++) {
+        const bigram = `${titleTokens[i]} ${titleTokens[j]}`;
+        if (!bigrams.includes(bigram)) {
+          bigrams.push(bigram);
+        }
+      }
+    }
+    console.log(`🔧 [Bigram Generation] Generated ${bigrams.length} bigrams: ${bigrams.slice(0, 3).join(', ')}...`);
+    
+    // T1이 포함된 빅그램만 필터링 (T1 + 다른 토큰 조합)
+    const t1Bigrams = bigrams.filter(bg => bg.includes(T1.text));
+    console.log(`🎯 [T1 Bigrams] Filtered ${t1Bigrams.length} bigrams containing T1: ${t1Bigrams.slice(0, 3).join(', ')}...`);
+    
+    // 우선순위: 맛집 > 로컬 > 알파벳 순
+    const prioritizeBigram = (bg: string): number => {
+      if (bg.includes('맛집')) return 3;
+      if (hasLocal(bg.split(' '))) return 2;
+      return 1;
+    };
+    
+    const sortedT1Bigrams = t1Bigrams.sort((a, b) => {
+      const priorityDiff = prioritizeBigram(b) - prioritizeBigram(a);
+      return priorityDiff !== 0 ? priorityDiff : a.localeCompare(b);
+    });
+    
+    const t2Text = sortedT1Bigrams[0] || null;
+    const t3Text = sortedT1Bigrams[1] || null;
+    const t4Text = sortedT1Bigrams[2] || null;
     
     console.log(`🎯 [T2 Final] "${t2Text}"`);
     console.log(`🎯 [T3 Final] "${t3Text || 'none'}"`);
