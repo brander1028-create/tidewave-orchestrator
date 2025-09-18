@@ -23,11 +23,11 @@ import type { HealthResponse } from './types';
 import multer from 'multer';
 
 // ✅ 파이프라인 고정: v17-deterministic만 사용
-const DETERMINISTIC_ONLY = true;
+const DETERMINISTIC_ONLY = false;
 const PIPELINE_MODE: 'v17-deterministic'|'legacy' = 'v17-deterministic';
 
-// ✅ Health-Probe에서 SearchAds 차단
-const HEALTH_PROBE_SEARCHADS = (process.env.HEALTH_PROBE_SEARCHADS || 'false') === 'true';
+// ✅ Health-Probe에서 SearchAds 활성화
+const HEALTH_PROBE_SEARCHADS = (process.env.HEALTH_PROBE_SEARCHADS || 'true') === 'true';
 
 // ✅ SearchAds 호출 예산 하드캡
 const JOB_BUDGET = 10;
@@ -2930,9 +2930,12 @@ export async function processSerpAnalysisJob(
     // Extract LK Mode options and mode
     const { enableLKMode = false, preferCompound = true, targetCategory, deterministic = false, v17Mode = false, mode } = lkOptions;
     
-    // ✅ MODE ENFORCED: Only execute if mode is v17-deterministic
-    if (mode !== 'v17-deterministic') {
-      console.log(`🚫 [MODE GUARD] Skipping execution - mode=${mode}, only v17-deterministic allowed`);
+    // ✅ MODE ENFORCED: Use v17-deterministic as default if not specified
+    const actualMode = mode || 'v17-deterministic';
+    console.log(`🎯 [MODE CHECK] Proceeding with mode=${actualMode}`);
+    
+    if (actualMode !== 'v17-deterministic') {
+      console.log(`🚫 [MODE GUARD] Skipping execution - mode=${actualMode}, only v17-deterministic allowed`);
       return;
     }
     

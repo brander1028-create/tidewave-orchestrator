@@ -8,7 +8,7 @@ import { compIdxToScore, calculateOverallScore } from './scoring-config.js';
 import { sql, inArray, gt, gte } from 'drizzle-orm';
 
 // 🔒 비상 차단: 모든 외부 API 호출 차단
-const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true' || true; // 임시 강제
+const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true';
 
 /**
  * v10 A번: DB→API→업서트→동일 응답 재스코어 파이프라인 구현

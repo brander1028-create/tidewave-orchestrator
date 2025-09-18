@@ -2,8 +2,8 @@
 import { getVolumes } from "./searchad";       // 실제 SearchAds 함수 import
 import { nrm } from "../utils/normalization";  // 정규화 함수
 
-// 🔒 비상 차단: 모든 SearchAds 호출 차단
-const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true' || true; // 임시 강제
+// 🔒 비상 차단: 모든 SearchAds 호출 차단  
+const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true';
 
 // 1-1) 키워드 클린업 (허용 문자만)
 function cleanKeyword(k: string) {
