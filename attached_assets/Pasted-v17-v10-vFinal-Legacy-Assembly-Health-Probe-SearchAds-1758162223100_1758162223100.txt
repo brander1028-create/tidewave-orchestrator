@@ -1,0 +1,169 @@
+v17-결정론 모드로 들어왔다가도, 다른 경로(v10 / vFinal / Legacy-Assembly / Health-Probe / 결과조회 보정)가 중간에 다시 SearchAds와 vFinal을 호출해서
+
+522/1476 키워드 대량 upsert
+
+400/413 반복
+
+결과 API 400
+으로 되돌아갑니다. 그래서 “고쳤다→또 터짐”이 끝없이 반복된 거예요.
+
+아래 8개만 확실히 막으면, 폭주/크래시/단일키워드 섞임이 즉시 멈춥니다.
+
+🔧 지금 당장 넣는 ‘비상 차단 2줄’
+
+외부 호출을 일괄 봉쇄해서 서버부터 안정화하세요.
+
+server/services/searchads-robust.ts (또는 SearchAds 호출 통로 파일)
+
+// 맨 위 전역 (가장 먼저 평가되도록)
+const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true' || true; // 임시 강제
+
+export async function robustBulkVolumes(keys: string[], opts:any){
+  if (DET_ONLY) return { rows:[], http:{}, stats:{blocked:'deterministic'} }; // 🔒 모든 SearchAds 호출 차단
+  // 기존 로직 ...
+}
+
+
+server/services/externals-health.ts
+
+export async function getVolumesWithHealth(db, keys:string[], opts:any = {}){
+  if (DET_ONLY) {                      // 🔒 강제 DB-only
+    const rows = await db.select(/* ... FROM managed_keywords WHERE text IN keys */);
+    return { volumes: toMap(rows), http:{}, stats:{mode:'db-only'} };
+  }
+  // 기존 로직 ...
+}
+
+
+이 2줄 차단만으로 vFinal/v10이 껴들어도 외부 호출이 전부 무력화되어 더이상 400/413/폭주가 발생하지 않습니다.
+(안정화부터 하고, 아래 영구 수정을 단계적으로 적용하세요)
+
+✅ 영구 수정 체크리스트(반드시 이 순서로)
+1) 라우팅을 “하나”로 고정
+
+server/routes.ts
+
+const PIPELINE_MODE:'v17-deterministic'|'legacy' = 'v17-deterministic';
+
+app.post('/api/serp/analyze', async (req,res)=>{
+  // ...parse...
+  return processSerpAnalysisJob({
+    mode: PIPELINE_MODE, // 👈
+    keywords, options, db
+  });
+});
+
+
+다른 분기/실험 플래그(v10, vFinal, Assembly) 전부 삭제.
+
+새 job 로그에 pipeline=v17-deterministic 만 보여야 함.
+
+2) processSerpAnalysisJob에서 모드 전달/강제
+
+server/services/serp-job.ts (또는 해당 함수 파일)
+
+ctx.mode를 모든 하위 함수에 전달.
+
+mode==='v17-deterministic'면 autoEnrich/vFinal 호출 금지(바로 v17 deterministic 빌더 호출).
+
+3) v17 결정론 빌더(실제 2어 조합만)
+
+server/services/v17-pipeline.ts
+
+토큰화: 조사/기능어 제거, 최대 6개, 중복 제거.
+
+금지(싱글 금지): 시/구/동 등 로컬 단독, 맛집/정리/방법/추천/후기/없이/및/의/에서/그리고/오늘의 등.
+
+T1 = 단일(최대볼륨), 금지어 제외.
+
+T2~T4 = 항상 2어 조합만.
+
+제목에 맛집 있으면: 로컬+맛집 > T1+맛집.
+
+로컬이 있으면: T1+로컬 1개 이상 강제.
+
+나머지 T1 + 상위토큰으로 채움 (공백/무공백 2변형만).
+
+조합 볼륨 0이면 버리고 다음 조합(싱글로 메꾸지 않음).
+
+점수: 0.7*log10(volume)*25 + 0.3*(adScore*100)
+로그에 T2~T4가 전부 2어로 찍혀야 합니다.
+
+4) 결과 조회 API는 READ-ONLY
+
+/api/serp/jobs/:id/results
+
+외부 API/갱신 호출 0.
+
+DB의 post_tier_checks, managed_keywords만 읽어서 응답.
+
+5) Health-Probe에서 SearchAds 금지
+
+헬스는 DB ping만.
+로그에 Health check: Testing SearchAds API 가 사라져야 정상.
+
+6) 타이틀 Top4는 DB-only 고정
+
+server/services/title-keyword-extractor.ts
+
+mode=db-only 하드코딩.
+
+api-refresh, force=true 제거.
+
+7) 모바일 랭킹 중단 문구 적용
+
+server/services/naver-api.ts
+
+검색결과 더보기, 서치피드에서 더 다양한 콘텐츠... 발견 즉시 크롤링 중지.
+
+8) Legacy / v10 / Test 라우트 제거
+
+v10 A번, Legacy Assembly, vFinal 테스트 엔드포인트 전부 주석 or return 가드.
+
+사용하지 않는 import(engineRegistry 등) 제거.
+
+왜 계속 무한 루프처럼 보였나?
+
+v17 → (중간) 결과조회/헬스/타이틀추출이 다른 경로에서 vFinal/v10/refresh를 재실행
+
+그 순간 다시 SearchAds로 가서 522/1476 upsert → 400/413 → 결과 400.
+
+그래서 “고쳤다→또 터짐”이 반복.
+
+최종 검증 포인트(로그)
+
+pipeline=v17-deterministic only
+
+TITLE_TOP ... (db-only) only
+
+Health check 에 SearchAds 호출 없음
+
+Upserting 5xx/1xxx keywords 없음
+
+🎯 [v17 Final Rules] ... T2~T4 모두 2어 조합
+
+blocked:'deterministic'(비상차단) 로그가 SearchAds 경로에 보이면 안전
+
+질문하신 규칙(맛집/로컬) 반영 상태
+
+맛집: 단일 금지, 반드시 2어에서만 사용. (예: 평택 맛집, 롯데월드몰 맛집)
+
+로컬(시/구/동): 단일 금지, T2에서 T1+로컬 우선 포함.
+
+예시(“평택 맛집 추천 기린아 미군부대 돈카츠”):
+
+T1: 돈카츠
+
+T2: 평택 맛집
+
+T3: 평택 돈카츠
+
+T4: 돈카츠 맛집 (또는 로컬·맛집 포함 상위 조합)
+
+결론
+
+**핵심은 “다른 경로가 다시 vFinal/v10/refresh를 부르는 걸 전부 끊는 것”**입니다.
+
+위 비상 차단 2줄을 먼저 넣고(즉시 안정화) → 체크리스트 1~8을 차근차근 적용하면 재발 없습니다.
+
+필요하시면 각 파일별 실제 diff 형태로 바로 적어드릴게요.

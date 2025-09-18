@@ -371,7 +371,7 @@ export class TitleKeywordExtractor {
   /**
    * ✅ 메인 추출 함수 - 조회량 기준 Top4 (필터링 금지)
    */
-  async extractTopNByCombined(titles: string[], N: number = 4): Promise<TitleExtractionResult> {
+  async extractTopNByCombined(titles: string[], N: number = 4, options: { bigramsOnly?: boolean; deterministic?: boolean } = {}): Promise<TitleExtractionResult> {
     console.log(`🎯 Starting title keyword extraction from ${titles.length} titles (Top ${N})`);
     
     // ✅ A. 모든 제목에서 n-gram 후보 생성
@@ -398,6 +398,19 @@ export class TitleKeywordExtractor {
       const topN = this.pickTopN(eligible, N);
       console.log(`✅ DB-only mode: Selected ${topN.length} keywords`);
       
+      const budget = await getCallBudgetStatus();
+      return {
+        topN,
+        mode: 'db-only',
+        stats,
+        budget
+      };
+    }
+    
+    // ✅ DETERMINISTIC MODE: Force DB-only, skip all API calls
+    if (options.deterministic) {
+      console.log(`🎯 [DETERMINISTIC MODE] Forcing DB-only mode, skipping API refresh`);
+      const topN = this.pickTopN(eligible, N);
       const budget = await getCallBudgetStatus();
       return {
         topN,
@@ -466,7 +479,7 @@ export class TitleKeywordExtractor {
           const budget = await getCallBudgetStatus();
           return {
             topN,
-            mode: 'api-refresh',
+            mode: 'db-only', // ✅ 강제 db-only 모드 (api-refresh 차단)
             stats,
             budget
           };

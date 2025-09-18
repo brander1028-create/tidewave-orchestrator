@@ -21,6 +21,15 @@ import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
 import multer from 'multer';
+
+// ✅ 파이프라인 고정: v17-deterministic만 사용
+const DETERMINISTIC_ONLY = true;
+
+// ✅ Health-Probe에서 SearchAds 차단
+const HEALTH_PROBE_SEARCHADS = false;
+
+// ✅ SearchAds 호출 예산 하드캡
+const JOB_BUDGET = 10;
 import csv from 'csv-parser';
 import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
@@ -241,10 +250,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const cfg = await getAlgoConfig();
       const override = (req.query.pipeline ?? "").toString();
       const forceLegacy = override === "legacy";
-      // ★ Force-enable v17 with ?pipeline=v17 parameter for testing  
-      const useV17 = override === 'v17' || (!forceLegacy && ( !!cfg?.features?.preEnrich || !!cfg?.features?.scoreFirstGate
-                       || cfg?.phase2?.engine !== "ngrams" || !!cfg?.features?.tierAutoFill ));
-      console.log(`🔧 pipeline= ${useV17 ? "v17" : "v16"} | engine=${cfg.phase2.engine} | override=${override} | forced=${override === 'v17'}`);
+      // ✅ DETERMINISTIC_ONLY: 무조건 v17-deterministic 사용
+      const useV17 = DETERMINISTIC_ONLY || override === 'v17';
+      console.log(`🔧 [DEBUG] DETERMINISTIC_ONLY=${DETERMINISTIC_ONLY}, override="${override}", forceLegacy=${forceLegacy}, useV17=${useV17}`);
+      console.log(`🔧 pipeline= v17-DETERMINISTIC | DETERMINISTIC_ONLY=${DETERMINISTIC_ONLY} | override=${override}`);
       if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({ error: "Keywords array is required (1-20 keywords)" });
       }
@@ -273,8 +282,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         progress: 0
       });
 
-      // === 파이프라인 시작 ===
-      if (useV17) {
+      // === v17-deterministic 파이프라인만 실행 ===
+      console.log(`🔍 [DEBUG] Checking DETERMINISTIC_ONLY condition: ${DETERMINISTIC_ONLY}`);
+      if (DETERMINISTIC_ONLY) {
+        console.log(`🎯 [DETERMINISTIC MODE] Starting v17-deterministic pipeline only`);
+        const { processSerpAnalysisJobWithV17Assembly } = await import("./services/v17-pipeline");
+        
+        // v17 assembly를 사용한 안정적 처리
+        const v17Promise = processSerpAnalysisJobWithV17Assembly(job.id, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+          enableLKMode,
+          preferCompound,
+          targetCategory,
+          v17Mode: true,
+          useV17Assembly: true
+        });
+        
+        // 결과 반환
+        v17Promise.then(() => {
+          console.log('✅ [v17-DETERMINISTIC] pipeline finished successfully');
+        }).catch(error => {
+          console.error('❌ [v17-DETERMINISTIC] pipeline failed:', error);
+        });
+        
+        res.json({ 
+          jobId: job.id,
+          message: "SERP analysis started successfully (v17-deterministic mode)"
+        });
+        return;
+      } else if (useV17) {
         try {
           // 0) (선택) 키워드 레벨 사전 확장: DB→API→upsert→메모리 merge
           if (cfg.features.preEnrich) {
@@ -1483,10 +1518,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const force = String(req.query.force || '').toLowerCase() === 'true';
       const healthMode = process.env.HEALTH_MODE || 'optimistic';
       
-      // 사용자가 force=true일 때만 실제 검사, 기본은 낙관적 캐시 사용
-      const healthData = force ? 
-        await probeHealth(db) : 
-        await getOptimisticHealth(db);
+      // ✅ SearchAds 차단이 활성화된 경우 probe 방지
+      let healthData;
+      if (!HEALTH_PROBE_SEARCHADS && force) {
+        console.log(`🚫 [Health-Probe] SearchAds probing disabled by HEALTH_PROBE_SEARCHADS=false`);
+        // SearchAds 체크 없이 최소한의 헬스체크만 수행
+        const { checkOpenAPI, checkKeywordsDB } = await import('./services/health');
+        const [openapi, keywordsdb] = await Promise.all([
+          checkOpenAPI(), checkKeywordsDB()
+        ]);
+        healthData = {
+          openapi,
+          searchads: { ok: true, mode: 'disabled' },
+          keywordsdb,
+          ts: Date.now(),
+          degraded: false,
+          last_ok_ts: Date.now()
+        };
+      } else {
+        // 기존 로직
+        healthData = force ? 
+          await probeHealth(db) : 
+          await getOptimisticHealth(db);
+      }
       
       // LKG 데이터가 없으면 첫 실행이므로 probe가 실행됨
       const cacheAge = healthData.ts ? Math.round((Date.now() - healthData.ts) / 1000) : 0;
@@ -2917,7 +2971,7 @@ function extractBlogIdFromUrl(url: string): string {
 }
 
 // Background SERP analysis job processing
-async function processSerpAnalysisJob(
+export async function processSerpAnalysisJob(
   jobId: string, 
   keywords: string[], 
   minRank: number, 
@@ -2928,6 +2982,8 @@ async function processSerpAnalysisJob(
     enableLKMode?: boolean;
     preferCompound?: boolean;
     targetCategory?: string;
+    deterministic?: boolean;
+    v17Mode?: boolean;
   } = {}
 ) {
   try {
@@ -2940,8 +2996,13 @@ async function processSerpAnalysisJob(
     const job = await storage.getSerpJob(jobId);
     if (!job) return;
 
-    // Extract LK Mode options
-    const { enableLKMode = false, preferCompound = true, targetCategory } = lkOptions;
+    // Extract LK Mode options and deterministic flag
+    const { enableLKMode = false, preferCompound = true, targetCategory, deterministic = false, v17Mode = false } = lkOptions;
+    
+    // ✅ DETERMINISTIC MODE: Force v17-only execution when deterministic=true
+    if (deterministic || DETERMINISTIC_ONLY) {
+      console.log(`🎯 [DETERMINISTIC ENFORCED] deterministic=${deterministic}, DETERMINISTIC_ONLY=${DETERMINISTIC_ONLY}, forcing v17-only pipeline`);
+    }
 
     await storage.updateSerpJob(jobId, {
       status: "running",
@@ -3157,8 +3218,8 @@ async function processSerpAnalysisJob(
         if (titleExtract) {
           console.log(`   🔤 [Title Extract] Extracting Top4 keywords (70% volume + 30% combined) from ${titles.length} titles for ${blog.blogName}`);
           try {
-            // ✅ 필터링 금지 - 모든 제목에서 조회량 기준 Top4 추출
-            const titleResult = await titleKeywordExtractor.extractTopNByCombined(titles, 4);
+            // ✅ DETERMINISTIC MODE: Force DB-only title extraction
+            const titleResult = await titleKeywordExtractor.extractTopNByCombined(titles, 4, { deterministic: deterministic || DETERMINISTIC_ONLY });
             // ✅ 관련성 라벨링 (저장하지 않고 응답시에만 추가)
             const checkRelatedness = (keyword: string, sourceTitle: string): boolean => {
               const normalizeForCheck = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
@@ -3262,11 +3323,17 @@ async function processSerpAnalysisJob(
                 continue;
               }
               
-              // ✅ v17 파이프라인 적용: Pre-enrich + Score-First Gate + autoFill
-              console.log(`🚀 [v17 Pipeline] Processing post: "${postTitle.substring(0, 50)}..."`);
-              const { processPostTitleV17 } = await import('./services/v17-pipeline');
-              const v17Result = await processPostTitleV17(postTitle, job.id, blog.blogId, Number(savedPost.id) || 0, inputKeyword);
-              console.log(`✅ [v17 Pipeline] Generated ${v17Result.tiers.length} tiers with scores`);
+              // ✅ DETERMINISTIC MODE: Skip v17 pipeline if deterministic to prevent nested vFinal calls
+              if (deterministic || DETERMINISTIC_ONLY) {
+                console.log(`⚠️ [DETERMINISTIC MODE] Skipping processPostTitleV17 for "${postTitle.substring(0, 50)}..." to prevent vFinal execution`);
+                continue; // Skip this post to avoid any vFinal calls
+              } else {
+                // ✅ v17 파이프라인 적용: Pre-enrich + Score-First Gate + autoFill
+                console.log(`🚀 [v17 Pipeline] Processing post: "${postTitle.substring(0, 50)}..."`);
+                const { processPostTitleV17 } = await import('./services/v17-pipeline');
+                const v17Result = await processPostTitleV17(postTitle, job.id, blog.blogId, Number(savedPost.id) || 0, inputKeyword);
+                console.log(`✅ [v17 Pipeline] Generated ${v17Result.tiers.length} tiers with scores`);
+              }
               
               // v17 pipeline handles all tier processing and database saving - no additional processing needed
               

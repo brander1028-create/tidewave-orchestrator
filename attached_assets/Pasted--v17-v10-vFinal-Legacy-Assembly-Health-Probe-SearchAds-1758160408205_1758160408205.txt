@@ -1,0 +1,152 @@
+지금 터지는 이유는 “v17 결정론 모드”로 들어왔다가도 다른 경로(v10, vFinal, Legacy Assembly, Health-Probe) 가 중간에 다시 SearchAds를 호출하면서 수백~수천 키워드 upsert→ 400/413 반복 → 결과 API까지 터지기 때문이에요. (로그에 v10 A번 DB→API 업서트, vFinal Processing …, Upserting 522/1476 keywords가 그대로 찍힘)
+
+아래 8개만 반영하면 폭주/크래시/단일키워드 섞임이 동시에 사라집니다.
+
+1) 파이프라인을 한 곳으로 “고정”
+
+server/routes.ts
+분석 시작 엔드포인트에서 무조건 v17-deterministic만 호출하고, 다른 파이프라인 분기/실험 플래그 제거:
+
+// ✅ 상단
+const DETERMINISTIC_ONLY = true;
+
+// ✅ 분석 시작
+app.post('/api/serp/analyze', async (req, res) => {
+  // ... body parse ...
+  if (DETERMINISTIC_ONLY) {
+    return processPostTitleV17Deterministic(db, jobId, keywords, options);
+  }
+  // (기타 v10/vFinal 분기 전부 제거)
+});
+
+
+검증: 새 job 로그에 pipeline=v17-deterministic만 보여야 합니다. v10, vFinal이 보이면 라우팅이 새는 겁니다.
+
+2) 결과 조회는 “읽기 전용(READ-ONLY)”
+
+/api/serp/jobs/:id/results 에서 검색광고/갱신 호출 금지
+아래 함수 호출이 있으면 모두 지움/가드:
+
+upsertKeywordsFromSearchAds(...)
+
+getVolumesWithHealth(..., { force:true })
+
+apiRefresh, autoEnrich, A번 파이프라인 등
+
+const READ_ONLY_ENRICH = true;
+app.get('/api/serp/jobs/:id/results', async (req, res) => {
+  if (READ_ONLY_ENRICH) {
+    // DB의 post_tier_checks, analyzed_posts, managed_keywords만 읽어서 반환
+    // 외부 API 호출 금지
+  }
+});
+
+
+검증: 결과 조회 시 더 이상 vFinal Processing ..., 413/400가 찍히면 안 됩니다.
+
+3) Health-Probe에서 SearchAds 완전 차단
+
+로그에 🏥 Health check: Testing SearchAds API 가 계속 SearchAds를 때립니다.
+헬스체크는 DB/Ping만 보세요.
+
+HEALTH_PROBE_SEARCHADS=false
+
+관련 코드 블록 통째로 return 전에 빼기/주석.
+
+4) v17 결정론 로직을 “진짜” 2어조합으로 고정
+
+server/services/v17-pipeline.ts (핵심)
+
+토큰화: 조사/기능어 제거, 중복 제거, 최대 6개
+
+금지(싱글 금지 집합): 로컬(시/구/동), 맛집/정리/방법/추천/후기/없이/및/의/에서/그리고/오늘의...
+
+T1: 금지어 제외한 단일 중 볼륨 최대 (동률 시 adScore)
+
+T2~T4: 항상 2어 조합만 (싱글 대체 금지)
+
+제목에 맛집 있으면: 로컬+맛집 > T1+맛집을 우선 포함
+
+로컬 토큰이 있으면: T1+로컬 1개 이상 강제
+
+나머지: T1 + 상위 토큰으로 채움 (공백/무공백 2변형만 시도)
+
+조회 실패: 조합 볼륨 0이면 버리고 다음 조합 (싱글로 메우지 않음)
+
+점수: 0.7*log10(volume)*25 + 0.3*(adScore*100)
+
+검증: 로그에
+🎯 [v17 Final Rules] T1=<single>
+T2/T3/T4=<bigram ...>
+Gate filtered 0/… (deterministic mode)
+처럼 T2~T4가 전부 2어로 찍혀야 합니다.
+
+5) SearchAds 호출 예산(하드 캡)
+
+per-job 예산: JOB_BUDGET=10 (총 외부 호출 10회 넘으면 즉시 stop with reason="budget")
+
+per-key 시도: MAX_ATTEMPTS_PER_KEY=5 그대로 유지
+
+변형: surface, nospace 딱 2개만
+
+검증: budgetUsed=… 로그가 나오고, 그 이상은 호출 중단.
+
+6) “타이틀 Top4” 추출은 항상 DB-only
+
+지금 api-refresh mode가 섞여 다시 과호출을 유발합니다.
+TITLE_TOP 경로에서 API 갱신 금지:
+
+mode=db-only 고정
+
+apiRefresh, force=true 등 제거
+
+검증: TITLE_TOP ... (db-only) 만 찍혀야 합니다. api-refresh 문자열이 보이면 수정 미적용.
+
+7) 모바일 랭킹 중단 문구(sentinel) 적용
+
+server/services/naver-api.ts
+
+아래 문구 보이면 즉시 탐색 종료:
+
+검색결과 더보기
+
+서치피드에서 더 다양한 콘텐츠를 탐색해보세요
+
+효과: 쓸데없는 blogId 추출 로그, 크롤링 시간 급감.
+
+8) 레거시 Assembly/v10 경로 완전 차단
+
+routes나 service에 남아있는 v10 A번 DB→API 업서트, Legacy Assembly, auto-enrich, A경로 코드 블록은 주석/return 가드.
+
+사용하지 않는 import(예: engineRegistry) 제거.
+
+검증: 로그에서 v10, A번, upserting 522/1476 keywords가 더 이상 보이면 안 됩니다.
+
+왜 지금도 터지나? (로그로 본 원인)
+
+v17 Deterministic가 시작됐지만 중간에 v10 A번과 vFinal Processing이 다시 호출되어 upsert 522/1476로 폭증.
+
+결과 API가 과거처럼 검색광고를 다시 부르면서 조회 단계에서 또 실패(400/413).
+
+TITLE_TOP api-refresh가 남아 Top4 추출에도 API가 섞임.
+
+즉, “분석은 v17 → 중간 중간 v10/vFinal이 끼어드는 혼합상태”라 계속 폭주한 겁니다.
+
+최종 체크리스트(붙여넣고 하나씩 확인)
+
+ /api/serp/analyze 가 오직 processPostTitleV17Deterministic 호출
+
+ /api/serp/jobs/:id/results 에서 외부 API 호출 0 (DB만)
+
+ 로그에 Health check: Testing SearchAds API 사라짐
+
+ TITLE_TOP ... (db-only) 만 보임 (api-refresh 없음)
+
+ v10, vFinal Processing ..., Upserting 5xx/1xxx 사라짐
+
+ 🎯 [v17 Final Rules] ... 에서 T2~T4 전부 2어 조합
+
+ budgetUsed<=JOB_BUDGET
+
+필요하면 위 변경을 실제 코드 diff 형태로 바로 써 드릴게요.
+(라우팅 가드/READ-ONLY 결과, v17 조합 빌더, sentinel, 예산 가드 4곳만 바꾸면 됩니다)

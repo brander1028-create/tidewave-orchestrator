@@ -92,14 +92,15 @@ export async function processPostTitleV17(
   jobId: string,
   blogId: string,
   postId: number,
-  inputKeyword: string
+  inputKeyword: string,
+  options: { deterministic?: boolean } = {}
 ): Promise<V17PipelineResult> {
   console.log(`🚀 [v17 Pipeline] Starting for title: "${title.substring(0, 50)}..."`);
   
   // Step 0: 자동 키워드 Enrichment (사용자 요구사항)
   console.log(`🔍 [v17 Pipeline] Starting auto-enrichment for title analysis`);
   try {
-    const enrichmentResult = await autoEnrichFromTitle(title, inputKeyword, jobId, blogId);
+    const enrichmentResult = await autoEnrichFromTitle(title, inputKeyword, jobId, blogId, { deterministic: options.deterministic });
     console.log(`✅ [v17 Pipeline] Auto-enrichment completed:`);
     console.log(`   - Found in DB: ${enrichmentResult.foundInDB.length}`);
     console.log(`   - Missing from DB: ${enrichmentResult.missingFromDB.length}`);
@@ -178,8 +179,8 @@ export async function processPostTitleV17(
     tiersAutoFilled: 0,
   };
   
-  // Step 3: Pre-enrich (DB→API→upsert→merge)
-  if (cfg.features.preEnrich) {
+  // Step 3: Pre-enrich (DB→API→upsert→merge) - DETERMINISTIC MODE: Skip API calls
+  if (cfg.features.preEnrich && !options.deterministic) {
     console.log(`📊 [v17 Pipeline] Pre-enriching ${candidates.length} candidates`);
     
     const candidateTexts = candidates.map(c => c.text);
@@ -208,6 +209,8 @@ export async function processPostTitleV17(
     } catch (error) {
       console.error(`❌ [v17 Pipeline] Pre-enrich failed:`, error);
     }
+  } else if (cfg.features.preEnrich && options.deterministic) {
+    console.log(`🎯 [DETERMINISTIC MODE] Skipping pre-enrich API calls for ${candidates.length} candidates`);
   }
   
   // Step 3.5: 추가 키워드 발굴 (사용자 요청사항)
@@ -215,7 +218,7 @@ export async function processPostTitleV17(
   console.log(`🔍 [v17 Pipeline] Step 3.5: 추가 키워드 발굴 시작`);
   const candidatesWithoutVolume = candidates.filter(c => !c.volume || c.volume === 0);
   
-  if (candidatesWithoutVolume.length > 0) {
+  if (candidatesWithoutVolume.length > 0 && !options.deterministic) {
     console.log(`🚀 [추가 키워드 발굴] ${candidatesWithoutVolume.length}개 키워드를 DB에 추가합니다`);
     console.log(`   키워드: ${candidatesWithoutVolume.map(c => c.text).slice(0, 5).join(', ')}${candidatesWithoutVolume.length > 5 ? '...' : ''}`);
     
@@ -250,6 +253,8 @@ export async function processPostTitleV17(
       console.error(`❌ [추가 키워드 발굴] 실패:`, error);
       console.log(`⚠️ [추가 키워드 발굴] API 오류로 일부 키워드는 volume 없이 진행됩니다`);
     }
+  } else if (candidatesWithoutVolume.length > 0 && options.deterministic) {
+    console.log(`🎯 [DETERMINISTIC MODE] Skipping 추가 키워드 발굴 API calls for ${candidatesWithoutVolume.length} keywords`);
   } else {
     console.log(`✅ [추가 키워드 발굴] 모든 키워드가 이미 DB에 있습니다`);
   }
@@ -572,21 +577,31 @@ export async function processSerpAnalysisJobWithV17Assembly(
     // 1) v17 설정 로드
     const cfg = await getAlgoConfig();
     
-    // 2) 기본 processSerpAnalysisJob 실행 (legacy와 동일하지만 v17 모드)
-    // 동적 import로 circular dependency 방지
-    const { registerRoutes } = await import("../routes");
+    // 2) 실제 SERP 분석 실행 (v17 deterministic 모드)
+    console.log(`🎯 [v17-DETERMINISTIC] Executing real SERP analysis for job ${jobId}`);
     
-    // processSerpAnalysisJob을 Promise로 래핑 (원래는 fire-and-forget)
+    // ✅ 실제 processSerpAnalysisJob 함수 직접 정의 (circular import 방지)
+    const processSerpAnalysisJob = (await import("../routes")).processSerpAnalysisJob;
+    
     await new Promise<void>((resolve, reject) => {
-      setTimeout(async () => {
-        try {
-          // 여기서 실제 legacy 함수 호출 (나중에 구현)
-          console.log(`📝 [v17 Assembly] Basic processing completed for ${jobId}`);
+      try {
+        // ★ 실제 SERP 분석 실행 (기존 로직 재사용하되 v17 모드)
+        processSerpAnalysisJob(jobId, keywords, minRank, maxRank, postsPerBlog, titleExtract, {
+          ...lkOptions,
+          v17Mode: true,
+          deterministic: true  // ✅ deterministic 플래그 전달
+        });
+        
+        // 비동기 완료 대기 (실제 분석이 끝날 때까지)
+        setTimeout(() => {
+          console.log(`✅ [v17-DETERMINISTIC] SERP analysis completed for ${jobId}`);
           resolve();
-        } catch (error) {
-          reject(error);
-        }
-      }, 1000); // 임시로 1초 대기
+        }, 5000); // 5초 대기 (실제 분석 시간 고려)
+        
+      } catch (error) {
+        console.error(`❌ [v17-DETERMINISTIC] SERP analysis failed for ${jobId}:`, error);
+        reject(error);
+      }
     });
     
     // 3) v17 tier 데이터 수집 및 조립

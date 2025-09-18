@@ -57,7 +57,8 @@ export async function autoEnrichFromTitle(
   title: string,
   inputKeyword: string,
   jobId: string,
-  blogId: string
+  blogId: string,
+  options: { deterministic?: boolean } = {}
 ): Promise<EnrichmentResult> {
   console.log(`🔍 [Auto-Enrich] Starting for title: "${title.substring(0, 50)}..."`);
   
@@ -68,8 +69,8 @@ export async function autoEnrichFromTitle(
     combinations: 0
   };
 
-  // Step 1: 제목에서 키워드 추출
-  const extractionResult = await titleKeywordExtractor.extractTopNByCombined([title], 20);
+  // Step 1: 제목에서 키워드 추출 (deterministic 플래그 전달)
+  const extractionResult = await titleKeywordExtractor.extractTopNByCombined([title], 20, { deterministic: options.deterministic });
   const extractedKeywords = extractionResult.topN.map(item => item.text);
   
   console.log(`📝 [Auto-Enrich] Extracted ${extractedKeywords.length} keywords from title`);
@@ -86,9 +87,9 @@ export async function autoEnrichFromTitle(
   
   console.log(`📊 [Auto-Enrich] Found ${foundInDB.length} in DB, ${missingFromDB.length} missing`);
   
-  // Step 3: 누락된 키워드들 API 호출하여 enrichment
+  // Step 3: 누락된 키워드들 API 호출하여 enrichment (deterministic 모드에서 차단)
   let newlyEnriched: string[] = [];
-  if (missingFromDB.length > 0) {
+  if (missingFromDB.length > 0 && !options.deterministic) {
     console.log(`🚀 [Auto-Enrich] Fetching volume data for ${missingFromDB.length} missing keywords`);
     
     try {
@@ -148,7 +149,7 @@ export async function autoEnrichFromTitle(
     const existingCombinationTexts = new Set(existingCombinations.map(c => c.text));
     const newCombinations = generatedCombinations.filter(c => !existingCombinationTexts.has(c));
     
-    if (newCombinations.length > 0) {
+    if (newCombinations.length > 0 && !options.deterministic) {
       console.log(`🚀 [Auto-Enrich] Fetching data for ${newCombinations.length} new combinations`);
       
       try {
@@ -178,6 +179,8 @@ export async function autoEnrichFromTitle(
       } catch (error) {
         console.error(`❌ [Auto-Enrich] Failed to enrich combinations:`, error);
       }
+    } else if (options.deterministic && newCombinations.length > 0) {
+      console.log(`🎯 [DETERMINISTIC MODE] Skipping API call for ${newCombinations.length} new combinations`);
     }
   }
   
