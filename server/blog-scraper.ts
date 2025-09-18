@@ -383,136 +383,136 @@ export class NaverBlogScraper {
   }
 
   /**
-   * v7.20 긴급수정: SERP Core 추출 - 범위 제한 + 제목링크 필수
+   * v8.0 사용자 스펙 기반 정확한 순위 파싱 (카드팩 평탄화)
+   * 목표: "3번째 카드의 1위 = 전체 7위" 문제 완전 해결
    */
   private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc', query: string = '') {
-    // 1) 범위 제한: #main_pack 우선, 없으면 안전한 fallback
-    const mainPack = $('#main_pack');
-    let blocks: any[];
+    console.log(`[SERP v8.0] 정확한 순위 파싱 시작: "${query}"`);
     
-    if (mainPack.length > 0) {
-      console.log('[SERP 긴급수정] #main_pack 범위로 제한');
-      // PC/Mobile별 정확한 블로그 결과 셀렉터
-      const blogContainers = device === 'pc' 
-        ? mainPack.find('.lst_total .bx, .api_subject_bx, .total_wrap .total_group, .blog_list .item')
-        : mainPack.find('.lst_total .bx, .api_subject_bx, .total_wrap .total_group');
-      blocks = Array.from(blogContainers.get());
-    } else {
-      console.log('[SERP 긴급수정] #main_pack 없음 - 안전한 fallback 사용');
-      // 안전한 fallback: 블로그 전용 셀렉터만 사용 (광고/부가기능 제외)
-      const blogSelectors = [
-        '.lst_total .bx',          // PC 블로그 결과
-        '.api_subject_bx',         // API 블로그 결과  
-        '.total_wrap .total_group', // 통합 결과
-        '.blog_list .item',        // 블로그 리스트
-        'li[data-cr-area*="blog"]', // 모바일 블로그
-        'article[data-cr-area*="blog"]' // article 형태
-      ];
-      blocks = Array.from($(blogSelectors.join(', ')).get());
-    }
-    const boundaryEl = blocks.find(block => this.isSearchFeedBoundary($, block));
-    const boundaryIdx = boundaryEl ? blocks.findIndex(b => 
-      b === boundaryEl || 
-      $(b).has(boundaryEl).length > 0 || 
-      $(boundaryEl).has(b).length > 0
-    ) : -1;
-
-    const core: any[] = [], feed: any[] = [];
-    const seen = new Set<string>();
-
-    // 아이템 추가 함수 (제목 링크 필수 + 중복 제거)
-    const pushItem = (node: any, arr: any[]) => {
-      const $node = $(node);
+    // ★ 1) 서치피드 경계 검출 함수 (사용자 스펙)
+    const isSearchFeedBoundary = (el: any): boolean => {
+      const $el = $(el);
+      const text = ($el.text() || '').replace(/\s+/g, '');
+      return text.includes('서치피드에서더많은콘텐츠를탐색해보세요') ||
+             text.includes('더다양한콘텐츠') ||
+             $el.is('[aria-label*="서치피드"], .sfeed, .search_feed, [data-sfeed]');
+    };
+    
+    // ★ 2) 블로그 카드 판정 (모듈 제외 - 사용자 스펙)
+    const isBlogCard = (el: any): boolean => {
+      const $el = $(el);
+      const blogAnchor = $el.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
+      if (blogAnchor.length === 0) return false;
       
-      // ★ 긴급수정: 제목 링크만 허용 (일반 앵커 fallback 제거)
-      const titleAnchor = $node.find('a.title_link[href*="blog.naver.com"], .api_txt_lines.total_tit[href*="blog.naver.com"], a[class*="title"][href*="blog.naver.com"]').first();
-      if (!titleAnchor.length) {
-        console.log('[SERP] 제목링크 없음 - 제외:', $node.text().substring(0, 50));
-        return;
+      // 광고/지도/쇼핑/동영상/브랜드/인플루언서 제외
+      if ($el.is('[data-ad], [data-nclick*="ad"], .ad_section, .ad_area, .place_section, .place_app, .map_section, .shop_section, .shopping_box, .video_section, .brand_area, .influencer, [data-module-name*="influencer"]')) {
+        return false;
+      }
+      return true;
+    };
+    
+    // ★ 3) 카드팩 판정 (2개 이상 블로그 링크)
+    const isCardPack = (el: any): boolean => {
+      const $el = $(el);
+      return $el.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').length >= 2;
+    };
+    
+    // ★ 4) 카드팩 내부 아이템 평탄화 (사용자 스펙)
+    const blogItemsIn = (el: any): any[] => {
+      const $el = $(el);
+      const nodes = $el.find('li, article, div.total_wrap, div');
+      const out: any[] = [];
+      
+      nodes.each((_, node) => {
+        if (isBlogCard(node)) out.push(node);
+      });
+      
+      // 앵커만 노출되는 구조 보정
+      if (out.length === 0) {
+        $el.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').each((_, anchor) => {
+          const $anchor = $(anchor);
+          const node = $anchor.closest('li, article, div.total_wrap, div')[0] || $anchor.parent()[0];
+          if (node && isBlogCard(node)) {
+            out.push(node);
+          }
+        });
       }
       
-      const href = titleAnchor.attr('href') || '';
+      return out;
+    };
+    
+    // ★ 5) 문서 순서대로 블록 수집 (사용자 스펙)
+    const allBlocks = Array.from($('section, article, li, div.total_wrap, div').get());
+    const boundaryEl = allBlocks.find(isSearchFeedBoundary);
+    const boundaryIdx = boundaryEl ? allBlocks.findIndex(b => 
+      b === boundaryEl || (b.contains && b.contains(boundaryEl)) || (boundaryEl.contains && boundaryEl.contains(b))
+    ) : -1;
+    
+    console.log(`[SERP] 전체 블록: ${allBlocks.length}개, 경계: ${boundaryIdx >= 0 ? '발견' : '없음'} (idx=${boundaryIdx})`);
+    
+    // ★ 6) Core/Feed 분리 + 카드팩 평탄화 (사용자 스펙의 핵심!)
+    const core: any[] = [], feed: any[] = [];
+    const seen = new Set<string>();
+    
+    const pushItem = (node: any, arr: any[]) => {
+      const $node = $(node);
+      const anchor = $node.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').first();
+      if (!anchor.length) return;
+      
+      const href = anchor.attr('href') || '';
       const url = this.canonicalizeBlogUrl(href);
       if (seen.has(url)) return;
       seen.add(url);
       
-      // textFrom으로 정확한 제목 추출
-      const title = this.textFrom($, titleAnchor[0]) || $node.text().trim();
-      
       arr.push({
         url,
         nickname: this.extractNickname(url),
-        title: title,
+        title: $node.text().trim(),
         pos: arr.length
       });
     };
-
-    // 2) 인덱스 기반 경계 분기: 경계 이후 = feed
-    for (let i = 0; i < blocks.length; i++) {
-      const block = blocks[i];
+    
+    let packCount = 0;
+    for (let i = 0; i < allBlocks.length; i++) {
+      const block = allBlocks[i];
       
-      // 경계 자체 skip
-      if (boundaryIdx >= 0 && (block === boundaryEl || $(boundaryEl).has(block).length > 0)) {
-        continue;
-      }
+      // 경계 노드 스킵
+      if (boundaryIdx >= 0 && (block === boundaryEl || (boundaryEl.contains && boundaryEl.contains(block)))) continue;
       
-      // ★ 핵심: 경계 이후 = feed (인덱스 기반)
+      // 경계 이후는 feed
       const isFeed = (boundaryIdx >= 0) && (i > boundaryIdx);
       
-      // ★ 안전한 카드팩 평탄화 재활성화 (document order 유지)
-      if (this.isCardPack($, block)) {
-        console.log('[SERP] 카드팩 발견 - 내부 아이템 순차 처리');
-        const items = this.blogItemNodesInSafe($, block);
+      // ★★ 카드팩 평탄화: 컨테이너 내부 아이템을 순서대로 1..N (사용자 요구사항 핵심!)
+      if (isCardPack(block)) {
+        packCount++;
+        console.log(`[SERP] PACK[#${packCount}] 발견 - 평탄화 시작`);
+        const items = blogItemsIn(block);
+        console.log(`[SERP] PACK[#${packCount}] items=${items.length}`);
         for (const item of items) {
           pushItem(item, isFeed ? feed : core);
         }
-      } else if (this.isBlogCard($, block)) {
+      } else if (isBlogCard(block)) {
         pushItem(block, isFeed ? feed : core);
       }
     }
-
-    // ★ 안전한 앵커 Fallback (오직 core가 비어있는 경우만)
-    if (core.length === 0) {
-      console.log(`[SERP 블록 상태] blocks=${blocks.length}, core=${core.length} - fallback 고려중`);
-      
-      if (blocks.length === 0) {
-        console.log('[SERP 긴급수정] 완전 비어있음 - 안전한 앵커 fallback 시도');
-      // 블로그 전용 앵커만 찾기 (제목 링크 필수)
-      const titleAnchors = $('a.title_link[href*="blog.naver.com"], .api_txt_lines.total_tit[href*="blog.naver.com"], a[class*="title"][href*="blog.naver.com"]');
-      titleAnchors.each((_, anchor) => {
-        const node = $(anchor).closest('li, article, div.bx, div.total_group')[0] || $(anchor).parent()[0];
-        if (node) {
-          pushItem(node, core);
-        }
-      });
-        console.log('[SERP] 앵커 fallback 결과:', core.length);
-      } else {
-        console.log(`[SERP 경고] blocks=${blocks.length}개 있지만 core=0 - 블록 처리에 문제가 있을 수 있음`);
-      }
-    }
-    }
-
+    
     // 경계 없으면 Core 15개 제한
     if (boundaryIdx < 0) {
       core.splice(15);
     }
     
-    // ★ 긴급수정 로그 강화
-    const firstCoreUrl = core[0]?.url || 'none';
-    const firstCoreTitle = core[0]?.title?.substring(0, 30) || 'none';
-    // ★ 진단 로깅 강화 (상위 10개 결과 + targetUrl 매칭 추적)
-    console.log(`[SERP 긴급수정] q="${query}" blocks=${blocks.length} boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length}`);
-    console.log(`[SERP] 1위 결과: "${firstCoreTitle}" -> ${firstCoreUrl}`);
+    // ★ 7) 필수 로깅 (사용자 스펙)
+    const firstCore = core[0]?.url || 'none';
+    console.log(`[SERP] boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length} firstCore=${firstCore}`);
     
-    // 상위 10개 결과 로깅
-    console.log('[SERP] 상위 10개 결과:');
+    // 최종 매칭 로깅 (사용자 스펙)
+    console.log('[SERP] 상위 10개 결과 (카드팩 평탄화 완료):');
     core.slice(0, 10).forEach((item, idx) => {
       const shortTitle = item.title?.substring(0, 30) || 'no-title';
-      const shortUrl = item.url?.substring(item.url.lastIndexOf('/') + 1, item.url.lastIndexOf('/') + 20) || 'no-url';
-      console.log(`  ${idx + 1}위: "${shortTitle}" -> .../${shortUrl}`);
+      console.log(`[MATCH] ${idx + 1}위: "${shortTitle}"`);
     });
     
-    console.log(`[BlogScraper] 최종 파싱 결과: ${core.length}개`);
+    console.log(`[BlogScraper] 카드팩 평탄화 완료: ${core.length}개`);
     
     // Core 결과 반환 (기존 형식 호환)
     return core.map((item, index) => ({
@@ -523,7 +523,6 @@ export class NaverBlogScraper {
       url: this.cleanUrl(item.url),
       snippet: item.snippet || '',
       date: item.date || '',
-      // 디버깅용 추가 정보
       nickname: item.nickname,
       rawUrl: item.url
     }));

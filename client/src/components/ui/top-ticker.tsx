@@ -34,44 +34,12 @@ interface TopTickerProps {
 
 const defaultItems: TickerItem[] = [
   {
-    id: "1",
-    type: "alert",
-    icon: <TrendingDown className="w-4 h-4" />,
-    message: "홍삼스틱 키워드 8위 → 15위 급락 (-7) - 경쟁사 신규 포스팅 영향",
-    time: "30분 전",
-    priority: 1
-  },
-  {
-    id: "2", 
-    type: "success",
-    icon: <TrendingUp className="w-4 h-4" />,
-    message: "홍삼 추천 키워드 Top 5 진입! 7위 → 4위 (+3) - 목표 달성",
-    time: "1시간 전",
-    priority: 2
-  },
-  {
-    id: "3",
-    type: "warning",
-    icon: <AlertTriangle className="w-4 h-4" />,
-    message: "신규 경쟁사 5개 포스팅 감지 - 홍삼 관련 키워드 모니터링 강화 필요",
-    time: "2시간 전", 
-    priority: 3
-  },
-  {
-    id: "4",
-    type: "info",
-    icon: <Target className="w-4 h-4" />,
-    message: "오늘 순위 체크 완료 - 127개 키워드 모니터링 중 (성공률 98.4%)",
-    time: "3시간 전",
-    priority: 4
-  },
-  {
-    id: "5",
+    id: "no-events",
     type: "info",
     icon: <Activity className="w-4 h-4" />,
-    message: "주간 성과 요약: 상위 10위 키워드 45개 (+3), 평균 순위 8.3위 (전주 대비 -2.1)",
-    time: "어제",
-    priority: 5
+    message: "이벤트 시스템 대기중 - 순위 변화 감지 시 알림이 여기에 표시됩니다",
+    time: "지금",
+    priority: 1
   }
 ];
 
@@ -109,8 +77,8 @@ export function TopTicker({ items, speed = 50, className }: TopTickerProps) {
     staleTime: 10000, // 10초간 fresh 상태 유지
   });
 
-  // API 데이터 우선, fallback은 전달받은 items 또는 기본값
-  const tickerItems = apiAlerts 
+  // API 데이터 우선, 빈 배열이면 기본값 표시
+  const tickerItems = apiAlerts && apiAlerts.length > 0
     ? apiAlerts.map(convertRollingAlertToTickerItem)
     : items || defaultItems;
 
