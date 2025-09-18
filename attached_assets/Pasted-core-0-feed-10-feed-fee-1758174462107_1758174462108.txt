@@ -1,0 +1,120 @@
+core=0, feed=10이 반복되는 건 경계 처리 방향/순서 버그 때문이에요. 경계를 “본 순간부터 아래는 feed”로 바꿔야 하는데, 현재 코드는 경계 ‘위’ 블록들을 feed로 오판하고 있어요. 그래서 항상 rank=null → UI 999가 됩니다. 아래 딱 3개 패치만 넣으면 바로 잡혀요.
+
+1) 경계 처리 로직을 “인덱스 기반”으로 고정 (실수 방지)
+
+문서 순서대로 블록을 스캔하면서 경계 노드를 ‘만난 이후’는 feed, 이전은 core 로 분기합니다. compareDocumentPosition 비트 연산 대신 인덱스/포함 관계로 안전하게 갑니다.
+
+// server/services/blogScraper.ts (또는 serpScraper)
+
+function isSearchFeedBoundary(el: Element): boolean {
+  const t = (el.textContent || '').replace(/\s+/g,'');
+  return t.includes('서치피드에서더많은콘텐츠를탐색해보세요') ||
+         t.includes('더다양한콘텐츠') ||
+         el.matches('[aria-label*="서치피드"], .sfeed, .search_feed, [data-sfeed]');
+}
+
+function isBlogCard(el: Element): boolean {
+  const a = el.querySelector('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
+  if (!a) return false;
+  if (el.matches(
+    '[data-ad], [data-nclick*="ad"], .ad_section, .ad_area,' +
+    '.place_section, .map_section, .place_app,' +
+    '.shop_section, .shopping_box,' +
+    '.video_section, .brand_area, .influencer, [data-module-name*="influencer"]'
+  )) return false;
+  return true;
+}
+
+function isCardPack(el: Element): boolean {
+  const c = el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
+  return c.length >= 2;
+}
+
+function blogItemsIn(el: Element): Element[] {
+  const nodes = el.querySelectorAll('li, article, div.total_wrap, div');
+  const out: Element[] = [];
+  nodes.forEach(n => { if (isBlogCard(n)) out.push(n); });
+  if (!out.length) {
+    el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').forEach(a => {
+      const n = a.closest('li, article, div.total_wrap, div') || a.parentElement!;
+      if (isBlogCard(n)) out.push(n);
+    });
+  }
+  return out;
+}
+
+export function parseSerp(doc: Document) {
+  // 1) 결과 블록 선형 시퀀스 구성
+  const blocks = Array.from(doc.querySelectorAll('section, article, li, div.total_wrap, div'));
+  const boundaryEl = blocks.find(isSearchFeedBoundary); // 블록 안에서 경계 탐색
+  const boundaryIdx = boundaryEl ? blocks.findIndex(b => b === boundaryEl || b.contains(boundaryEl) || boundaryEl.contains(b)) : -1;
+
+  const core:any[] = [], feed:any[] = [];
+  const seen = new Set<string>();
+
+  const push = (node:Element, arr:any[]) => {
+    const a = node.querySelector('a[href*="blog.naver.com/"],a[href*="m.blog.naver.com/"]')!;
+    const href = a.getAttribute('href')!;
+    const url  = canonicalizeBlogUrl(href);   // m.→blog., https, 쿼리/해시 제거
+    if (seen.has(url)) return;
+    seen.add(url);
+    arr.push({ url, nickname: nicknameFrom(url), title: (node.textContent||'').trim(), pos: arr.length });
+  };
+
+  // 2) 선형 순서대로 스캔: 경계 이전=core, 이후=feed
+  for (let idx=0; idx<blocks.length; idx++) {
+    const b = blocks[idx];
+
+    if (boundaryIdx >= 0 && (b === boundaryEl || boundaryEl.contains(b))) continue; // 경계 자체는 건너뜀
+
+    const isFeed = (boundaryIdx >= 0) && (idx > boundaryIdx); // ★ 경계 이후 = feed (정방향 고정)
+    if (isCardPack(b)) {
+      for (const it of blogItemsIn(b)) push(it, isFeed ? feed : core); // 팩 평탄화
+    } else if (isBlogCard(b)) {
+      push(b, isFeed ? feed : core);
+    }
+  }
+
+  if (boundaryIdx < 0) core.splice(15);      // 경계 없으면 Core 15개 제한
+  console.info(`[SERP] core=${core.length} feed=${feed.length} boundary=${boundaryIdx>=0} firstCore=${core[0]?.url||'none'}`);
+  return { core, feed };
+}
+
+
+이 방식이면 카드 묶음(컨테이너) 도 내부 개별 카드를 순서대로 펼쳐 1,2,3… 부여합니다. (카드1의 3개= 1~3위, 카드2의 3개= 4~6위)
+
+2) 매칭·스냅샷·표시 보강 (미노출=999 금지)
+function matchPair(pairUrl:string, itemUrl:string, pairNick?:string, nick?:string) {
+  const p = postId(pairUrl), i = postId(itemUrl);
+  if (p && i && p===i) return true;
+  if (canonicalizeBlogUrl(pairUrl) === canonicalizeBlogUrl(itemUrl)) return true;
+  if (pairNick && nick && pairNick===nick) return true;
+  return false;
+}
+
+function resolveRank(pair, parsed) {
+  const i = parsed.core.findIndex(x => matchPair(pair.blogUrl, x.url, pair.nickname, x.nickname));
+  if (i>=0) return { rank:i+1, exposed:true,  feed_rank:null, pos: parsed.core[i].pos };
+  const j = parsed.feed.findIndex(x => matchPair(pair.blogUrl, x.url, pair.nickname, x.nickname));
+  return { rank:null, exposed:false, feed_rank:(j>=0?j+1:null), pos:null };
+}
+
+
+서버 랭크 GET 응답에 res.set('Cache-Control','no-store') (리스트가 0으로 보여지는 304 방지)
+
+클라이언트는 rank===null을 **“미노출”**로 표기(999 금지)
+
+3) 빠른 검증 체크리스트 (지금 로그로 확인)
+
+[SERP] core=… feed=… boundary=true firstCore=... 가 core>0 으로 찍히는지
+
+insertRankSnapshot 직후 /api/rank/history?pair_id=... 가 최근 ts/exposed=true 반영되는지
+
+UI에서 999 대신 “미노출/노출” 표기로 보이는지
+
+왜 방금도 core=0 이었나?
+
+기존 코드는 경계를 “만난 블록”이 아니라 경계 ‘위’ 블록에서 hit 를 켜버려서 이후 전부 feed 로 처리 or
+
+블로그 카드 컨테이너를 한 덩어리로 취급해서 내부 개별 카드를 카운트하지 못했기 때문.
+→ 위 패치처럼 경계 인덱스 기준 + 팩 평탄화로 고정하면 사람이 보는 1~6위와 일치합니다.

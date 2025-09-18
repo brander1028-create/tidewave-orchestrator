@@ -379,66 +379,72 @@ export class NaverBlogScraper {
   }
 
   /**
-   * v7.20 SERP Core 추출: 카드 팩 평탄화 및 Core/Feed 분리 (핵심 규칙 적용)
+   * v7.20 SERP Core 추출: 인덱스 기반 경계 처리로 Core/Feed 정확 분리
    */
   private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc', query: string = '') {
     
-    // 서치피드 경계 감지
-    const boundaryEl = this.findSearchFeedBoundary($);
-    
-    // 최상위 블록들을 DOM 순서로 수집
-    const blocks = $('section, article, li, div').toArray();
-    
+    // 1) 결과 블록 선형 시퀀스 구성
+    const blocks = $('section, article, li, div.total_wrap, div').toArray();
+    const boundaryEl = blocks.find(block => this.isSearchFeedBoundary($, block));
+    const boundaryIdx = boundaryEl ? blocks.findIndex(b => 
+      b === boundaryEl || 
+      $(b).has(boundaryEl).length > 0 || 
+      $(boundaryEl).has(b).length > 0
+    ) : -1;
+
     const core: any[] = [], feed: any[] = [];
     const seen = new Set<string>();
-    
+
     // 아이템 추가 함수 (중복 제거)
-    const pushItem = (node: any, bucket: any[]) => {
-      const item = this.extractBlogItem($, node);
-      if (!item || !item.url) return;
+    const pushItem = (node: any, arr: any[]) => {
+      const anchor = $(node).find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').first();
+      if (!anchor.length) return;
       
-      const canonicalUrl = this.canonicalizeBlogUrl(item.url);
-      if (seen.has(canonicalUrl)) return;
-      seen.add(canonicalUrl);
+      const href = anchor.attr('href') || '';
+      const url = this.canonicalizeBlogUrl(href);
+      if (seen.has(url)) return;
+      seen.add(url);
       
-      bucket.push({
-        url: canonicalUrl,
-        nickname: this.extractNickname(canonicalUrl),
-        title: item.title,
-        snippet: item.snippet,
-        date: item.date,
-        pos: bucket.length
+      arr.push({
+        url,
+        nickname: this.extractNickname(url),
+        title: $(node).text().trim(),
+        pos: arr.length
       });
     };
-    
-    // 블록별 처리
-    for (const block of blocks) {
-      // 경계 기준 Core/Feed 버킷 결정
-      const isCore = this.isAboveBoundary($, block, boundaryEl);
+
+    // 2) 선형 순서대로 스캔: 경계 이전=core, 이후=feed
+    for (let idx = 0; idx < blocks.length; idx++) {
+      const block = blocks[idx];
+
+      // 경계 자체는 건너뜀
+      if (boundaryIdx >= 0 && (block === boundaryEl || $(boundaryEl).has(block).length > 0)) {
+        continue;
+      }
+
+      // ★ 핵심: 경계 이후 = feed (정방향 고정)
+      const isFeed = (boundaryIdx >= 0) && (idx > boundaryIdx);
       
       // 블로그 카드 팩이면 내부 아이템을 평탄화하여 추가
       if (this.isCardPack($, block)) {
         const items = this.blogItemNodesIn($, block);
         for (const item of items) {
-          pushItem(item, isCore ? core : feed);
+          pushItem(item, isFeed ? feed : core);
         }
-        continue; // 컨테이너 자체는 카운트하지 않음
-      }
-      
-      // 단일 블로그 카드이면 그대로 추가
-      if (this.isBlogCard($, block)) {
-        pushItem(block, isCore ? core : feed);
+      } else if (this.isBlogCard($, block)) {
+        // 단일 블로그 카드
+        pushItem(block, isFeed ? feed : core);
       }
     }
-    
+
     // 경계가 없으면 Core 15개 제한
-    if (!boundaryEl) {
+    if (boundaryIdx < 0) {
       core.splice(15);
     }
     
     // 로그 출력 (필수)
     const firstCoreUrl = core[0]?.url || 'none';
-    console.log(`[SERP] q="${query}" boundary=${!!boundaryEl} core=${core.length} feed=${feed.length} firstCoreUrl=${firstCoreUrl}`);
+    console.log(`[SERP] q="${query}" boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length} firstCoreUrl=${firstCoreUrl}`);
     console.log(`[BlogScraper] 파싱된 결과 수: ${core.length}`);
     
     // Core 결과만 반환 (기존 형식과 호환)
