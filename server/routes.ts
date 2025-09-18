@@ -23,8 +23,11 @@ import type { HealthResponse } from './types';
 import multer from 'multer';
 
 // ✅ 파이프라인 고정: v17-deterministic만 사용
-const DETERMINISTIC_ONLY = false;
+const DETERMINISTIC_ONLY = true;
 const PIPELINE_MODE: 'v17-deterministic'|'legacy' = 'v17-deterministic';
+
+// ✅ 환경 변수로 설정하여 모든 서비스에서 인식
+process.env.DETERMINISTIC_ONLY = DETERMINISTIC_ONLY.toString();
 
 // ✅ Health-Probe에서 SearchAds 활성화
 const HEALTH_PROBE_SEARCHADS = (process.env.HEALTH_PROBE_SEARCHADS || 'true') === 'true';
@@ -3261,17 +3264,11 @@ export async function processSerpAnalysisJob(
                 continue;
               }
               
-              // ✅ DETERMINISTIC MODE: Skip v17 pipeline if deterministic to prevent nested vFinal calls
-              if (deterministic || DETERMINISTIC_ONLY) {
-                console.log(`⚠️ [DETERMINISTIC MODE] Skipping processPostTitleV17 for "${postTitle.substring(0, 50)}..." to prevent vFinal execution`);
-                continue; // Skip this post to avoid any vFinal calls
-              } else {
-                // ✅ v17 파이프라인 적용: Pre-enrich + Score-First Gate + autoFill
-                console.log(`🚀 [v17 Pipeline] Processing post: "${postTitle.substring(0, 50)}..."`);
-                const { processPostTitleV17 } = await import('./services/v17-pipeline');
-                const v17Result = await processPostTitleV17(postTitle, job.id, blog.blogId, Number(savedPost.id) || 0, inputKeyword);
-                console.log(`✅ [v17 Pipeline] Generated ${v17Result.tiers.length} tiers with scores`);
-              }
+              // ✅ v17 파이프라인 적용: Pre-enrich + Score-First Gate + autoFill
+              console.log(`🚀 [v17 Pipeline] Processing post: "${postTitle.substring(0, 50)}..."`);
+              const { processPostTitleV17 } = await import('./services/v17-pipeline');
+              const v17Result = await processPostTitleV17(postTitle, job.id, blog.blogId, Number(savedPost.id) || 0, inputKeyword);
+              console.log(`✅ [v17 Pipeline] Generated ${v17Result.tiers.length} tiers with scores`);
               
               // v17 pipeline handles all tier processing and database saving - no additional processing needed
               

@@ -32,7 +32,7 @@ export async function getVolumesWithHealth(
         avePcCpc: row.est_cpc_krw || 0
       };
     });
-    return { volumes, http:{} };
+    return { volumes, mode: 'fallback' as const, stats: { requested: 0, ok: 0, fail: 0, http: {} } };
   }
   try {
     console.log(`🔍 [v10 A번] DB→API→업서트 파이프라인 시작: ${keywords.length}개 키워드`);
