@@ -1195,7 +1195,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       let pairs = [];
       if (ids.length) {
-        pairs = await storage.findPairsByIds(ids); // ★ owner 미필터 (명시 선택 우선)
+        pairs = await storage.findPairsByIds(owner, ids); // v7.18: owner 필터링으로 보안 강화
       } else {
         // 2) 선택이 없으면 owner의 active 페어
         pairs = await storage.getActivePairs(owner);
