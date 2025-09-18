@@ -1,0 +1,147 @@
+“카드팩(컨테이너) 안의 개별 블로그 카드까지 평탄화해서 1..N로 매기고, 서치피드 ‘위’만 랭크” 하도록 한 방에 고치는 스펙+패치안을 아래처럼 주면 Replit이 실수 없이 구현합니다. (지금처럼 “3번째 카드의 1위 = 전체 7위” 같은 케이스도 정확히 잡힘)
+
+🔧 최종 스펙 — Naver 모바일 블로그 랭크(서치피드 위, 카드팩 평탄화)
+핵심 규칙(요약)
+
+경계: “서치피드에서 더 많은 콘텐츠…” 안내문 위(Core zone) 만 랭크.
+안내문이 없으면 1페이지 15개까지만 Core.
+
+카드팩: 블로그 카드가 묶음(컨테이너)으로 2개 이상 들어있는 경우, 컨테이너=1위가 아니라 컨테이너 내부 아이템을 문서 순서대로 평탄화해서 1..N 부여.
+→ 카드1의 3개 = 1~3위, 카드2의 3개 = 4~6위, 카드3의 1개 = 7위 … (네가 본 그대로)
+
+제외: 광고/지도/쇼핑/동영상/브랜드/인플루언서 모듈은 제외.
+블로그 포스트(blog.naver.com / m.blog.naver.com)의 포스트 URL만 유효.
+
+정확 동작 패치(붙여넣기용; TS 의사코드)
+1) 경계·카드·평탄화 파서
+function isSearchFeedBoundary(el: Element): boolean {
+  const t = (el.textContent || '').replace(/\s+/g,'');
+  return t.includes('서치피드에서더많은콘텐츠를탐색해보세요') ||
+         t.includes('더다양한콘텐츠') ||
+         el.matches('[aria-label*="서치피드"], .sfeed, .search_feed, [data-sfeed]');
+}
+
+function isBlogCard(el: Element): boolean {
+  const a = el.querySelector('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
+  if (!a) return false;
+  if (el.matches(
+    '[data-ad], [data-nclick*="ad"], .ad_section, .ad_area,' +   // 광고
+    '.place_section, .place_app, .map_section,' +                // 장소/지도
+    '.shop_section, .shopping_box,' +                            // 쇼핑
+    '.video_section, .brand_area, .influencer, [data-module-name*="influencer"]'
+  )) return false;
+  return true;
+}
+
+function isCardPack(el: Element): boolean {
+  return el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').length >= 2;
+}
+
+function blogItemsIn(el: Element): Element[] {
+  const nodes = el.querySelectorAll('li, article, div.total_wrap, div');
+  const out: Element[] = [];
+  nodes.forEach(n => { if (isBlogCard(n)) out.push(n); });
+  // 앵커만 노출되는 구조 보정
+  if (!out.length) {
+    el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').forEach(a => {
+      const n = a.closest('li, article, div.total_wrap, div') || a.parentElement!;
+      if (isBlogCard(n)) out.push(n);
+    });
+  }
+  return out;
+}
+
+// ★ 인덱스 기반 경계 분리 + 카드팩 평탄화
+export function parseSerp(doc: Document) {
+  const blocks = Array.from(doc.querySelectorAll('section, article, li, div.total_wrap, div')); // 문서 순서
+  const boundaryEl = blocks.find(isSearchFeedBoundary);
+  const boundaryIdx = boundaryEl
+    ? blocks.findIndex(b => b===boundaryEl || b.contains(boundaryEl) || boundaryEl.contains(b))
+    : -1;
+
+  const core:any[] = [], feed:any[] = [];
+  const seen = new Set<string>();
+
+  const push = (node:Element, arr:any[]) => {
+    const a = node.querySelector('a[href*="blog.naver.com/"],a[href*="m.blog.naver.com/"]')!;
+    const href = a.getAttribute('href')!;
+    const url  = canonicalizeBlogUrl(href); // m→blog, https, 쿼리/해시 제거
+    if (seen.has(url)) return;
+    seen.add(url);
+    arr.push({ url, nickname: nicknameFrom(url), title: (node.textContent||'').trim(), pos: arr.length });
+  };
+
+  for (let i=0; i<blocks.length; i++) {
+    const b = blocks[i];
+    if (boundaryIdx >= 0 && (b===boundaryEl || boundaryEl.contains(b))) continue; // 경계 노드 스킵
+    const isFeed = (boundaryIdx >= 0) && (i > boundaryIdx); // ★ 경계 이후는 feed
+
+    if (isCardPack(b)) {           // 컨테이너 내부 아이템 평탄화
+      for (const it of blogItemsIn(b)) push(it, isFeed ? feed : core);
+    } else if (isBlogCard(b)) {
+      push(b, isFeed ? feed : core);
+    }
+  }
+
+  if (boundaryIdx < 0) core.splice(15); // 경계 없으면 Core 15개 제한
+  console.info(`[SERP] boundary=${boundaryIdx>=0} core=${core.length} feed=${feed.length} firstCore=${core[0]?.url||'none'}`);
+  return { core, feed };
+}
+
+2) 매칭/랭크 산출(포스트ID → canonical → 닉네임)
+function matchPair(pairUrl:string, itemUrl:string, pairNick?:string, nick?:string) {
+  const p = postId(pairUrl), i = postId(itemUrl);
+  if (p && i && p===i) return true;
+  if (canonicalizeBlogUrl(pairUrl) === canonicalizeBlogUrl(itemUrl)) return true;
+  if (pairNick && nick && pairNick===nick) return true;
+  return false;
+}
+
+function resolveRank(pair, parsed) {
+  const i = parsed.core.findIndex(x => matchPair(pair.blogUrl, x.url, pair.nickname, x.nickname));
+  if (i>=0) return { rank:i+1, exposed:true,  feed_rank:null, pos: parsed.core[i].pos };
+  const j = parsed.feed.findIndex(x => matchPair(pair.blogUrl, x.url, pair.nickname, x.nickname));
+  return { rank:null, exposed:false, feed_rank:(j>=0?j+1:null), pos:null };
+}
+
+3) 요청 헤더(안정성)
+await fetch(serpUrl, {
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-G991N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Referer': 'https://m.naver.com'
+  },
+});
+
+디버그 로그(필수)
+
+[SERP] boundary=… core=… feed=… firstCore=…
+
+카드팩별 내부 개수:
+
+PACK[#1] items=3, PACK[#2] items=3, …
+
+최종 매칭:
+
+[MATCH] pair=홍삼스틱 → coreRank=7 pos=…
+
+[MISS] pair=홍삼스틱 → feed_rank=4(미노출)
+
+DoD (검증 체크)
+
+“잠실 맛집/잠실 롯데월드몰 맛집” 같은 화면에서
+카드1의 3개=1~3위, 카드2의 3개=4~6위, 카드3의 1개=7위 로 저장됨.
+
+서치피드 아래는 rank=null, feed_rank=n(미노출 보조 정보).
+
+999 표기 금지: rank===null은 UI에서 **“미노출”**로만 표기.
+
+네 질문에 딱 답
+
+“3번째 카드 1위가 실제 전체 7위인데 왜 1위라 하냐?”
+→ 컨테이너(카드팩)를 1위로 본 잘못 때문. 위 평탄화 규칙으로 바로잡음.
+
+“같은 화면인데 왜 다 달라?”
+→ 경계/팩 처리가 구현마다 달라서 그래. 우리는 경계 기준 + 평탄화 + 제외 모듈 3단계로 사람이 보는 순서와 1:1로 고정해.
