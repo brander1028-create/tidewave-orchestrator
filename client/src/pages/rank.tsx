@@ -75,6 +75,11 @@ export default function Rank() {
   const [selectedRankingDetail, setSelectedRankingDetail] = React.useState<RankingData | null>(null);
   const [isAddBlogOpen, setIsAddBlogOpen] = React.useState(false);
   const [metadataLoading, setMetadataLoading] = React.useState(false);
+  // v7.13.2: 진행표시 상태들
+  const [isRunning, setIsRunning] = React.useState(false);
+  const [prog, setProg] = React.useState({done:0,total:0,percent:0,now:''});
+  const [rowLoading, setRowLoading] = React.useState<Record<string,boolean>>({});
+  const CONCURRENCY = 3;
   const queryClient = useQueryClient();
   
   // v7.13.1: Fetch blog-keyword pairs from API with proper auth
@@ -216,6 +221,84 @@ export default function Rank() {
       });
     },
   });
+
+  // v7.13.2: Blog 작업 계획 조회 함수
+  async function planBlogTasks(pairs: BlogKeywordTarget[]) {
+    try {
+      const targetIds = pairs.map(p => p.id).join(',');
+      const queries = pairs.map(p => p.keywordText).join(',');
+      const r = await fetch(`/api/rank/plan?kind=blog&target_ids=${encodeURIComponent(targetIds)}&query_override=${encodeURIComponent(queries)}`, {
+        headers: { 'x-role': 'admin' }
+      });
+      if (r.ok) return await r.json(); // {total,tasks:[{target_id,keyword,nickname}]}
+    } catch (e) {
+      console.error('Plan 조회 실패:', e);
+    }
+    return { total: pairs.length, tasks: pairs.map(p => ({target_id:p.id, keyword:p.keywordText, nickname:p.title || p.blogUrl})) };
+  }
+
+  // v7.13.2: 전체 순위 체크 실행 함수 (Blog-only + 진행표시)
+  async function runAllChecks() {
+    const selected = blogKeywordPairs.filter(p => p.active);
+    setIsRunning(true); 
+    setProg({done:0,total:0,percent:0,now:'준비중…'});
+
+    const plan = await planBlogTasks(selected);
+    if (!plan.total) { 
+      toast({title: '체크할 대상 없음', description: '활성화된 블로그-키워드 페어가 없습니다.'});
+      setIsRunning(false); 
+      return; 
+    }
+
+    setProg(p => ({...p,total:plan.total,now:'시작합니다'}));
+    let i=0, done=0, cancelled=false;
+    const tasks = [...plan.tasks];
+
+    async function worker(){
+      while(!cancelled && i<tasks.length){
+        const t = tasks[i++]; 
+        setRowLoading(s=>({...s,[t.target_id]:true}));
+        setProg(p=>({...p,now:`${t.keyword} · ${t.nickname}`}));
+        try { 
+          // Blog-only 배치 체크 API 호출
+          const response = await fetch('/api/scraping/batch-rank-check', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-role': 'admin'
+            },
+            body: JSON.stringify({
+              targets: [{
+                targetId: t.target_id,
+                query: t.keyword,
+                kind: 'blog',
+                device: 'mobile'
+              }]
+            })
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch(e){ 
+          console.error(`체크 실패 ${t.keyword}:`, e);
+        } finally{
+          setRowLoading(s=>({...s,[t.target_id]:false}));
+          done++; 
+          setProg({done,total:plan.total,percent:Math.round(done*100/plan.total),now:t.nickname});
+        }
+      }
+    }
+    
+    await Promise.all(Array.from({length: Math.min(CONCURRENCY, plan.total)}).map(()=>worker()));
+    
+    toast({
+      title: `완료: ${done}/${plan.total}`,
+      description: '블로그 순위 체크가 완료되었습니다.'
+    }); 
+    setIsRunning(false);
+    
+    // 결과 새로고침 - 페어와 랭크 스냅샷 모두 갱신
+    queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
+    queryClient.invalidateQueries({ queryKey: ['/api/rank-snapshots', 'blog'] });
+  }
 
   // Fetch rank snapshots for blog-keyword pairs
   const { data: rankSnapshots = [], isLoading: rankLoading } = useQuery({
@@ -424,8 +507,8 @@ export default function Rank() {
           >
             <Eye className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-            <RefreshCw className="h-4 w-4" />
+          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" disabled={rowLoading[row.original.id]}>
+            <RefreshCw className={`h-4 w-4 ${rowLoading[row.original.id] ? 'animate-spin' : ''}`} />
           </Button>
           <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
             <Bell className="h-4 w-4" />
@@ -609,15 +692,32 @@ export default function Rank() {
 
           {/* Quick Actions */}
           <div className="flex flex-wrap gap-4 items-center justify-between">
-            <div className="flex flex-wrap gap-3">
-              <StartAllChecksButton
-                onClick={() => {
-                  toast({
-                    title: "순위 체크 시작",
-                    description: "블로그 → 쇼핑 순으로 체크를 진행합니다.",
-                  });
-                }}
-              />
+            <div className="flex flex-wrap gap-3 items-center">
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-3">
+                  <StartAllChecksButton
+                    onClick={runAllChecks}
+                    isRunning={isRunning}
+                    disabled={isRunning || pairsLoading}
+                    progressText={isRunning ? `체크 중… (${prog.done}/${prog.total})` : '전체 체크 시작'}
+                  />
+                  {/* v7.13.2: 진행바 */}
+                  {isRunning && (
+                    <div className="flex-1 min-w-32 bg-gray-200 rounded-full h-2 overflow-hidden">
+                      <div 
+                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${prog.percent}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+                {/* v7.13.2: 현재 작업 텍스트 */}
+                {isRunning && prog.now && (
+                  <div className="text-xs text-muted-foreground">
+                    지금: {prog.now}
+                  </div>
+                )}
+              </div>
               <Button variant="outline" className="flex items-center gap-2">
                 <Download className="w-4 h-4" />
                 결과 내보내기

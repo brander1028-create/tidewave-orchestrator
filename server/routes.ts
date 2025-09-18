@@ -123,6 +123,12 @@ const updateCollectionStateSchema = z.object({
 }).strict();
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // v7.13.2: 키워드 메타 경로 강제 리다이렉트 (오경로→정상 리라이트)
+  app.get('/api/keywords/lookup/:text', (req, res) => {
+    const t = decodeURIComponent(req.params.text || '');
+    return res.redirect(307, `/api/keywords/lookup?texts=${encodeURIComponent(t)}`);
+  });
+
   // Real CRUD API routes for user data management
   
   // Tracked Targets API
@@ -1189,6 +1195,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const { targetId, query, kind, device, sort, target } = validation.data;
 
+      // v7.13.2: 쇼핑 랭크 기능 임시 비활성화
+      if (kind === 'shop') {
+        return res.status(501).json({ 
+          success: false, 
+          error: 'shop_rank_disabled',
+          message: '쇼핑 랭크 기능이 일시적으로 비활성화되었습니다' 
+        });
+      }
+
       // Initialize scraping service if needed
       await scrapingService.initialize();
 
@@ -1351,6 +1366,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Process shopping targets with scraping service using batch method
       if (shopTargets.length > 0) {
+        // v7.13.2: 쇼핑 랭크 기능 임시 비활성화
+        console.log(`[BatchRankCheck:${requestId}] Shop targets disabled - skipping ${shopTargets.length} shop targets`);
+        shopTargets.forEach(targetConfig => {
+          allResults.push({
+            targetId: targetConfig.targetId,
+            success: false,
+            data: null,
+            error: 'shop_rank_disabled',
+            source: 'scraping_service'
+          });
+        });
+      } else if (false) { // 원본 코드 보존 (비활성화)
         console.log(`[BatchRankCheck:${requestId}] Processing shop targets with scraping service`);
         
         try {

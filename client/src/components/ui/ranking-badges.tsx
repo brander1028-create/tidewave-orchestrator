@@ -219,9 +219,10 @@ interface StartAllChecksButtonProps {
   disabled?: boolean;
   onClick: () => void;
   className?: string;
+  progressText?: string;
 }
 
-export function StartAllChecksButton({ isRunning, disabled, onClick, className }: StartAllChecksButtonProps) {
+export function StartAllChecksButton({ isRunning, disabled, onClick, className, progressText }: StartAllChecksButtonProps) {
   return (
     <Button
       onClick={onClick}
@@ -239,12 +240,12 @@ export function StartAllChecksButton({ isRunning, disabled, onClick, className }
       {isRunning ? (
         <>
           <div className="w-4 h-4 mr-2 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          체크 진행 중...
+          {progressText || '체크 진행 중...'}
         </>
       ) : (
         <>
           <TrendingUp className="w-4 h-4 mr-2" />
-          전체 체크 시작
+          {progressText || '전체 체크 시작'}
         </>
       )}
     </Button>
