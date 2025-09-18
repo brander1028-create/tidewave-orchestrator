@@ -268,6 +268,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // v7.17: 히스토리 별칭을 리다이렉트 대신 내부 처리 (헤더 유지)
   app.get('/api/rank-snapshots/history', async (req, res) => {
+    // v7.19: 캐시 금지 헤더 추가
+    res.set('Cache-Control', 'no-store, max-age=0');
     // req.query(pair_id, range) 그대로 이용해서 rank/history 핸들러 호출
     return getRankHistoryHandler(req, res);
   });
@@ -833,6 +835,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v6 Rank Snapshots API
   app.get("/api/rank-snapshots", async (req, res) => {
     try {
+      // v7.19: 캐시 금지 헤더 추가
+      res.set('Cache-Control', 'no-store, max-age=0');
+      
       const owner = (req.headers['x-owner'] || req.headers['x-role']) as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
@@ -853,6 +858,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/rank-snapshots", async (req, res) => {
     try {
+      // v7.19: 캐시 금지 헤더 추가
+      res.set('Cache-Control', 'no-store, max-age=0');
+      
       const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
@@ -875,6 +883,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/rank/history/:targetId", async (req, res) => {
     try {
+      // v7.19: 캐시 금지 헤더 추가
+      res.set('Cache-Control', 'no-store, max-age=0');
+      
       const owner = req.headers['x-owner'] as string;
       if (!owner) {
         return res.status(401).json({ message: "권한이 없습니다" });
@@ -2829,6 +2840,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // v7.13 Blog-Keyword Pairs APIs - 1:1 매핑 통합 관리
   app.get("/api/pairs", async (req, res) => {
     try {
+      // v7.19: 캐시 금지 헤더 추가 (배치 실행 후 최신 데이터 보장)
+      res.set('Cache-Control', 'no-store');
+      
       // v7.18: x-owner 우선 사용으로 plan API와 통일
       const owner = (req.headers['x-owner'] || req.headers['x-role']) as string;
       if (!owner) {

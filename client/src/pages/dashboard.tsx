@@ -53,18 +53,10 @@ export default function Dashboard() {
   const lastSavedHash = useRef<string>('');
   const saveTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // 대시보드 설정 로드
+  // 대시보드 설정 로드 - v7.19: localStorage 기반 헤더 사용
   const { data: dashboardSettings } = useQuery<DashboardSettings[]>({
     queryKey: ['/api/dashboard/settings'],
-    queryFn: async () => {
-      const response = await fetch('/api/dashboard/settings', {
-        headers: { 'x-role': 'system' }
-      });
-      if (!response.ok) {
-        throw new Error('Failed to fetch dashboard settings');
-      }
-      return await response.json();
-    },
+    // Default queryFn 사용으로 localStorage 기반 헤더 자동 주입
   });
 
   // 🔧 핫픽스 v7.9: 안전한 대시보드 설정 저장 (디바운스 + 중복방지 + 낙관적 업데이트)

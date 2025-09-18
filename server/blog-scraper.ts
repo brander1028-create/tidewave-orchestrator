@@ -237,9 +237,9 @@ export class NaverBlogScraper {
         throw new Error(`HTTP ${response.status}: 네이버 검색 페이지 접근 실패`);
       }
 
-      // HTML 파싱 (디바이스 타입 전달)
+      // HTML 파싱 (디바이스 타입과 query 전달)
       const $ = cheerio.load(response.data);
-      const results = this.parseSearchResults($, device);
+      const results = this.parseSearchResults($, device, query);
 
       if (results.length === 0) {
         // 디버깅 로그 추가 (환경변수 확인 후)
@@ -379,56 +379,289 @@ export class NaverBlogScraper {
   }
 
   /**
-   * 검색 결과 HTML을 파싱하여 블로그 정보 추출 (개선된 셀렉터)
+   * v7.19 SERP Core 추출: 서치피드 경계 감지와 Core/Feed 분리
    */
-  private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc') {
-    const results: Array<{
-      rank: number;
-      page: number;
-      position: number;
-      title: string;
-      url: string;
-      snippet: string;
-      date: string;
-    }> = [];
-
-    // 디바이스별 개선된 셀렉터 사용
-    const selectors = this.getImprovedSelectors(device);
+  private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc', query: string = '') {
     
-    // 메인 결과 미어 시도
-    selectors.containers.forEach(containerSelector => {
-      $(containerSelector).each((index, element) => {
-        try {
-          const $el = $(element);
-          
-          // 광고 및 비로그 컨텐츠 제외
-          if (this.shouldSkipElement($el)) {
-            return;
+    // 서치피드 경계 감지
+    const boundaryEl = this.findSearchFeedBoundary($);
+    
+    // 최상위 결과 블록 감지
+    const blocks = this.queryAllTopLevelResultNodes($);
+    
+    let core: any[] = [], feed: any[] = [];
+    
+    if (blocks.length > 0) {
+      // 블록 기반 파싱
+      let hitBoundary = false;
+      for (const block of blocks) {
+        if (!hitBoundary && boundaryEl) {
+          // v7.19: 견고한 document-order 비교 (전역 순회 인덱스 기반)
+          const blockGlobalIndex = this.getGlobalNodeIndex($, block);
+          const boundaryGlobalIndex = this.getGlobalNodeIndex($, boundaryEl);
+          if (blockGlobalIndex > boundaryGlobalIndex) {
+            hitBoundary = true;
           }
-
-          const parsedResult = this.parseSearchItem($el, selectors);
-          if (parsedResult) {
-            results.push({
-              ...parsedResult,
-              rank: results.length + 1,
-              page: 1,
-              position: results.length + 1,
-              url: this.cleanUrl(parsedResult.url)
-            });
-          }
-        } catch (e) {
-          console.warn(`[BlogScraper] 결과 파싱 오류 (${containerSelector}):`, e);
         }
-      });
-      
-      // 결과가 있으면 다음 셀렉터를 시도하지 않음
-      if (results.length > 0) {
-        return false; // break out of forEach
+        
+        if (this.isBlogCard($, block)) {
+          const item = this.extractBlogItem($, block);
+          if (item) {
+            hitBoundary ? this.pushItem(item, feed) : this.pushItem(item, core);
+          }
+        }
       }
-    });
+    } else {
+      // Fallback: 앵커 스캔 방식
+      const anchors = $('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').toArray();
+      for (const anchor of anchors) {
+        const el = $(anchor).closest('article, div, section').get(0) || anchor;
+        if (this.isBlogCard($, el)) {
+          const item = this.extractBlogItem($, el);
+          if (item) {
+            // v7.19: 견고한 document-order 비교 (폴백 경로)
+            const elGlobalIndex = this.getGlobalNodeIndex($, el);
+            const boundaryGlobalIndex = boundaryEl ? this.getGlobalNodeIndex($, boundaryEl) : -1;
+            const isAboveBoundary = !boundaryEl || elGlobalIndex < boundaryGlobalIndex;
+            isAboveBoundary ? this.pushItem(item, core) : this.pushItem(item, feed);
+          }
+        }
+      }
+    }
+    
+    // 경계가 없으면 15위 제한
+    if (!boundaryEl) {
+      core = core.slice(0, 15);
+    }
+    
+    // 로그 출력 (필수)
+    const firstCoreUrl = core[0]?.url || 'none';
+    console.log(`[SERP] q="${query}" boundary=${!!boundaryEl} core=${core.length} feed=${feed.length} firstCoreUrl=${firstCoreUrl}`);
+    console.log(`[BlogScraper] 파싱된 결과 수: ${core.length}`);
+    
+    // Core 결과만 반환 (기존 형식과 호환)
+    return core.map((item, index) => ({
+      rank: index + 1,
+      page: 1,
+      position: index + 1,
+      title: item.title,
+      url: this.cleanUrl(item.url),
+      snippet: item.snippet,
+      date: item.date || ''
+    }));
+  }
 
-    console.log(`[BlogScraper] 파싱된 결과 수: ${results.length}`);
-    return results;
+  /**
+   * v7.19: 전역 노드 인덱스 계산 (document-order 비교용)
+   */
+  private getGlobalNodeIndex($: cheerio.CheerioAPI, targetNode: any): number {
+    let index = 0;
+    let found = false;
+    
+    // DOM 트리 전체를 depth-first 순회하며 인덱스 계산
+    function traverse(node: any) {
+      if (found) return;
+      
+      if (node === targetNode) {
+        found = true;
+        return;
+      }
+      
+      index++;
+      
+      // 자식 노드들 순회
+      const children = $(node).children().toArray();
+      for (const child of children) {
+        traverse(child);
+        if (found) return;
+      }
+    }
+    
+    // body 또는 root부터 순회 시작
+    const root = $('body').length > 0 ? $('body')[0] : $.root()[0];
+    traverse(root);
+    
+    return found ? index : -1;
+  }
+
+  /**
+   * 서치피드 경계 감지 (v7.19)
+   */
+  private findSearchFeedBoundary($: cheerio.CheerioAPI): any | null {
+    const elements = $('section, div, article').toArray();
+    
+    for (const el of elements) {
+      if (this.isSearchFeedBoundary($, el)) {
+        return el;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * 서치피드 경계 판정 (v7.19)
+   */
+  private isSearchFeedBoundary($: cheerio.CheerioAPI, el: any): boolean {
+    const text = $(el).text().replace(/\s+/g, '');
+    const hasSearchFeedText = text.includes('서치피드에서더많은콘텐츠를탐색해보세요') ||
+                             text.includes('더다양한콘텐츠');
+    
+    const hasSearchFeedSelector = $(el).is('[aria-label*="서치피드"], .sfeed, .search_feed');
+    
+    return hasSearchFeedText || hasSearchFeedSelector;
+  }
+
+  /**
+   * 블로그 카드 판정 (v7.19)
+   */
+  private isBlogCard($: cheerio.CheerioAPI, el: any): boolean {
+    const $el = $(el);
+    const anchor = $el.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').get(0);
+    if (!anchor) return false;
+    
+    // 광고 및 비블로그 섹션 제외
+    const isAd = $el.is('[data-ad], [data-nclick*="ad"], .ad_section, .place_section, .shop_section, .video_section, .brand_area');
+    
+    return !isAd;
+  }
+
+  /**
+   * 최상위 결과 노드 감지
+   */
+  private queryAllTopLevelResultNodes($: cheerio.CheerioAPI): any[] {
+    // 다양한 셀렉터로 블로그 결과 블록 감지
+    const selectors = [
+      '.lst_total .bx',
+      '.api_subject_bx', 
+      '.list_total .item',
+      '.content_wrap .item',
+      '.blog_area .item',
+      '.blog_list .item',
+      '.total_wrap .total_group'
+    ];
+    
+    const blocks: any[] = [];
+    for (const selector of selectors) {
+      const elements = $(selector).toArray();
+      blocks.push(...elements);
+    }
+    
+    return blocks;
+  }
+
+  /**
+   * 블로그 아이템 정보 추출
+   */
+  private extractBlogItem($: cheerio.CheerioAPI, el: any): any | null {
+    const $el = $(el);
+    
+    // URL 추출
+    const anchor = $el.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').first();
+    if (!anchor.length) return null;
+    
+    const url = this.canonical(anchor.attr('href') || '');
+    if (!url) return null;
+    
+    // 닉네임 추출
+    const nickname = this.nicknameFrom(url);
+    
+    // 제목 추출
+    const title = this.textFrom($, el);
+    
+    // 스니펫 추출
+    const snippet = this.extractSnippet($, el);
+    
+    return {
+      url,
+      nickname,
+      title,
+      snippet,
+      date: ''
+    };
+  }
+
+  /**
+   * 아이템을 배열에 추가하면서 위치 설정
+   */
+  private pushItem(item: any, arr: any[]): void {
+    arr.push({
+      ...item,
+      pos: arr.length
+    });
+  }
+
+  /**
+   * URL 정규화 (canonical 형태)
+   */
+  private canonical(url: string): string {
+    return this.unifyNaverBlogUrl(url);
+  }
+
+  /**
+   * URL에서 닉네임 추출
+   */
+  private nicknameFrom(url: string): string {
+    try {
+      const urlObj = new URL(url);
+      const pathParts = urlObj.pathname.split('/');
+      return pathParts[1] || '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 요소에서 텍스트 추출
+   */
+  private textFrom($: cheerio.CheerioAPI, el: any): string {
+    const $el = $(el);
+    
+    // 제목 셀렉터들
+    const titleSelectors = [
+      'a.title_link',
+      '.title_link', 
+      '.api_txt_lines.total_tit',
+      '.tit',
+      '.total_tit',
+      'a[href*="blog.naver.com"] .title',
+      'a[href*="blog.naver.com"]'
+    ];
+    
+    for (const selector of titleSelectors) {
+      const titleEl = $el.find(selector);
+      if (titleEl.length > 0) {
+        const text = titleEl.text().trim();
+        if (text) return text;
+      }
+    }
+    
+    return '';
+  }
+
+  /**
+   * 스니펫 텍스트 추출
+   */
+  private extractSnippet($: cheerio.CheerioAPI, el: any): string {
+    const $el = $(el);
+    
+    const snippetSelectors = [
+      '.total_dsc .dsc_txt_wrap',
+      '.dsc_txt_wrap',
+      '.api_txt_lines.dsc_txt_wrap',
+      '.dsc',
+      '.sub_txt'
+    ];
+    
+    for (const selector of snippetSelectors) {
+      const snippetEl = $el.find(selector);
+      if (snippetEl.length > 0) {
+        const text = snippetEl.text().trim();
+        if (text) return text;
+      }
+    }
+    
+    return '';
   }
 
   /**
@@ -546,7 +779,7 @@ export class NaverBlogScraper {
     }
 
     const $ = cheerio.load(response.data);
-    const results = this.parseSearchResults($, device);
+    const results = this.parseSearchResults($, device, query);
     
     return results.map(r => ({
       ...r,

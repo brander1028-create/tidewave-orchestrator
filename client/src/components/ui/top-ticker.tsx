@@ -101,18 +101,10 @@ export function TopTicker({ items, speed = 50, className }: TopTickerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
 
-  // API에서 롤링 알림 데이터 가져오기 (조회량 상위 우선, 24h 기간)
+  // API에서 롤링 알림 데이터 가져오기 - v7.19: localStorage 기반 헤더 사용
   const { data: apiAlerts, isLoading } = useQuery<RollingAlert[]>({
-    queryKey: ['/api/alerts/rolling'],
-    queryFn: async () => {
-      const response = await fetch('/api/alerts/rolling?limit=10&since=24h', {
-        headers: { 'x-role': 'system' }
-      });
-      if (!response.ok) {
-        throw new Error('Failed to fetch rolling alerts');
-      }
-      return await response.json();
-    },
+    queryKey: ['/api/alerts/rolling?limit=10&since=24h'],
+    // Default queryFn 사용으로 localStorage 기반 헤더 자동 주입
     refetchInterval: 30000, // 30초마다 새로고침
     staleTime: 10000, // 10초간 fresh 상태 유지
   });

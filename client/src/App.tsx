@@ -40,6 +40,8 @@ function Router() {
 }
 
 function App() {
+  // v7.19: localStorage 초기화는 main.tsx에서 미리 처리됨
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

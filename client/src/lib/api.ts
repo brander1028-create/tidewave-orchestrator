@@ -12,12 +12,13 @@ import type {
   InsertManualBlogEntry
 } from "@shared/schema";
 
-// v7.18: API 클라이언트 인터셉터 - 권한 헤더 강제 주입 + 디버깅
+// v7.19: API 클라이언트 인터셉터 - localStorage 기반 권한 헤더 주입
 export const http = (path: string, init: RequestInit = {}) => {
   const h = new Headers(init.headers || {});
   
-  // v7.18: 표준화된 owner 헤더 통일 (x-owner=system)
-  h.set('x-owner', 'system');
+  // v7.19: localStorage 기반 오너/권한 헤더 통일
+  h.set('x-role', localStorage.getItem('role') ?? 'Admin');
+  h.set('x-owner', localStorage.getItem('owner') ?? 'system');
   
   return fetch(path, { ...init, headers: h, credentials: 'include' });
 };

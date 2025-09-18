@@ -436,9 +436,21 @@ export default function Rank() {
     }); 
     setIsRunning(false);
     
-    // 결과 새로고침 - 페어와 랭크 스냅샷 모두 갱신
+    // v7.19: 실행 후 랭크 리스트 refetch 강제 (no-cache)
     queryClient.invalidateQueries({ queryKey: ['/api/pairs'] });
     queryClient.invalidateQueries({ queryKey: ['/api/rank-snapshots', 'blog'] });
+    
+    // 강제 새로고침을 위한 추가 fetch (타임스탬프 기반)
+    queryClient.refetchQueries({ 
+      queryKey: ['/api/pairs'], 
+      type: 'active',
+      exact: false 
+    });
+    queryClient.refetchQueries({ 
+      queryKey: ['/api/rank-snapshots'], 
+      type: 'active',
+      exact: false 
+    });
   }
 
   // Fetch rank snapshots for blog-keyword pairs

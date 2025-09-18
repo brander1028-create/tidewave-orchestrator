@@ -1,0 +1,150 @@
+v7.19 — SERP Core 추출 고정 + 캐시 금지 + 히스토리 표시
+A) 서버: 모바일 SERP 파서(Core 전용) 보강
+
+파일: server/services/blogScraper.ts (또는 serpScraper)
+
+경계 감지(서치피드) – 다중 후보 OR 매칭
+
+function isSearchFeedBoundary(el: Element): boolean {
+  const t = (el.textContent || '').replace(/\s+/g,'');
+  return t.includes('서치피드에서더많은콘텐츠를탐색해보세요') ||
+         t.includes('더다양한콘텐츠') ||
+         el.matches('[aria-label*="서치피드"], .sfeed, .search_feed');
+}
+
+
+블로그 카드 판정 – blog.naver.com 앵커 기준
+
+function isBlogCard(el: Element): boolean {
+  const a = el.querySelector('a[href*="blog.naver.com/"],a[href*="m.blog.naver.com/"]');
+  if (!a) return false;
+  if (el.matches('[data-ad], [data-nclick*="ad"], .ad_section, .place_section, .shop_section, .video_section, .brand_area'))
+    return false;
+  return true;
+}
+
+
+Core/Feed 분리(경계 ‘위’만 랭크)
+최상위 결과 블록이 안 잡히면 앵커 스캔 Fallback 사용.
+
+const blocks = queryAllTopLevelResultNodes(doc); // 없다면 []
+const boundaryEl = [...doc.querySelectorAll('section,div,article')].find(isSearchFeedBoundary);
+
+let core: any[] = [], feed: any[] = [];
+const pushItem = (el: Element, arr: any[]) => {
+  const a = el.querySelector('a[href*="blog.naver.com/"],a[href*="m.blog.naver.com/"]')!;
+  const url = canonical(a.getAttribute('href')!);
+  arr.push({ url, nickname: nicknameFrom(url), title: textFrom(el), pos: arr.length });
+};
+
+if (blocks.length) {
+  let hit = false;
+  for (const b of blocks) {
+    if (!hit && boundaryEl && b.compareDocumentPosition(boundaryEl) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      // b가 boundary 아래면 hit=true
+      hit = true;
+    }
+    if (!isBlogCard(b)) continue;
+    hit ? pushItem(b, feed) : pushItem(b, core);
+  }
+} else {
+  // Fallback: 문서 순서로 앵커 나열 후 경계 비교
+  const anchors = [...doc.querySelectorAll('a[href*="blog.naver.com/"],a[href*="m.blog.naver.com/"]')];
+  for (const a of anchors) {
+    const el = a.closest('article,div,section') || a;
+    if (!isBlogCard(el)) continue;
+    const above = !boundaryEl || (el.compareDocumentPosition(boundaryEl) & Node.DOCUMENT_POSITION_FOLLOWING);
+    above ? pushItem(el, core) : pushItem(el, feed); // 주의: FOLLOING = el이 boundary 위
+  }
+}
+if (!boundaryEl) core = core.slice(0, 15); // 경계 없으면 15위 제한
+return { core, feed, debug: { boundary: !!boundaryEl, coreCount: core.length, feedCount: feed.length } };
+
+
+로그(반드시):
+[SERP] q="홍삼스틱" boundary=true core=7 feed=12 firstCoreUrl=...
+
+페어 매칭 – postId→canonical→닉네임 순
+
+function matchPair(pair, item){
+  if (postId(pair.blogUrl) && postId(pair.blogUrl) === postId(item.url)) return true;
+  if (canonical(pair.blogUrl) === item.url) return true;
+  if (pair.nickname && pair.nickname === item.nickname) return true;
+  return false;
+}
+
+B) 서버: 키워드 메타 401 종결(리다이렉트 제거)
+// server/routes.ts
+app.get('/api/keywords/lookup/:text', (req,res)=>{
+  const t = decodeURIComponent(req.params.text||'').trim();
+  if(!t) return res.status(400).json({message:'text required'});
+  req.query.texts = t;                  // 내부 핸들러로 직접 처리
+  return keywordsLookupHandler(req,res); // 307 금지: 헤더 보존
+});
+
+C) 서버: /api/rank/plan = Pairs 기반 + 선택 우선 + owner 보완
+// server/routes.ts
+app.get('/api/rank/plan', async (req,res)=>{
+  const owner = String(req.headers['x-owner'] || 'system');
+  const ids = []
+    .concat(req.query.pair_ids || req.query.target_ids || [])
+    .map(String).filter(Boolean);
+
+  let pairs = [];
+  if (ids.length)       pairs = await storage.findPairsByIds(ids);     // owner 미필터: 선택 우선
+  if (!pairs.length)    pairs = await storage.getActivePairs(owner);   // 활성 페어
+  if (!pairs.length)    pairs = await storage.getPairsByOwner(owner);  // 마지막 보완
+
+  console.info(`[RankPlan] owner=${owner} ids=${ids.length} pairs=${pairs.length}`);
+  return res.json({ total: pairs.length,
+    tasks: pairs.map(p=>({pair_id:p.id, keyword:p.keywordText, nickname:p.nickname||''})) });
+});
+
+
+storage.ts 필요 메서드: findPairsByIds(ids), getActivePairs(owner), getPairsByOwner(owner) (Mem/DB 둘 다)
+
+D) 서버: 랭크 스냅샷/히스토리 캐시 금지
+
+모든 랭크 응답에:
+
+res.set('Cache-Control','no-store, max-age=0');
+
+
+/api/rank-snapshots, /api/rank/history, /api/rank-snapshots/history(별칭은 내부 처리)
+
+E) 클라이언트: 실행/진행표시 Blog-only 고정
+
+버튼 라벨: 체크 중… (a/N) + 얇은 진행바(%) + 지금: 키워드·닉네임
+
+행별 스피너: 해당 pair만 켜기/끄기
+
+호출은 /api/rank/blog/check만 (shop 호출 금지)
+
+실행 후: 랭크 리스트 refetch 강제(no-cache, 또는 ?ts=${Date.now()} 붙이기)
+
+F) 클라이언트: 오너/권한 헤더 통일
+// http 래퍼
+h.set('x-role',  localStorage.getItem('role')  ?? 'Admin');
+h.set('x-owner', localStorage.getItem('owner') ?? 'system');
+
+
+콘솔에서 1회: localStorage.owner='system'
+
+G) 스모크(지금 바로 확인할 3가지)
+
+plan > 0
+GET /api/rank/plan?pair_ids[]=84a03a86-... → {"total":1,"tasks":[...]} (로그: pairs=1)
+
+SERP 파싱
+BlogScraper] 파싱된 결과 수: N>0 + [SERP] boundary=true core=N feed=M
+
+스냅샷 표시
+GET /api/rank/history?pair_id=84a0... 에 최근 ts가 보이고, UI “마지막 체크”가 갱신
+
+왜 지금 “rank=null, 0건, 리스트 빈값”이 나왔나?
+
+파싱 0건 → 경계/셀렉터가 Core 블로그를 못 잡음(이 패치가 해결)
+
+plan=0 → plan이 pairs가 아니라 옛 blog_targets를 보거나 owner 미스매치(위 C로 해결)
+
+리스트 304 → ETag 캐시로 빈 배열만 재사용(위 D로 해결)
