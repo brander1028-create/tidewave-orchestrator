@@ -153,10 +153,78 @@ export async function processPostTitleV17(
   console.log(`📝 [v17] Extracted ${toks.length} tokens: ${toks.slice(0, 5).join(', ')}...`);
   
   if (toks.length === 0) {
-    console.log(`⚠️ [v17] No eligible tokens after filtering`);
+    console.log(`⚠️ [v17] No eligible tokens after filtering, using input keyword as fallback`);
+    // ✅ 입력 키워드를 T1으로 사용하여 빈 결과 방지
+    const fallbackTokens = [inputKeyword];
+    console.log(`🔄 [v17 Fallback] Using input keyword "${inputKeyword}" as T1 candidate`);
+    
+    // fallback 토큰으로 진행
+    const fallbackCandidates: Candidate[] = fallbackTokens.map(tok => ({
+      text: tok,
+      frequency: 1,
+      position: 0,
+      length: tok.length,
+      compound: false,
+      volume: 0,
+      rank: null,
+      adScore: 0,
+      eligible: true
+    }));
+    
+    // T1만 생성하고 나머지는 빈 상태로 저장
+    const tiers: Tier[] = [
+      {
+        tier: 1,
+        candidate: {
+          text: inputKeyword,
+          volume: 0,
+          frequency: 1,
+          position: 0,
+          length: inputKeyword.length,
+          compound: false,
+          rank: null,
+          adScore: 0,
+          eligible: true
+        },
+        score: 50 // 기본 점수
+      }
+    ];
+    
+    // 데이터베이스에 tier 정보 저장
+    try {
+      for (const tier of tiers) {
+        await db.insert(postTierChecks).values({
+          jobId: jobId,
+          blogId: blogId,
+          postId: postId.toString(),
+          postTitle: title,
+          inputKeyword: inputKeyword,
+          tier: tier.tier,
+          textSurface: tier.candidate.text,
+          textNrm: tier.candidate.text,
+          volume: tier.candidate.volume || null,
+          rank: tier.candidate.rank || null,
+          score: tier.score,
+          eligible: tier.candidate.eligible || false,
+          adscore: tier.candidate.adScore || null
+        });
+      }
+      console.log(`✅ [v17 Fallback] Saved ${tiers.length} tier to database`);
+    } catch (error) {
+      console.error(`❌ [v17 Fallback] Failed to save tiers:`, error);
+    }
+    
     return {
-      tiers: [],
-      stats: { candidatesGenerated: 0, preEnriched: 0, gateFiltered: 0, tiersAutoFilled: 0 }
+      tiers: tiers.map(t => ({
+        tier: t.tier,
+        text: t.candidate.text,
+        volume: t.candidate.volume || null,
+        rank: t.candidate.rank || null,
+        score: t.score,
+        adScore: t.candidate.adScore || undefined,
+        eligible: t.candidate.eligible || undefined
+      })),
+      stats: { candidatesGenerated: 1, preEnriched: 0, gateFiltered: 0, tiersAutoFilled: 0 }
     };
   }
   

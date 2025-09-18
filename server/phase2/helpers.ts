@@ -131,7 +131,9 @@ export function assembleResults(jobId: string, tiers: any[], cfg: any) {
     summaryByKeyword,           // ★ v17 UI가 읽는 필드
     finalStats,                 // ★ 레거시 대비
     attemptsByKeyword,          // ★ Legacy UI 호환성
-    exposureStatsByKeyword      // ★ Legacy UI 호환성
+    exposureStatsByKeyword,     // ★ Legacy UI 호환성
+    tiers,                      // ★ API 응답에 최상위 tiers 배열 추가
+    postTierChecks: tiers       // ★ postTierChecks로도 동일한 데이터 제공
   };
 }
 
