@@ -22,11 +22,13 @@ import { db } from './db';
 import type { HealthResponse } from './types';
 import multer from 'multer';
 
-// ✅ 파이프라인 고정: v17-deterministic만 사용
-const DETERMINISTIC_ONLY = true;
+// ✅ 하이브리드 모드: DB 캐시 우선, 새 키워드만 제한적 API 호출
+const HYBRID_MODE = true;
+const DETERMINISTIC_ONLY = false; // 완전 차단 해제
 const PIPELINE_MODE: 'v17-deterministic'|'legacy' = 'v17-deterministic';
 
-// ✅ 환경 변수로 설정하여 모든 서비스에서 인식
+// ✅ 환경 변수로 설정하여 모든 서비스에서 인식  
+process.env.HYBRID_MODE = HYBRID_MODE.toString();
 process.env.DETERMINISTIC_ONLY = DETERMINISTIC_ONLY.toString();
 
 // ✅ Health-Probe에서 SearchAds 활성화

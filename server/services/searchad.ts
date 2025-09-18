@@ -155,6 +155,59 @@ export async function getVolumes(rawKeywords: string[]): Promise<SearchAdResult>
     };
   }
 
+  // 🔄 HYBRID MODE: 배치 크기 제한으로 413/400 오류 방지
+  if (process.env.HYBRID_MODE === 'true' && rawKeywords.length > 10) {
+    console.log(`🔄 [HYBRID MODE] Limiting batch size to 10 keywords (from ${rawKeywords.length}) to prevent API errors`);
+    const limitedKeywords = rawKeywords.slice(0, 10);
+    const skippedKeywords = rawKeywords.slice(10);
+    
+    // 처리되지 않은 키워드는 fallback으로 설정
+    const fallbackVolumes: Record<string, Vol> = {};
+    skippedKeywords.forEach(k => {
+      const keyword = k.trim();
+      if (keyword) {
+        fallbackVolumes[keyword] = { pc: 0, mobile: 0, total: 0 };
+      }
+    });
+    
+    // 제한된 키워드로 재귀 호출 (크기 제한 없이)
+    console.log(`🔄 [HYBRID MODE] Processing ${limitedKeywords.length} keywords via API`);
+    const originalHybridMode = process.env.HYBRID_MODE;
+    process.env.HYBRID_MODE = 'false'; // 재귀 호출 시 하이브리드 모드 비활성화
+    
+    try {
+      const apiResult = await getVolumes(limitedKeywords);
+      process.env.HYBRID_MODE = originalHybridMode; // 복원
+      
+      // 결과 합치기
+      const combinedVolumes = { ...apiResult.volumes, ...fallbackVolumes };
+      return {
+        ...apiResult,
+        volumes: combinedVolumes,
+        reason: `Hybrid mode: processed ${limitedKeywords.length}/${rawKeywords.length} keywords via API`
+      };
+    } catch (error) {
+      process.env.HYBRID_MODE = originalHybridMode; // 복원
+      console.error(`❌ [HYBRID MODE] API call failed, using fallback for all keywords:`, error);
+      
+      // 모든 키워드를 fallback으로 설정
+      const allFallbackVolumes: Record<string, Vol> = {};
+      rawKeywords.forEach(k => {
+        const keyword = k.trim();
+        if (keyword) {
+          allFallbackVolumes[keyword] = { pc: 0, mobile: 0, total: 0 };
+        }
+      });
+      
+      return {
+        volumes: allFallbackVolumes,
+        mode: 'fallback',
+        stats: { requested: 0, ok: 0, fail: 0, http: {} },
+        reason: 'Hybrid mode API call failed, fallback used'
+      };
+    }
+  }
+
   let API_KEY = process.env.SEARCHAD_API_KEY!;
   const SECRET = process.env.SEARCHAD_SECRET_KEY!;
   const CUSTOMER = process.env.SEARCHAD_CUSTOMER_ID!;

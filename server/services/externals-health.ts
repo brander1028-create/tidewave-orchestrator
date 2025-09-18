@@ -9,6 +9,7 @@ import { sql, inArray, gt, gte } from 'drizzle-orm';
 
 // 🔒 비상 차단: 모든 외부 API 호출 차단
 const DET_ONLY = process.env.DETERMINISTIC_ONLY === 'true';
+const HYBRID_MODE = process.env.HYBRID_MODE === 'true';
 
 /**
  * v10 A번: DB→API→업서트→동일 응답 재스코어 파이프라인 구현
@@ -33,6 +34,105 @@ export async function getVolumesWithHealth(
       };
     });
     return { volumes, mode: 'fallback' as const, stats: { requested: 0, ok: 0, fail: 0, http: {} } };
+  }
+
+  // 🔄 HYBRID MODE: 캐시 우선 사용, 새로운 키워드만 제한적 API 호출
+  if (HYBRID_MODE) {
+    console.log(`🔄 [HYBRID MODE] Cache-first approach for ${keywords.length} keywords`);
+    
+    // 모든 키워드에 대해 DB 캐시 조회 (TTL 무시)
+    const rows = await db.select().from(managedKeywords).where(inArray(managedKeywords.text, keywords));
+    const volumes: Record<string, any> = {};
+    const cachedKeywords = new Set<string>();
+    const missingKeywords: string[] = [];
+    
+    // 캐시된 키워드 사용 (조회량이 있는 것만)
+    rows.forEach(row => {
+      if (row.raw_volume && row.raw_volume > 0) {
+        volumes[row.text] = {
+          total: row.raw_volume,
+          compIdx: row.comp_idx || '낮음',
+          plAvgDepth: row.ad_depth || 0,
+          avePcCpc: row.est_cpc_krw || 0
+        };
+        cachedKeywords.add(row.text);
+        console.log(`✅ [HYBRID CACHE] "${row.text}" → volume ${row.raw_volume} (cached)`);
+      }
+    });
+    
+    // 캐시에 없거나 조회량이 0인 키워드 식별
+    keywords.forEach(keyword => {
+      if (!cachedKeywords.has(keyword)) {
+        missingKeywords.push(keyword);
+      }
+    });
+    
+    console.log(`🔄 [HYBRID MODE] Cached: ${cachedKeywords.size}, Missing: ${missingKeywords.length}`);
+    
+    // 새로운 키워드가 있으면 제한적으로 API 호출
+    if (missingKeywords.length > 0) {
+      console.log(`🚀 [HYBRID API] Calling API for ${missingKeywords.length} missing keywords: ${missingKeywords.slice(0, 3).join(', ')}...`);
+      
+      try {
+        const apiResult = await getVolumes(missingKeywords);
+        
+        // API 결과를 volumes에 추가
+        Object.entries(apiResult.volumes).forEach(([key, value]) => {
+          volumes[key] = value;
+          console.log(`📊 [HYBRID API] "${key}" → volume ${value.total} (API)`);
+        });
+        
+        // DB에 새로운 데이터 저장 (비동기, 실패해도 무시)
+        if (apiResult.mode === 'searchads') {
+          const upsertData: Partial<InsertManagedKeyword>[] = Object.entries(apiResult.volumes).map(([text, vol]) => ({
+            text,
+            raw_volume: vol.total,
+            volume: vol.total,
+            source: 'api_ok',
+            updated_at: new Date()
+          }));
+          
+          upsertMany(upsertData).catch(err => 
+            console.error(`⚠️ [HYBRID] Failed to cache API results:`, err)
+          );
+        }
+        
+        return { 
+          volumes, 
+          mode: 'partial' as const, 
+          stats: { 
+            requested: missingKeywords.length, 
+            ok: Object.keys(apiResult.volumes).length, 
+            fail: 0, 
+            http: apiResult.stats.http 
+          },
+          reason: `Hybrid mode: ${cachedKeywords.size} cached, ${Object.keys(apiResult.volumes).length} from API`
+        };
+        
+      } catch (error) {
+        console.error(`❌ [HYBRID API] Failed, using cache-only for missing keywords:`, error);
+        
+        // API 실패 시 누락된 키워드는 0으로 설정
+        missingKeywords.forEach(keyword => {
+          volumes[keyword] = { total: 0, compIdx: '낮음', plAvgDepth: 0, avePcCpc: 0 };
+        });
+        
+        return { 
+          volumes, 
+          mode: 'fallback' as const, 
+          stats: { requested: 0, ok: 0, fail: missingKeywords.length, http: {} },
+          reason: `Hybrid mode API failed: ${cachedKeywords.size} cached, ${missingKeywords.length} fallback to 0`
+        };
+      }
+    }
+    
+    // 모든 키워드가 캐시에 있는 경우
+    return { 
+      volumes, 
+      mode: 'fallback' as const, 
+      stats: { requested: 0, ok: cachedKeywords.size, fail: 0, http: {} },
+      reason: `All ${cachedKeywords.size} keywords served from cache`
+    };
   }
   try {
     console.log(`🔍 [v10 A번] DB→API→업서트 파이프라인 시작: ${keywords.length}개 키워드`);
