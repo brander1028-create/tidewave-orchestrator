@@ -515,7 +515,7 @@ export default function Rank() {
 
   // 키워드별 메타데이터 매핑 헬퍼 함수
   const getKeywordMetadata = (keyword: string) => {
-    if (!keywordMetadata || keywordMetadataLoading) {
+    if (!keywordMetadata || keywordMetadataLoading || !Array.isArray(keywordMetadata)) {
       return { volume: 0, score: 0, trend: 'stable' as const };
     }
     
@@ -987,7 +987,7 @@ export default function Rank() {
                   <CardContent className="pt-6">
                     <div className="text-center">
                       <div className="text-3xl font-bold text-chart-1 mb-2">
-                        {101 - selectedRankingDetail.rank}
+                        {selectedRankingDetail.rank ? (101 - selectedRankingDetail.rank) : 0}
                       </div>
                       <div className="text-sm text-muted-foreground mb-3">순위 점수</div>
                       <div className="text-xs text-muted-foreground">(101 - 순위)</div>
@@ -1144,7 +1144,7 @@ export default function Rank() {
                         placeholder="https://blog.naver.com/..." 
                         {...field}
                         onBlur={(e) => {
-                          field.onBlur(e);
+                          field.onBlur();
                           handleUrlBlur(e.target.value);
                         }}
                         data-testid="input-blog-url"

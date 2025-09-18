@@ -364,7 +364,7 @@ export default function Dashboard() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-3">
-            {recentAlerts.map((alert) => (
+            {recentAlerts.map((alert: any) => (
               <div key={alert.id} className="flex items-start gap-3 p-3 bg-secondary/20 rounded-lg">
                 <div className={`w-2 h-2 rounded-full mt-2 ${
                   alert.severity === 'high' ? 'bg-red-500' :
@@ -397,7 +397,7 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {topPerformers.map((item, index) => (
+            {topPerformers.map((item: any, index: number) => (
               <div key={index} className="flex items-center justify-between p-3 bg-green-500/10 rounded-lg">
                 <div>
                   <div className="font-medium text-foreground text-sm">{item.keyword}</div>
@@ -420,7 +420,7 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {needsAttention.map((item, index) => (
+            {needsAttention.map((item: any, index: number) => (
               <div key={index} className="flex items-center justify-between p-3 bg-red-500/10 rounded-lg">
                 <div>
                   <div className="font-medium text-foreground text-sm">{item.keyword}</div>

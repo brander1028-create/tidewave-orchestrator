@@ -1570,11 +1570,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   query: targetConfig.query,
                   sort: targetConfig.sort || null,
                   device: targetConfig.device,
-                  rank: result.data.rank || null,
-                  page: result.data.page || null,
-                  position: result.data.position || null,
+                  rank: result.data?.rank || null,
+                  page: result.data?.page || null,
+                  position: result.data?.position || null,
                   source: 'playwright_scraping',
-                  metadata: result.data.metadata
+                  metadata: result.data?.metadata || {}
                 };
 
                 await storage.insertRankData(rankData);
@@ -1801,10 +1801,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .map(s => ({
               keyword: s.query || s.targetId || 'Unknown',
               rank: s.rank || null,
-              change: s.prevRank && s.rank ? (s.prevRank - s.rank) : 0,
-              trend: s.prevRank && s.rank 
-                ? (s.prevRank > s.rank ? "up" : s.prevRank < s.rank ? "down" : "stable") 
-                : "stable"
+              change: 0, // TODO: Calculate from historical data
+              trend: "stable" as const
             }))
         : [];
 
@@ -1816,10 +1814,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .map(s => ({
               keyword: s.query || s.targetId || 'Unknown',
               rank: s.rank || null,
-              change: s.prevRank && s.rank ? (s.prevRank - s.rank) : null,
-              trend: s.prevRank && s.rank 
-                ? (s.prevRank > s.rank ? "up" : s.prevRank < s.rank ? "down" : "stable") 
-                : "stable"
+              change: null, // TODO: Calculate from historical data
+              trend: "stable" as const
             }))
         : [];
         
@@ -2984,8 +2980,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         blogUrlNorm,
         nickname,
         title: finalTitle,
-        brand: brand || null,
-        groupName: groupName || null,
+        brand: brand || undefined,
+        groupName: groupName || undefined,
         active: active ?? true,
       };
       
