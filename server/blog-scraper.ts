@@ -29,9 +29,9 @@ export class NaverBlogScraper {
   // 동시성 제한 (최대 3개 동시 요청)
   private concurrencyLimit = pLimit(3);
   
-  // User Agent 개선 (모바일과 PC 분리)
+  // User Agent 개선 (모바일 Android + PC 분리)
   private userAgents = {
-    mobile: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    mobile: 'Mozilla/5.0 (Linux; Android 14; SM-G991N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
     pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   };
   
@@ -165,27 +165,29 @@ export class NaverBlogScraper {
   }
 
   /**
-   * 디바이스별 최적화된 헤더 반환
+   * v7.19 강화: 디바이스별 최적화된 헤더 (모바일 Android 대응)
    */
   private getHeaders(device: 'pc' | 'mobile' = 'pc') {
     const baseHeaders = {
       'User-Agent': this.userAgents[device],
+      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.1', // 한국어 우선순위 높임
       'Accept-Encoding': 'gzip, deflate, br',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
       'Connection': 'keep-alive',
       'Upgrade-Insecure-Requests': '1',
-      'Cache-Control': 'no-cache', // 캐시 무효화로 최신 결과 확보
-      'Pragma': 'no-cache',
       'DNT': '1',
-      'Referer': 'https://www.naver.com/',
+      'Referer': device === 'mobile' ? 'https://m.naver.com' : 'https://www.naver.com/'
     };
 
-    // 디바이스별 추가 헤더
+    // 모바일 Android 특화 헤더
     if (device === 'mobile') {
       return {
         ...baseHeaders,
         'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'sec-ch-ua-platform': '"Android"',
         'Viewport-Width': '390',
         'sec-ch-viewport-width': '390'
       };
@@ -379,12 +381,11 @@ export class NaverBlogScraper {
   }
 
   /**
-   * v7.20 SERP Core 추출: 인덱스 기반 경계 처리로 Core/Feed 정확 분리
+   * v7.19 최종: SERP Core 추출 - 경계/셀렉터/평탄화 보강
    */
   private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc', query: string = '') {
-    
-    // 1) 결과 블록 선형 시퀀스 구성
-    const blocks = $('section, article, li, div.total_wrap, div').toArray();
+    // 1) DOM 블록 순서 보존 (document order)
+    const blocks = Array.from($('section, article, li, div.total_wrap, div'));
     const boundaryEl = blocks.find(block => this.isSearchFeedBoundary($, block));
     const boundaryIdx = boundaryEl ? blocks.findIndex(b => 
       b === boundaryEl || 
@@ -395,9 +396,10 @@ export class NaverBlogScraper {
     const core: any[] = [], feed: any[] = [];
     const seen = new Set<string>();
 
-    // 아이템 추가 함수 (중복 제거)
+    // 아이템 추가 함수 (중복 제거 + 앵커 Fallback)
     const pushItem = (node: any, arr: any[]) => {
-      const anchor = $(node).find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').first();
+      const $node = $(node);
+      const anchor = $node.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').first();
       if (!anchor.length) return;
       
       const href = anchor.attr('href') || '';
@@ -408,59 +410,68 @@ export class NaverBlogScraper {
       arr.push({
         url,
         nickname: this.extractNickname(url),
-        title: $(node).text().trim(),
+        title: $node.text().trim(),
         pos: arr.length
       });
     };
 
-    // 2) 선형 순서대로 스캔: 경계 이전=core, 이후=feed
-    for (let idx = 0; idx < blocks.length; idx++) {
-      const block = blocks[idx];
-
-      // 경계 자체는 건너뜀
+    // 2) 인덱스 기반 경계 분기: 경계 이후 = feed
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      
+      // 경계 자체 skip
       if (boundaryIdx >= 0 && (block === boundaryEl || $(boundaryEl).has(block).length > 0)) {
         continue;
       }
-
-      // ★ 핵심: 경계 이후 = feed (정방향 고정)
-      const isFeed = (boundaryIdx >= 0) && (idx > boundaryIdx);
       
-      // 블로그 카드 팩이면 내부 아이템을 평탄화하여 추가
+      // ★ 핵심: 경계 이후 = feed (인덱스 기반)
+      const isFeed = (boundaryIdx >= 0) && (i > boundaryIdx);
+      
+      // 카드팩 평탄화 처리
       if (this.isCardPack($, block)) {
         const items = this.blogItemNodesIn($, block);
         for (const item of items) {
           pushItem(item, isFeed ? feed : core);
         }
       } else if (this.isBlogCard($, block)) {
-        // 단일 블로그 카드
         pushItem(block, isFeed ? feed : core);
       }
     }
 
-    // 경계가 없으면 Core 15개 제한
+    // 앵커 Fallback (Core가 비어있을 때)
+    if (core.length === 0) {
+      $('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').each((_, anchor) => {
+        const node = $(anchor).closest('li, article, div.total_wrap, div')[0] || $(anchor).parent()[0];
+        if (node && this.isBlogCard($, node)) {
+          pushItem(node, core);
+        }
+      });
+    }
+
+    // 경계 없으면 Core 15개 제한
     if (boundaryIdx < 0) {
       core.splice(15);
     }
     
-    // 로그 출력 (필수)
+    // 필수 로그
     const firstCoreUrl = core[0]?.url || 'none';
-    console.log(`[SERP] q="${query}" boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length} firstCoreUrl=${firstCoreUrl}`);
+    console.log(`[SERP] q="${query}" boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length} firstCore=${firstCoreUrl}`);
     console.log(`[BlogScraper] 파싱된 결과 수: ${core.length}`);
     
-    // Core 결과만 반환 (기존 형식과 호환)
+    // Core 결과 반환 (기존 형식 호환)
     return core.map((item, index) => ({
       rank: index + 1,
       page: 1,
       position: index + 1,
       title: item.title,
       url: this.cleanUrl(item.url),
-      snippet: item.snippet,
+      snippet: item.snippet || '',
       date: item.date || ''
     }));
   }
 
   /**
-   * v7.20: 개선된 블로그 카드 여부 판정 (타 모듈 제외)
+   * v7.19 개선: 블로그 카드 판정 (더 강화된 모듈 제외)
    */
   private isBlogCard($: cheerio.CheerioAPI, el: any): boolean {
     const $el = $(el);
@@ -469,12 +480,13 @@ export class NaverBlogScraper {
     const blogAnchor = $el.find('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
     if (blogAnchor.length === 0) return false;
     
-    // 타 모듈 제외
-    if ($el.is('[data-ad], [data-nclick*="ad"], .ad_section, .ad_area') ||
-        $el.is('.place_section, .map_section, .place_app') ||
-        $el.is('.shop_section, .shopping_box') ||
-        $el.is('.video_section, .brand_area, .influencer') ||
-        $el.is('[data-module-name*="influencer"]')) {
+    // 강화된 모듈 제외 (광고, 장소, 쇼핑, 비디오, 브랜드, 인플루언서)
+    if ($el.is([
+      '[data-ad]', '[data-nclick*="ad"]', '.ad_section', '.ad_area',
+      '.place_section', '.map_section', '.place_app',
+      '.shop_section', '.shopping_box',
+      '.video_section', '.brand_area', '.influencer', '[data-module-name*="influencer"]'
+    ].join(', '))) {
       return false;
     }
     
@@ -634,14 +646,14 @@ export class NaverBlogScraper {
   }
 
   /**
-   * 서치피드 경계 판정 (v7.19)
+   * v7.19 개선: 서치피드 경계 판정 (텍스트 + 셀렉터 + 속성)
    */
   private isSearchFeedBoundary($: cheerio.CheerioAPI, el: any): boolean {
     const text = $(el).text().replace(/\s+/g, '');
     const hasSearchFeedText = text.includes('서치피드에서더많은콘텐츠를탐색해보세요') ||
                              text.includes('더다양한콘텐츠');
     
-    const hasSearchFeedSelector = $(el).is('[aria-label*="서치피드"], .sfeed, .search_feed');
+    const hasSearchFeedSelector = $(el).is('[aria-label*="서치피드"], .sfeed, .search_feed, [data-sfeed]');
     
     return hasSearchFeedText || hasSearchFeedSelector;
   }

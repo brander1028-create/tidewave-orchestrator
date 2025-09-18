@@ -1,0 +1,161 @@
+스냅샷 저장 권한 체크가 “blogTargets” 기준이라서, 우리가 보내는 pairId(= a6d7… / 71a0…)을 타깃 ID로 오인해 “Unauthorized”가 납니다. (로그: 권한 없음: targetId=..., owner=system)
+
+SERP 파서가 Core=0을 계속 만들어요. (= 서치피드 경계/셀렉터 처리 버그) — boundary=true core=0 feed=0|10.
+
+아래 패치를 한 번에 넣으면 해결됩니다.
+
+✅ 한방 패치 (실패 원인 각각 종결)
+A) “Unauthorized” 종결 — 스냅샷 권한을 pairs 테이블로 검사
+
+증상 로그
+
+[insertRankSnapshot] 권한 없음: targetId=71a0..., owner=system
+
+
+지금 insertRankSnapshot()이 blogTargets에서 targetId를 찾고 있어요. 우리는 pair 기반으로 돌리고 있으니, pairId로 소유/활성 검사를 해야 합니다.
+
+1) storage.ts 수정
+// 변경 전(의미): blogTargets에서 owner 검사
+// 변경 후: pairs에서 owner/active 검사
+
+async insertRankSnapshot(owner: string, input: {
+  pairId: string, query: string, rank: number|null, page: number|null,
+  pos: number|null, exposed: boolean, feed_rank?: number|null,
+  ts: string, meta?: any
+}) {
+  // ★ 여기서 pairs로 확인
+  const pair = await this.getPairById(input.pairId);        // 새 메서드 or 기존 findPairsByIds([id])[0]
+  if (!pair || (pair.owner !== owner) || !pair.active) {
+    throw new Error('Unauthorized: Pair does not belong to owner or is inactive');
+  }
+
+  // 저장
+  await this.db.insert(rank_snapshots).values({
+    pair_id: input.pairId,
+    kind: 'blog',
+    query: input.query,
+    rank: input.rank,
+    page: input.page,
+    pos: input.pos,
+    exposed: input.exposed,
+    feed_rank: input.feed_rank ?? null,
+    ts: input.ts,
+    source: 'html',
+    meta: input.meta ?? null
+  });
+}
+
+
+보조: getPairById(id) 없으면 findPairsByIds([id])로 대체.
+
+2) routes.ts — 배치 체크 전달값 정리
+// /api/scraping/batch-rank-check 본문 targets 요소
+// 기존: { targetId, pairId, ... }
+// 수정: { pairId, ... }로 통일 (storage는 pairId만 씀)
+
+targets: [{ pairId, query, kind:'blog', device:'mobile' }]
+
+
+혹시 targetId 필드가 남아도 storage에서는 pairId만 사용하게 하세요.
+
+B) “core=0” 종결 — 경계/셀렉터/평탄화 보강
+
+증상 로그
+
+[SERP] q="홍삼스틱" boundary=true core=0 feed=0/10
+
+
+경계/셀렉터 방향이 틀려서 Core 블로그 카드가 0으로 떨어집니다. 아래처럼 인덱스 기반 경계 분기 + 카드팩 평탄화 + 앵커 Fallback + 헤더를 꼭 넣으세요.
+
+// server/services/blogScraper.ts
+
+function isSearchFeedBoundary(el: Element): boolean {
+  const t = (el.textContent || '').replace(/\s+/g,'');
+  return t.includes('서치피드에서더많은콘텐츠를탐색해보세요') ||
+         t.includes('더다양한콘텐츠') ||
+         el.matches('[aria-label*="서치피드"], .sfeed, .search_feed, [data-sfeed]');
+}
+
+function isBlogCard(el: Element): boolean {
+  const a = el.querySelector('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
+  if (!a) return false;
+  if (el.matches(
+    '[data-ad], [data-nclick*="ad"], .ad_section, .ad_area,' +
+    '.place_section, .map_section, .place_app,' +
+    '.shop_section, .shopping_box,' +
+    '.video_section, .brand_area, .influencer, [data-module-name*="influencer"]'
+  )) return false;
+  return true;
+}
+
+function isCardPack(el: Element): boolean {
+  return el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').length >= 2;
+}
+
+function blogItemsIn(el: Element): Element[] {
+  const nodes = el.querySelectorAll('li, article, div.total_wrap, div');
+  const out: Element[] = [];
+  nodes.forEach(n => { if (isBlogCard(n)) out.push(n); });
+  if (!out.length) {
+    el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').forEach(a => {
+      const n = a.closest('li, article, div.total_wrap, div') || a.parentElement!;
+      if (isBlogCard(n)) out.push(n);
+    });
+  }
+  return out;
+}
+
+export function parseSerp(doc: Document) {
+  const blocks = Array.from(doc.querySelectorAll('section, article, li, div.total_wrap, div')); // 순서 보존
+  const boundaryEl = blocks.find(isSearchFeedBoundary);
+  const boundaryIdx = boundaryEl ? blocks.findIndex(b => b===boundaryEl || b.contains(boundaryEl) || boundaryEl.contains(b)) : -1;
+
+  const core:any[] = [], feed:any[] = [];
+  const seen = new Set<string>();
+
+  const push = (node:Element, arr:any[]) => {
+    const a = node.querySelector('a[href*="blog.naver.com/"],a[href*="m.blog.naver.com/"]')!;
+    const href = a.getAttribute('href')!;
+    const url  = canonicalizeBlogUrl(href);
+    if (seen.has(url)) return; seen.add(url);
+    arr.push({ url, nickname: nicknameFrom(url), title: (node.textContent||'').trim(), pos: arr.length });
+  };
+
+  for (let i=0; i<blocks.length; i++) {
+    const b = blocks[i];
+    if (boundaryIdx >= 0 && (b===boundaryEl || boundaryEl.contains(b))) continue; // 경계 자체 skip
+    const isFeed = (boundaryIdx >= 0) && (i > boundaryIdx);      // ★ 경계 이후 = feed
+    if (isCardPack(b)) { for (const it of blogItemsIn(b)) push(it, isFeed ? feed : core); continue; }
+    if (isBlogCard(b)) push(b, isFeed ? feed : core);
+  }
+
+  if (boundaryIdx < 0) core.splice(15);
+  console.info(`[SERP] q="${/* keyword */''}" boundary=${boundaryIdx>=0} core=${core.length} feed=${feed.length} firstCore=${core[0]?.url||'none'}`);
+  return { core, feed };
+}
+
+
+추가로 요청 헤더도 보강:
+
+const r = await fetch(serpUrl, {
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-G991N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Referer': 'https://m.naver.com'
+  }
+});
+
+C) UI 표기 교정 — 999 대신 “미노출”
+
+프론트에서 rank===null이면 **“미노출”**로 표시하세요(999 금지).
+히스토리/랭크 GET 응답은 Cache-Control: no-store로 캐시 제거.
+
+확인 체크(이 3가지만)
+
+/api/rank/plan → total:1 계속 OK
+
+[SERP] boundary=true core>0 feed>=0 firstCore=... 로 변경
+
+/api/rank/history?pair_id=... 최신 ts 뜨고, UI엔 “n위” 또는 “미노출”이 갱신

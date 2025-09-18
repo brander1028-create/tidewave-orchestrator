@@ -47,7 +47,7 @@ import { z } from "zod";
 interface RankingData {
   id: string;
   keyword: string;
-  rank: number;
+  rank: number | null; // v7.19: null 허용 ("미노출" 대응)
   change: number;
   page: number;
   position: number;
@@ -482,7 +482,7 @@ export default function Rank() {
         return {
           id: pair.id || (index + 1).toString(),
           keyword: pair.keywordText || `키워드 ${index + 1}`,
-          rank: rank || 999, // Default to unranked if no data
+          rank: rank, // v7.19: null 값 유지 (999 제거)
           change: change,
           page: rank ? Math.floor((rank - 1) / 10) + 1 : 99,
           position: rank ? ((rank - 1) % 10) + 1 : 9,
@@ -598,11 +598,19 @@ export default function Rank() {
       accessorKey: "rank",
       header: "현재 순위",
       cell: ({ row }) => {
+        const rank = row.original.rank;
+        const isUnranked = rank === null || rank === 999;
         return (
           <div className="space-y-2">
             <div className="text-sm">
-              <span className="text-2xl font-bold text-foreground">{row.original.rank}</span>
-              <span className="text-muted-foreground text-sm ml-1">위</span>
+              {isUnranked ? (
+                <span className="text-lg font-medium text-muted-foreground">미노출</span>
+              ) : (
+                <>
+                  <span className="text-2xl font-bold text-foreground">{rank}</span>
+                  <span className="text-muted-foreground text-sm ml-1">위</span>
+                </>
+              )}
             </div>
             <StreakBadge days={row.original.streakDays} exposed={row.original.exposed} />
           </div>

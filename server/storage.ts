@@ -805,16 +805,16 @@ export class DatabaseStorage implements IStorage {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
-    // Collect all WHERE conditions in array to avoid overwriting
+    // v7.19: blogKeywordTargets (pairs) 테이블로 조건 변경
     const conditions = [
-      eq(blogTargets.owner, owner),
-      eq(blogTargets.active, true),
+      eq(blogKeywordTargets.owner, owner),
+      eq(blogKeywordTargets.active, true),
       gte(rankSnapshots.timestamp, cutoffDate)
     ];
 
-    // Add optional filters to conditions array
+    // v7.19: pairId 필드로 필터링 변경
     if (targetId) {
-      conditions.push(eq(rankSnapshots.targetId, targetId));
+      conditions.push(eq(rankSnapshots.pairId, targetId));
     }
     if (kind) {
       conditions.push(eq(rankSnapshots.kind, kind));
@@ -838,7 +838,7 @@ export class DatabaseStorage implements IStorage {
       exposed: rankSnapshots.exposed
     })
     .from(rankSnapshots)
-    .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
+    .innerJoin(blogKeywordTargets, eq(rankSnapshots.pairId, blogKeywordTargets.id))
     .where(and(...conditions))
     .orderBy(desc(rankSnapshots.timestamp));
 
@@ -881,21 +881,14 @@ export class DatabaseStorage implements IStorage {
   async insertRankSnapshot(owner: string, data: InsertRankSnapshot): Promise<RankSnapshot> {
     console.log(`[insertRankSnapshot] 시작: owner=${owner}, targetId=${data.targetId}, pairId=${data.pairId}, rank=${data.rank}`);
     
-    // First verify that targetId belongs to the owner by checking blogTargets
-    const targetOwnership = await db.select({ id: blogTargets.id })
-      .from(blogTargets)
-      .where(and(
-        eq(blogTargets.id, data.targetId),
-        eq(blogTargets.owner, owner),
-        eq(blogTargets.active, true)
-      ))
-      .limit(1);
+    // ★ v7.19 수정: pairs 테이블에서 pairId로 권한 확인
+    const pair = await this.getBlogKeywordTargetById(owner, data.pairId || data.targetId);
 
-    console.log(`[insertRankSnapshot] 권한 체크: ${targetOwnership.length}개 매칭`);
+    console.log(`[insertRankSnapshot] 권한 체크: ${pair ? '1' : '0'}개 매칭`);
 
-    if (targetOwnership.length === 0) {
-      console.log(`[insertRankSnapshot] 권한 없음: targetId=${data.targetId}, owner=${owner}`);
-      throw new Error('Unauthorized: Target does not belong to the specified owner or is inactive');
+    if (!pair || !pair.active) {
+      console.log(`[insertRankSnapshot] 권한 없음: pairId=${data.pairId || data.targetId}, owner=${owner}`);
+      throw new Error('Unauthorized: Pair does not belong to owner or is inactive');
     }
 
     // Only insert if ownership is verified
@@ -928,11 +921,11 @@ export class DatabaseStorage implements IStorage {
       exposed: rankSnapshots.exposed
     })
     .from(rankSnapshots)
-    .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
+    .innerJoin(blogKeywordTargets, eq(rankSnapshots.pairId, blogKeywordTargets.id))
     .where(and(
-      eq(blogTargets.owner, owner),
-      eq(blogTargets.active, true),
-      eq(rankSnapshots.targetId, targetId),
+      eq(blogKeywordTargets.owner, owner),
+      eq(blogKeywordTargets.active, true),
+      eq(rankSnapshots.pairId, targetId),
       eq(rankSnapshots.kind, kind),
       gte(rankSnapshots.timestamp, cutoffDate)
     ));
@@ -953,9 +946,9 @@ export class DatabaseStorage implements IStorage {
     if (additionalConditions.length > 0) {
       // Collect all conditions including additional ones
       const allConditions = [
-        eq(blogTargets.owner, owner),
-        eq(blogTargets.active, true),
-        eq(rankSnapshots.targetId, targetId),
+        eq(blogKeywordTargets.owner, owner),
+        eq(blogKeywordTargets.active, true),
+        eq(rankSnapshots.pairId, targetId),
         eq(rankSnapshots.kind, kind),
         gte(rankSnapshots.timestamp, cutoffDate),
         ...additionalConditions
@@ -979,7 +972,7 @@ export class DatabaseStorage implements IStorage {
         exposed: rankSnapshots.exposed
       })
       .from(rankSnapshots)
-      .innerJoin(blogTargets, eq(rankSnapshots.targetId, blogTargets.id))
+      .innerJoin(blogKeywordTargets, eq(rankSnapshots.pairId, blogKeywordTargets.id))
       .where(and(...allConditions));
     }
 
@@ -3831,23 +3824,7 @@ export class MemStorage implements IStorage {
     return false;
   }
 
-  // v7.16: Pairs 기반 Plan API용 추가 메서드들
-  async findPairsByIds(owner: string, ids: string[]): Promise<BlogKeywordTarget[]> {
-    if (ids.length === 0) return [];
-    const results = Array.from(this.blogKeywordTargets.values())
-      .filter(target => target.owner === owner && ids.includes(target.id))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return results;
-  }
-
-  async getActivePairs(owner: string): Promise<BlogKeywordTarget[]> {
-    const results = Array.from(this.blogKeywordTargets.values())
-      .filter(target => target.owner === owner && target.active)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return results;
-  }
-
-  // v7.18: findPairsByIds 오버로드 구현
+  // v7.16: Pairs 기반 Plan API용 추가 메서드들 (DatabaseStorage와 중복 제거됨)
   async findPairsByIds(ownerOrIds: string | string[], ids?: string[]): Promise<BlogKeywordTarget[]> {
     if (Array.isArray(ownerOrIds)) {
       // findPairsByIds(ids: string[]) - owner 미필터
@@ -3867,6 +3844,13 @@ export class MemStorage implements IStorage {
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       return results;
     }
+  }
+
+  async getActivePairs(owner: string): Promise<BlogKeywordTarget[]> {
+    const results = Array.from(this.blogKeywordTargets.values())
+      .filter(target => target.owner === owner && target.active)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return results;
   }
 
   async getPairsByOwner(owner: string): Promise<BlogKeywordTarget[]> {
