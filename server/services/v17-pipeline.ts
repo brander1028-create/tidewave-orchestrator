@@ -377,8 +377,13 @@ export async function processPostTitleV17(
     const adScore = 0; // No adScore in v17 deterministic mode
     const totalScore = volScore;
     
-    // Simple gate: only candidates with volume > 0 pass
-    const eligible = vol > 0;
+    // HYBRID_MODE: 관대한 gate (bigram 조합은 volume 없어도 통과)
+    let eligible = vol > 0;
+    if (process.env.HYBRID_MODE === 'true') {
+      // 하이브리드 모드: bigram 조합은 volume 없어도 허용
+      eligible = true;
+      console.log(`🎯 [HYBRID GATE] "${candidate.text}" → PASSED (hybrid mode)`);
+    }
     
     return {
       ...candidate,
