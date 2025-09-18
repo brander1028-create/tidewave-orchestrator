@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { scraper } from "./services/scraper";
 import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
-import { titleKeywordExtractor } from "./services/title-keyword-extractor";
+import { extractTitleTokens, titleKeywordExtractor } from "./services/title-keyword-extractor";
 import { serpScraper } from "./services/serp-scraper";
 import { getScoreConfig, updateScoreConfig, normalizeWeights, resetToDefaults } from "./services/score-config";
 import { z } from "zod";

@@ -156,3 +156,39 @@ export function hasLocal(tokens: string[]): boolean {
 }
 
 export { MAX_TITLE_TOKENS, BAN_WORDS, LOCAL_PLACES, SPECIAL_BANNED_SINGLES };
+
+/**
+ * 호환성 스텁: 기존 API와의 호환성 유지
+ */
+export const titleKeywordExtractor = {
+  async extractTopNByCombined(titles: string[], N: number = 4, options: any = {}): Promise<any> {
+    console.log(`🔄 [Compatibility Stub] extractTopNByCombined called with ${titles.length} titles, N=${N}`);
+    
+    // 모든 제목에서 토큰 추출
+    const allTokens = new Set<string>();
+    for (const title of titles) {
+      const tokens = extractTitleTokens(title);
+      tokens.forEach(token => allTokens.add(token));
+    }
+    
+    // 토큰들을 결과 형식으로 변환
+    const tokenArray = Array.from(allTokens).slice(0, N);
+    const topN = tokenArray.map((text, index) => ({
+      text,
+      raw_volume: 0, // 스텁에서는 볼륨 데이터 없음
+      frequency: 1,
+      combined_score: 1.0 - (index * 0.1) // 간단한 스코어링
+    }));
+    
+    return {
+      mode: 'deterministic-stub',
+      topN,
+      stats: {
+        titles_processed: titles.length,
+        tokens_extracted: tokenArray.length,
+        apiCalls: 0
+      },
+      budget: { remaining: 100 }
+    };
+  }
+};

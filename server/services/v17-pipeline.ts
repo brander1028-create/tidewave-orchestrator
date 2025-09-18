@@ -361,12 +361,17 @@ export async function processPostTitleV17(
     const adScore = 0; // No adScore in v17 deterministic mode
     const totalScore = volScore;
     
-    // HYBRID_MODE: 관대한 gate (bigram 조합은 volume 없어도 통과)
-    let eligible = vol > 0;
-    if (process.env.HYBRID_MODE === 'true') {
-      // 하이브리드 모드: bigram 조합은 volume 없어도 허용
-      eligible = true;
-      console.log(`🎯 [HYBRID GATE] "${candidate.text}" → PASSED (hybrid mode)`);
+    // ★ 게이트 정책 완화: 하드컷 제거, 폴백값 허용
+    // 결정론적 모드에서는 모든 토큰을 허용 (volume 없어도 OK)
+    let eligible = true;
+    let skipReason: string | undefined;
+    
+    // Soft gate: volume 없을 때만 경고, 차단하지 않음
+    if (vol === 0) {
+      skipReason = 'No volume data (fallback allowed)';
+      console.log(`⚠️ [SOFT GATE] "${candidate.text}" → PASSED (no volume, fallback mode)`);
+    } else {
+      console.log(`✅ [SOFT GATE] "${candidate.text}" → PASSED (volume: ${vol})`);
     }
     
     return {
@@ -374,7 +379,7 @@ export async function processPostTitleV17(
       totalScore,
       adScore,
       eligible,
-      skipReason: eligible ? undefined : 'No volume data'
+      skipReason
     };
   });
   
