@@ -11,25 +11,9 @@ import { autoEnrichFromTitle } from './auto-keyword-enrichment';
 
 // Import Phase2 types only (engines replaced with deterministic logic)
 import { Candidate, Tier } from '../phase2/types';
+import { extractTitleTokens, makeBigrams, hasMatjip, hasLocal } from './title-keyword-extractor';
 
-// ★ 자체 구현: vFinal 의존성 제거
-function extractTitleTokens(title: string, cfg: any): string[] {
-  const maxTitleTokens = cfg.phase2?.maxTitleTokens || 6;
-  const banSingles = new Set(cfg.phase2?.banSingles || ["정리","방법","추천","후기","여자","바르","및","과","와","의","이제","중인데","때인가"]);
-  
-  // 조사 패턴
-  const tails = /(은|는|이|가|을|를|에|에서|으로|로|과|와|의|및|도|만|까지|부터)$/;
-  
-  return title.replace(/[^가-힣a-zA-Z0-9\s]/g, ' ')  // 한글/영문/숫자/공백만 유지
-    .split(/\s+/)
-    .map(w => w.replace(tails, ''))  // 조사 제거
-    .filter(w => 
-      w.length >= 2 && 
-      !banSingles.has(w) && 
-      !/^\d+$/.test(w)     // 순수 숫자 제외
-    )
-    .slice(0, maxTitleTokens);  // 상한 적용
-}
+// ★ v17-deterministic: 새로운 제목 토큰 추출기 사용
 
 /**
  * Decide whether to activate canary configuration based on ratio and keywords
@@ -154,7 +138,7 @@ export async function processPostTitleV17(
   // Step 2: ★ 결정론적 토큰 추출 (키워드 폭증 방지)
   console.log(`🎯 [v17 Deterministic] Starting title token extraction...`);
   
-  const toks = extractTitleTokens(title, cfg);
+  const toks = extractTitleTokens(title);
   console.log(`📝 [v17] Extracted ${toks.length} tokens: ${toks.slice(0, 5).join(', ')}...`);
   
   if (toks.length === 0) {
@@ -484,7 +468,7 @@ export async function processPostTitleV17(
     console.log(`🎯 [T1 Final] "${T1.text}" (volume: ${T1.volume || 0})`);
     
     // ★ T2/T3/T4 빅그램 생성 (Architect 요구사항: 실제 pairwise 조합)
-    const titleTokens = extractTitleTokens(title, cfg); // 제목에서 직접 토큰 추출
+    const titleTokens = extractTitleTokens(title); // 제목에서 직접 토큰 추출
     console.log(`🔧 [Bigram Generation] Title tokens: ${titleTokens.join(', ')}`);
     
     // pairwise 빅그램 생성 (Architect 권장: bigrams = pairwise(toks))
