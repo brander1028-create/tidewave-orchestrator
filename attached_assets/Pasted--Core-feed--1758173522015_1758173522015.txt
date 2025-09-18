@@ -1,0 +1,110 @@
+핵심 규칙 (요약)
+
+서치피드 경계 ‘위’만 Core 랭크. (feed=아래는 랭크 제외)
+
+블로그 카드 컨테이너(=‘카드’) 안에 있는 개별 블로그 카드들을 펼쳐서 순번 부여.
+→ 카드1의 3개가 랭크 1~3, 카드2의 3개가 랭크 4~6…
+
+지도/쇼핑/동영상/인플루언서/브랜드 같은 타 모듈은 제외.
+
+파서 델타 (의사코드)
+// 1) 블로그 카드 여부 (변함 없음, blog.naver.com 앵커 + 모듈 제외)
+function isBlogCard(el: Element): boolean {
+  const a = el.querySelector('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
+  if (!a) return false;
+  if (el.matches(
+    '[data-ad], [data-nclick*="ad"], .ad_section, .ad_area,' + // 광고
+    '.place_section, .map_section, .place_app,' +              // 지도/장소
+    '.shop_section, .shopping_box,' +                          // 쇼핑
+    '.video_section, .brand_area, .influencer,' +              // 기타 모듈
+    '[data-module-name*="influencer"]'
+  )) return false;
+  return true;
+}
+
+// 2) '카드 팩(컨테이너)' 자동 판정: 내부에 서로 다른 블로그 앵커가 2개 이상
+function isCardPack(el: Element): boolean {
+  const anchors = el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]');
+  if (anchors.length < 2) return false;
+  // 지도/쇼핑 등은 팩으로 취급 X (상위 필터로 이미 제외되어야 함)
+  return true;
+}
+
+// 3) 컨테이너 안 '개별 카드' 단위 선택자(보편형)
+//  - 리스트(li), article, .total_wrap 하위 아이템 등 DOM 순서대로
+function blogItemNodesIn(el: Element): Element[] {
+  const list = el.querySelectorAll('li, article, div.total_wrap, div'); // 넓게 잡고
+  const items: Element[] = [];
+  list.forEach(n => { if (isBlogCard(n)) items.push(n); });
+  // 안전: 컨테이너 바로 하위에 앵커만 있는 구조 대비
+  if (!items.length) {
+    el.querySelectorAll('a[href*="blog.naver.com/"], a[href*="m.blog.naver.com/"]').forEach(a => {
+      const node = a.closest('li, article, div.total_wrap, div') || a.parentElement!;
+      if (isBlogCard(node)) items.push(node);
+    });
+  }
+  return items;
+}
+
+// 4) 경계 위/아래 판단 (정방향 고정: boundary 기준 '위'=Core)
+function isAboveBoundary(el: Element, boundaryEl?: Element): boolean {
+  if (!boundaryEl) return true;
+  const rel = el.compareDocumentPosition(boundaryEl);
+  return !!(rel & Node.DOCUMENT_POSITION_FOLLOWING); // el 이 boundary보다 먼저 등장 = 위
+}
+
+// 5) Core/Feed 수집 (팩 평탄화)
+function parseSerp(doc: Document) {
+  const boundaryEl = [...doc.querySelectorAll('section,div,article')].find(isSearchFeedBoundary);
+  const blocks = [...doc.querySelectorAll('section, article, li, div')]; // 화면 순서
+
+  const core: any[] = [], feed: any[] = [];
+  const seen = new Set<string>();
+
+  const pushItem = (node: Element, bucket: any[]) => {
+    const a = node.querySelector('a[href*="blog.naver.com/"],a[href*="m.blog.naver.com/"]')!;
+    const url = canonicalizeBlogUrl(a.getAttribute('href')!);
+    if (seen.has(url)) return;
+    seen.add(url);
+    bucket.push({ url, nickname: nicknameFrom(url), title: (node.textContent||'').trim(), pos: bucket.length });
+  };
+
+  for (const b of blocks) {
+    // 5-1) 경계 기준 Core/Feed 버킷 결정
+    const isCore = isAboveBoundary(b, boundaryEl);
+
+    // 5-2) 컨테이너가 블로그 '팩'이면 내부 아이템을 평탄화하여 추가
+    if (isCardPack(b)) {
+      const items = blogItemNodesIn(b);
+      for (const it of items) pushItem(it, isCore ? core : feed);
+      continue; // 컨테이너 자체는 카운트하지 않음
+    }
+
+    // 5-3) 단일 카드이면 그대로 추가
+    if (isBlogCard(b)) pushItem(b, isCore ? core : feed);
+  }
+
+  if (!boundaryEl) core.splice(15); // 경계 없으면 Core 15개 제한
+  console.info(`[SERP] core=${core.length} feed=${feed.length} boundary=${!!boundaryEl} firstCore=${core[0]?.url||'none'}`);
+  return { core, feed };
+}
+
+
+이 로직이면 카드 묶음(컨테이너) 안의 개별 카드들이 DOM 순서대로 평탄화되어 → 카드1의 3개가 1~3위, 카드2의 3개가 4~6위가 됩니다. (경계 ‘위’만 Core 카운트)
+
+매칭/표시 주의점
+
+매칭 우선순위: postId → canonical URL → 닉네임.
+
+랭크 표기: rank=null 은 **“미노출”**로, feed 영역은 feed_rank 보조칸으로만.
+
+로그: boundary, coreCount, feedCount, firstCoreUrl 반드시 출력 → 경계/팩 판정 실수 즉시 발견.
+
+빠른 자가검증(실화면 기준)
+
+잠실 롯데월드몰 맛집 / 잠실 맛집 추천 쿼리로 파서 돌려서
+core >= 3 , Core 1~3 URL이 카드1의 3개와 순서 일치하는지 확인.
+
+카드를 2묶음 이상 가진 화면이라면 Core 4~6이 카드2의 3개와 일치해야 함.
+
+같은 화면에서 feed=아래 블로그는 feed_rank로만 들어오고 rank=null (미노출) 표기.
