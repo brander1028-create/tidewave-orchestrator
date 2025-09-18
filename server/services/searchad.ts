@@ -34,6 +34,9 @@ export type SearchAdResult = {
   reason?: string;
 };
 
+// 🔒 Defense-in-Depth: DETERMINISTIC_ONLY 가드
+const DET = process.env.DETERMINISTIC_ONLY === 'true';
+
 function sign(ts: string, method: 'GET'|'POST', path: string, secret: string): string {
   return crypto.createHmac('sha256', secret).update(`${ts}.${method}.${path}`).digest('base64');
 }
