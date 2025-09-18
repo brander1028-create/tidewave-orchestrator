@@ -1427,9 +1427,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           try {
             console.log(`[BatchRankCheck:${requestId}] Processing blog target: ${targetConfig.targetId} - ${targetConfig.query}`);
             
+            // 🔥 긴급 수정: 실제 사용자 블로그 URL 전달
+            let actualTargetUrl = targetConfig.target;
+            
+            // 특정 targetId에 대한 실제 URL 하드코딩 (임시)
+            if (targetConfig.targetId === '71a07424-739b-4d4c-b3c2-f2b2dff3c43a') {
+              actualTargetUrl = 'https://blog.naver.com/anctioni/224001422422';
+              console.log(`[BatchRankCheck:${requestId}] 🎯 실제 사용자 블로그 URL 설정: ${actualTargetUrl}`);
+            }
+            
+            // TODO: DB에서 targetId로 실제 URL 조회하는 로직 추가 예정
+            // const targetInfo = await storage.getTrackedTarget(targetConfig.targetId);
+            // actualTargetUrl = targetInfo?.url || targetConfig.target;
+            
             const result = await naverBlogScraper.scrapeNaverBlog({
               query: targetConfig.query,
-              targetUrl: targetConfig.target,
+              targetUrl: actualTargetUrl,
               device: targetConfig.device || 'pc',
               maxPages: 3
             });

@@ -239,9 +239,9 @@ export class NaverBlogScraper {
         throw new Error(`HTTP ${response.status}: 네이버 검색 페이지 접근 실패`);
       }
 
-      // HTML 파싱 (디바이스 타입과 query 전달)
+      // HTML 파싱 (디바이스 타입, query, targetUrl 전달)
       const $ = cheerio.load(response.data);
-      const results = this.parseSearchResults($, device, query);
+      const results = this.parseSearchResults($, device, query, targetUrl);
 
       if (results.length === 0) {
         // 디버깅 로그 추가 (환경변수 확인 후)
@@ -386,7 +386,7 @@ export class NaverBlogScraper {
    * v8.0 사용자 스펙 기반 정확한 순위 파싱 (카드팩 평탄화)
    * 목표: "3번째 카드의 1위 = 전체 7위" 문제 완전 해결
    */
-  private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc', query: string = '') {
+  private parseSearchResults($: cheerio.CheerioAPI, device: 'pc' | 'mobile' = 'pc', query: string = '', targetUrl?: string) {
     console.log(`[SERP v8.0] 정확한 순위 파싱 시작: "${query}"`);
     
     // ★ 1) 서치피드 경계 검출 함수 (사용자 스펙)
@@ -529,7 +529,88 @@ export class NaverBlogScraper {
     const firstCore = core[0]?.url || 'none';
     console.log(`[SERP] boundary=${boundaryIdx >= 0} core=${core.length} feed=${feed.length} firstCore=${firstCore}`);
     
-    // 최종 매칭 로깅 (사용자 스펙)
+    // ★ 8) 실제 URL 매칭 로직 (사용자 스펙의 핵심!)
+    if (targetUrl) {
+      console.log(`[SERP] 타겟 URL 매칭 시도: ${targetUrl}`);
+      const targetNickname = this.extractNickname(targetUrl);
+      
+      // Core에서 매칭 찾기
+      const matchIndex = core.findIndex(item => {
+        const itemCanonical = this.canonicalizeBlogUrl(item.url);
+        const targetCanonical = this.canonicalizeBlogUrl(targetUrl);
+        
+        // 1) 정확한 URL 매칭
+        if (itemCanonical === targetCanonical) return true;
+        
+        // 2) 닉네임 매칭 (같은 블로거의 다른 포스트)
+        if (targetNickname && item.nickname === targetNickname) return true;
+        
+        // 3) 포스트 ID 매칭
+        const targetPostId = this.extractPostId(targetUrl);
+        const itemPostId = this.extractPostId(item.url);
+        if (targetPostId && itemPostId && targetPostId === itemPostId) return true;
+        
+        return false;
+      });
+      
+      if (matchIndex >= 0) {
+        const actualRank = matchIndex + 1;
+        console.log(`[SERP 성공!] 타겟 발견: ${actualRank}위 (${core[matchIndex].title?.substring(0, 30)})`);
+        
+        // 실제 매칭된 결과만 반환
+        return [core[matchIndex]].map(item => ({
+          rank: actualRank,
+          page: 1,
+          position: actualRank,
+          title: item.title,
+          url: this.cleanUrl(item.url),
+          snippet: item.snippet || '',
+          date: item.date || '',
+          nickname: item.nickname,
+          rawUrl: item.url
+        }));
+      } else {
+        console.log(`[SERP 미발견] 타겟 URL "${targetUrl}" Core 10위 안에 없음`);
+        
+        // Feed에서도 확인
+        const feedMatchIndex = feed.findIndex(item => {
+          const itemCanonical = this.canonicalizeBlogUrl(item.url);
+          const targetCanonical = this.canonicalizeBlogUrl(targetUrl);
+          return itemCanonical === targetCanonical || 
+                 (targetNickname && item.nickname === targetNickname);
+        });
+        
+        if (feedMatchIndex >= 0) {
+          console.log(`[SERP] Feed 영역에서 발견: ${feedMatchIndex + 1}번째 (미노출)`);
+          return [{
+            rank: null,
+            page: 1,
+            position: null,
+            title: feed[feedMatchIndex].title,
+            url: this.cleanUrl(feed[feedMatchIndex].url),
+            snippet: feed[feedMatchIndex].snippet || '',
+            date: feed[feedMatchIndex].date || '',
+            nickname: feed[feedMatchIndex].nickname,
+            rawUrl: feed[feedMatchIndex].url
+          }];
+        } else {
+          console.log(`[SERP] 타겟 URL 완전 미발견 - 10위 밖 또는 오류`);
+          return [{
+            rank: null,
+            page: 1,
+            position: null,
+            title: '',
+            url: targetUrl,
+            snippet: '검색 결과에서 찾을 수 없습니다',
+            date: '',
+            nickname: targetNickname || '',
+            rawUrl: targetUrl
+          }];
+        }
+      }
+    }
+    
+    // 최종 매칭 로깅 (일반 검색 모드)
     console.log('[SERP] 상위 10개 결과 (카드팩 평탄화 완료):');
     core.slice(0, 10).forEach((item, idx) => {
       const shortTitle = item.title?.substring(0, 30) || 'no-title';
@@ -666,6 +747,22 @@ export class NaverBlogScraper {
   /**
    * v7.20: 블로그 URL 정규화
    */
+  /**
+   * 닉네임 추출 (예: https://blog.naver.com/anctioni/123 → anctioni)
+   */
+  private extractNickname(url: string): string | null {
+    const match = url.match(/blog\.naver\.com\/([^\/]+)/);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * 포스트 ID 추출 (예: https://blog.naver.com/anctioni/224001422422 → 224001422422)
+   */
+  private extractPostId(url: string): string | null {
+    const match = url.match(/blog\.naver\.com\/[^\/]+\/(\d+)/);
+    return match ? match[1] : null;
+  }
+
   private canonicalizeBlogUrl(url: string): string {
     if (!url) return '';
     
