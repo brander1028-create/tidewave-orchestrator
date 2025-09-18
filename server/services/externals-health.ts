@@ -76,15 +76,30 @@ export async function getVolumesWithHealth(
       try {
         const apiResult = await getVolumes(missingKeywords);
         
-        // API 결과를 volumes에 추가
+        // 🔒 HYBRID MODE: 요청한 키워드만 필터링 (연관키워드 제외)
+        const requestedKeywordSet = new Set(missingKeywords.map(k => k.toLowerCase().trim()));
+        const filteredVolumes: Record<string, any> = {};
+        let droppedCount = 0;
+        
         Object.entries(apiResult.volumes).forEach(([key, value]) => {
-          volumes[key] = value;
-          console.log(`📊 [HYBRID API] "${key}" → volume ${value.total} (API)`);
+          const normalizedKey = key.toLowerCase().trim();
+          if (requestedKeywordSet.has(normalizedKey) || requestedKeywordSet.has(key)) {
+            volumes[key] = value;
+            filteredVolumes[key] = value;
+            console.log(`📊 [HYBRID API] "${key}" → volume ${value.total} (API)`);
+          } else {
+            droppedCount++;
+            console.log(`🗑️ [HYBRID FILTER] Dropped related keyword: "${key}" (not requested)`);
+          }
         });
         
-        // DB에 새로운 데이터 저장 (비동기, 실패해도 무시)
-        if (apiResult.mode === 'searchads') {
-          const upsertData: Partial<InsertManagedKeyword>[] = Object.entries(apiResult.volumes).map(([text, vol]) => ({
+        if (droppedCount > 0) {
+          console.log(`🎯 [HYBRID MODE] Filtered out ${droppedCount} related keywords, kept ${Object.keys(filteredVolumes).length} requested`);
+        }
+        
+        // DB에 요청한 키워드만 저장 (연관키워드 제외)
+        if (apiResult.mode === 'searchads' && Object.keys(filteredVolumes).length > 0) {
+          const upsertData: Partial<InsertManagedKeyword>[] = Object.entries(filteredVolumes).map(([text, vol]) => ({
             text,
             raw_volume: vol.total,
             volume: vol.total,
@@ -102,11 +117,11 @@ export async function getVolumesWithHealth(
           mode: 'partial' as const, 
           stats: { 
             requested: missingKeywords.length, 
-            ok: Object.keys(apiResult.volumes).length, 
-            fail: 0, 
+            ok: Object.keys(filteredVolumes).length, 
+            fail: droppedCount, 
             http: apiResult.stats.http 
           },
-          reason: `Hybrid mode: ${cachedKeywords.size} cached, ${Object.keys(apiResult.volumes).length} from API`
+          reason: `Hybrid mode: ${cachedKeywords.size} cached, ${Object.keys(filteredVolumes).length} from API, ${droppedCount} related dropped`
         };
         
       } catch (error) {

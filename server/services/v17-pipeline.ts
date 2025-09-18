@@ -98,20 +98,25 @@ export async function processPostTitleV17(
   console.log(`🚀 [v17 Pipeline] Starting for title: "${title.substring(0, 50)}..."`);
   
   // Step 0: 자동 키워드 Enrichment (사용자 요구사항)
-  console.log(`🔍 [v17 Pipeline] Starting auto-enrichment for title analysis`);
-  try {
-    const enrichmentResult = await autoEnrichFromTitle(title, inputKeyword, jobId, blogId, { deterministic: options.deterministic });
-    console.log(`✅ [v17 Pipeline] Auto-enrichment completed:`);
-    console.log(`   - Found in DB: ${enrichmentResult.foundInDB.length}`);
-    console.log(`   - Missing from DB: ${enrichmentResult.missingFromDB.length}`);
-    console.log(`   - Newly enriched: ${enrichmentResult.newlyEnriched.length}`);
-    console.log(`   - Top keyword: ${enrichmentResult.topKeyword}`);
-    console.log(`   - Generated combinations: ${enrichmentResult.generatedCombinations.length}`);
-    console.log(`   - Filtered ineligible: ${enrichmentResult.filteredIneligible.length}`);
-    console.log(`   - Final tiers: ${enrichmentResult.finalTiers.length}`);
-    console.log(`   - API calls: ${enrichmentResult.stats.apiCalls}`);
-  } catch (enrichmentError) {
-    console.error(`⚠️ [v17 Pipeline] Auto-enrichment failed, continuing with standard pipeline:`, enrichmentError);
+  // 🔒 HYBRID MODE: autoEnrichFromTitle 비활성화 (제목 조합만 사용)
+  if (process.env.HYBRID_MODE === 'true') {
+    console.log(`🎯 [HYBRID MODE] Skipping autoEnrichFromTitle - using title bigrams only`);
+  } else {
+    console.log(`🔍 [v17 Pipeline] Starting auto-enrichment for title analysis`);
+    try {
+      const enrichmentResult = await autoEnrichFromTitle(title, inputKeyword, jobId, blogId, { deterministic: options.deterministic });
+      console.log(`✅ [v17 Pipeline] Auto-enrichment completed:`);
+      console.log(`   - Found in DB: ${enrichmentResult.foundInDB.length}`);
+      console.log(`   - Missing from DB: ${enrichmentResult.missingFromDB.length}`);
+      console.log(`   - Newly enriched: ${enrichmentResult.newlyEnriched.length}`);
+      console.log(`   - Top keyword: ${enrichmentResult.topKeyword}`);
+      console.log(`   - Generated combinations: ${enrichmentResult.generatedCombinations.length}`);
+      console.log(`   - Filtered ineligible: ${enrichmentResult.filteredIneligible.length}`);
+      console.log(`   - Final tiers: ${enrichmentResult.finalTiers.length}`);
+      console.log(`   - API calls: ${enrichmentResult.stats.apiCalls}`);
+    } catch (enrichmentError) {
+      console.error(`⚠️ [v17 Pipeline] Auto-enrichment failed, continuing with standard pipeline:`, enrichmentError);
+    }
   }
   
   // Step 1: v17 핫리로드 설정
@@ -228,17 +233,43 @@ export async function processPostTitleV17(
     };
   }
   
-  // Convert tokens to candidates (deterministic, max 4 candidates)
-  const candidates: Candidate[] = toks.slice(0, 4).map(tok => ({
-    text: tok,
-    frequency: 1,
-    position: 0,
-    length: tok.length,
-    compound: false,
-    volume: 0
-  }));
+  // Convert tokens to bigram candidates (제목에서 쓸 조합만)
+  const candidates: Candidate[] = [];
   
-  console.log(`🔤 [v17 Pipeline] Generated ${candidates.length} deterministic candidates (max 4 to prevent explosion)`);
+  // 하이브리드 모드: bigram 조합만 생성
+  if (process.env.HYBRID_MODE === 'true') {
+    // 제목에서 bigram 조합 생성 (sliding window)
+    for (let i = 0; i < toks.length - 1 && candidates.length < 4; i++) {
+      const bigram = `${toks[i]} ${toks[i + 1]}`;
+      candidates.push({
+        text: bigram,
+        frequency: 1,
+        position: i,
+        length: bigram.length,
+        compound: true,
+        volume: 0
+      });
+    }
+    
+    // 🔒 HYBRID MODE: bigram 조합만 사용, unigram 폴백 없음
+    // "제목에서 쓸 조합만" 원칙 준수
+    
+    console.log(`🔤 [HYBRID MODE] Generated ${candidates.length} bigram combinations from title tokens`);
+  } else {
+    // 기존 로직: unigram 후보 생성
+    toks.slice(0, 4).forEach(tok => {
+      candidates.push({
+        text: tok,
+        frequency: 1,
+        position: 0,
+        length: tok.length,
+        compound: false,
+        volume: 0
+      });
+    });
+    
+    console.log(`🔤 [v17 Pipeline] Generated ${candidates.length} deterministic candidates (max 4 to prevent explosion)`);
+  }
   
   const stats = {
     candidatesGenerated: candidates.length,
@@ -282,49 +313,58 @@ export async function processPostTitleV17(
   }
   
   // Step 3.5: 추가 키워드 발굴 (사용자 요청사항)
-  // 제목에서 추출된 키워드가 DB에 없으면 API로 추가해서 DB 확장
-  console.log(`🔍 [v17 Pipeline] Step 3.5: 추가 키워드 발굴 시작`);
-  const candidatesWithoutVolume = candidates.filter(c => !c.volume || c.volume === 0);
-  
-  if (candidatesWithoutVolume.length > 0 && !options.deterministic) {
-    console.log(`🚀 [추가 키워드 발굴] ${candidatesWithoutVolume.length}개 키워드를 DB에 추가합니다`);
-    console.log(`   키워드: ${candidatesWithoutVolume.map(c => c.text).slice(0, 5).join(', ')}${candidatesWithoutVolume.length > 5 ? '...' : ''}`);
-    
-    try {
-      const missingKeywords = candidatesWithoutVolume.map(c => c.text);
-      
-      // 네이버 SearchAds API로 키워드 발굴 및 DB 추가
-      const volumeData = await getVolumesWithHealth(db, missingKeywords);
-      let enrichedCount = 0;
-      
-      // 새로 추가된 키워드 정보를 candidates에 다시 merge
-      candidatesWithoutVolume.forEach(candidate => {
-        const keyRaw = candidate.text;
-        const keyLC = keyRaw.toLowerCase().trim();
-        const keyNrm = keyRaw.normalize('NFKC').toLowerCase().replace(/[\s\-_.]+/g, '');
-        
-        const volumeInfo = volumeData.volumes[keyRaw] || 
-                          volumeData.volumes[keyLC] || 
-                          volumeData.volumes[keyNrm];
-        
-        if (volumeInfo && volumeInfo.total > 0) {
-          candidate.volume = volumeInfo.total;
-          enrichedCount++;
-          console.log(`   ✅ [키워드 발굴] "${candidate.text}" → volume ${volumeInfo.total} (DB에 추가됨)`);
-        }
-      });
-      
-      stats.preEnriched += enrichedCount;
-      console.log(`🎉 [추가 키워드 발굴] 완료: ${enrichedCount}개 키워드를 DB에 추가하고 volume 확보`);
-      
-    } catch (error) {
-      console.error(`❌ [추가 키워드 발굴] 실패:`, error);
-      console.log(`⚠️ [추가 키워드 발굴] API 오류로 일부 키워드는 volume 없이 진행됩니다`);
+  // 🔒 HYBRID MODE: 제목 조합만 사용, 연관키워드 발굴 비활성화
+  if (process.env.HYBRID_MODE === 'true') {
+    console.log(`🎯 [HYBRID MODE] Skipping Step 3.5 추가 키워드 발굴 - title bigrams only`);
+    const candidatesWithoutVolume = candidates.filter(c => !c.volume || c.volume === 0);
+    if (candidatesWithoutVolume.length > 0) {
+      console.log(`🔄 [HYBRID MODE] ${candidatesWithoutVolume.length}개 키워드는 제목 조합에서만 추출된 상태로 유지`);
     }
-  } else if (candidatesWithoutVolume.length > 0 && options.deterministic) {
-    console.log(`🎯 [DETERMINISTIC MODE] Skipping 추가 키워드 발굴 API calls for ${candidatesWithoutVolume.length} keywords`);
   } else {
-    console.log(`✅ [추가 키워드 발굴] 모든 키워드가 이미 DB에 있습니다`);
+    // 제목에서 추출된 키워드가 DB에 없으면 API로 추가해서 DB 확장
+    console.log(`🔍 [v17 Pipeline] Step 3.5: 추가 키워드 발굴 시작`);
+    const candidatesWithoutVolume = candidates.filter(c => !c.volume || c.volume === 0);
+    
+    if (candidatesWithoutVolume.length > 0 && !options.deterministic) {
+      console.log(`🚀 [추가 키워드 발굴] ${candidatesWithoutVolume.length}개 키워드를 DB에 추가합니다`);
+      console.log(`   키워드: ${candidatesWithoutVolume.map(c => c.text).slice(0, 5).join(', ')}${candidatesWithoutVolume.length > 5 ? '...' : ''}`);
+      
+      try {
+        const missingKeywords = candidatesWithoutVolume.map(c => c.text);
+        
+        // 네이버 SearchAds API로 키워드 발굴 및 DB 추가
+        const volumeData = await getVolumesWithHealth(db, missingKeywords);
+        let enrichedCount = 0;
+        
+        // 새로 추가된 키워드 정보를 candidates에 다시 merge
+        candidatesWithoutVolume.forEach(candidate => {
+          const keyRaw = candidate.text;
+          const keyLC = keyRaw.toLowerCase().trim();
+          const keyNrm = keyRaw.normalize('NFKC').toLowerCase().replace(/[\s\-_.]+/g, '');
+          
+          const volumeInfo = volumeData.volumes[keyRaw] || 
+                            volumeData.volumes[keyLC] || 
+                            volumeData.volumes[keyNrm];
+          
+          if (volumeInfo && volumeInfo.total > 0) {
+            candidate.volume = volumeInfo.total;
+            enrichedCount++;
+            console.log(`   ✅ [키워드 발굴] "${candidate.text}" → volume ${volumeInfo.total} (DB에 추가됨)`);
+          }
+        });
+        
+        stats.preEnriched += enrichedCount;
+        console.log(`🎉 [추가 키워드 발굴] 완료: ${enrichedCount}개 키워드를 DB에 추가하고 volume 확보`);
+        
+      } catch (error) {
+        console.error(`❌ [추가 키워드 발굴] 실패:`, error);
+        console.log(`⚠️ [추가 키워드 발굴] API 오류로 일부 키워드는 volume 없이 진행됩니다`);
+      }
+    } else if (candidatesWithoutVolume.length > 0 && options.deterministic) {
+      console.log(`🎯 [DETERMINISTIC MODE] Skipping 추가 키워드 발굴 API calls for ${candidatesWithoutVolume.length} keywords`);
+    } else {
+      console.log(`✅ [추가 키워드 발굴] 모든 키워드가 이미 DB에 있습니다`);
+    }
   }
   
   // Step 4: ★ 결정론적 Gate + Scoring (Phase2 엔진 대신)
