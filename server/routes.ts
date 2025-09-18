@@ -33,7 +33,7 @@ import { z } from "zod";
 import { scrapingService } from "./scraping-service";
 import { calculateYoYMoMWoWForProduct } from './aggregation-service';
 
-// v7.13 환경설정 import
+// v7.13 환경설정 import (v7.17: FEATURE_SHOP_RANK 추가)
 const V713_CONFIG = {
   USE_MOCK: process.env.USE_MOCK === 'true' || false,
   TZ: process.env.TZ || 'Asia/Seoul',
@@ -42,7 +42,8 @@ const V713_CONFIG = {
   RANK_PER_MIN: parseInt(process.env.RANK_PER_MIN || '20'),
   RANK_PER_DAY: parseInt(process.env.RANK_PER_DAY || '500'),
   CACHE_TTL_SEC: parseInt(process.env.CACHE_TTL_SEC || '600'),
-  KEYWORDS_API_BASE: process.env.KEYWORDS_API_BASE || 'https://42ccc512-7f90-450a-a0a0-0b29770596c8-00-1eg5ws086e4j3.kirk.replit.dev/keywords'
+  KEYWORDS_API_BASE: process.env.KEYWORDS_API_BASE || 'https://42ccc512-7f90-450a-a0a0-0b29770596c8-00-1eg5ws086e4j3.kirk.replit.dev/keywords',
+  FEATURE_SHOP_RANK: process.env.FEATURE_SHOP_RANK === 'true' || false
 };
 
 // Scraping validation schemas
@@ -208,6 +209,46 @@ async function keywordLookupHandler(req: any, res: any) {
   }
 }
 
+// v7.17: getRankHistoryHandler 함수 정의 (방어적 구현)
+async function getRankHistoryHandler(req: any, res: any) {
+  try {
+    const owner = (req.headers['x-owner'] as string) || 'system';
+    const { pair_id, targetId, range = "30d" } = req.query;
+    
+    // v7.17: pair_id와 targetId 모두 지원 (하위 호환성)
+    const actualTargetId = pair_id || targetId;
+    
+    if (!actualTargetId) {
+      return res.status(400).json({ message: "pair_id or targetId parameter required" });
+    }
+    
+    console.log(`[getRankHistoryHandler] owner=${owner}, targetId=${actualTargetId}, range=${range}`);
+    
+    try {
+      // pair_id/targetId를 그대로 사용하여 히스토리 조회
+      const history = await storage.getRankSnapshotHistory(
+        owner,
+        actualTargetId as string,
+        'blog', // 기본적으로 blog 히스토리
+        '', // query는 옵션
+        '', // sort는 옵션
+        'mobile', // 기본 디바이스
+        range as string
+      );
+      
+      console.log(`[getRankHistoryHandler] 성공: ${history.length}개 히스토리 조회됨`);
+      res.json(history);
+    } catch (storageError) {
+      // 스토리지 오류 시 빈 배열 반환 (새 pair_id는 히스토리가 없을 수 있음)
+      console.log(`[getRankHistoryHandler] 스토리지 오류, 빈 히스토리 반환:`, storageError);
+      res.json([]);
+    }
+  } catch (error) {
+    console.error(`[getRankHistoryHandler] 치명적 오류:`, error);
+    res.status(500).json({ message: "랭킹 히스토리 조회에 실패했습니다", error: String(error) });
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // v7.16: 키워드 메타 경로 직접 처리 (헤더 유지를 위해 리다이렉트 제거)
   app.get('/api/keywords/lookup/:text', async (req, res) => {
@@ -219,10 +260,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return keywordLookupHandler(req, res);
   });
 
-  // v7.16: 히스토리 별칭 제공 (404 제거) - /api/rank-snapshots/history → /api/rank/history
-  app.get('/api/rank-snapshots/history', (req, res) => {
-    const { pair_id, range } = req.query;
-    return res.redirect(307, `/api/rank/history?pair_id=${encodeURIComponent(String(pair_id||''))}&range=${encodeURIComponent(String(range||'30d'))}`);
+  // v7.17: 히스토리 별칭을 리다이렉트 대신 내부 처리 (헤더 유지)
+  app.get('/api/rank-snapshots/history', async (req, res) => {
+    // req.query(pair_id, range) 그대로 이용해서 rank/history 핸들러 호출
+    return getRankHistoryHandler(req, res);
   });
 
   // Real CRUD API routes for user data management
@@ -1153,6 +1194,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         error: String(error) 
       });
     }
+  });
+
+  // v7.17: 쇼핑 비활성화 (미구현 보호)
+  app.post('/api/rank/shop/check', (req, res) => {
+    if (!V713_CONFIG.FEATURE_SHOP_RANK) {
+      return res.status(501).json({ok: false, reason: 'shop_rank_disabled'});
+    }
+    // 미구현 상태
+    res.status(501).json({ok: false, reason: 'shop_rank_not_implemented'});
   });
 
   // Submissions API

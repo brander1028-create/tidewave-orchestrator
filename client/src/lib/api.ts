@@ -16,19 +16,19 @@ import type {
 export const http = (path: string, init: RequestInit = {}) => {
   const h = new Headers(init.headers || {});
   
-  // v7.12 권한 헤더 문제 수정: 기본값 설정
+  // v7.17 권한 헤더 문제 수정: owner를 system으로 통일
   const role = localStorage.getItem('role') || 'admin';
-  const owner = localStorage.getItem('owner') || 'admin';
+  const owner = localStorage.getItem('owner') || 'system';
   
   h.set('x-role', role);
   h.set('x-owner', owner);
   
-  // 초기화되지 않은 경우 localStorage에 기본값 저장
+  // 초기화되지 않은 경우 localStorage에 기본값 저장 (v7.17: owner=system 통일)
   if (!localStorage.getItem('role')) {
     localStorage.setItem('role', 'admin');
   }
   if (!localStorage.getItem('owner')) {
-    localStorage.setItem('owner', 'admin');
+    localStorage.setItem('owner', 'system');
   }
   
   return fetch(path, { ...init, headers: h, credentials: 'include' });
@@ -46,6 +46,14 @@ export const apiPatch = (url: string, data?: any) => http(url, {
   headers: { 'Content-Type': 'application/json' },
   body: data ? JSON.stringify(data) : undefined
 });
+
+// v7.17: 키워드 메타 호출 단일화 (새 훅/로컬 fetch 금지)
+export async function lookupKeywordMeta(texts: string[]) {
+  const q = encodeURIComponent(texts.join(','));
+  const r = await http(`/api/keywords/lookup?texts=${q}`);
+  if (!r.ok) throw new Error(`kw lookup ${r.status}`);
+  return r.json(); // [{text, volume, score}]
+}
 
 // Real-time scraping API
 export const scrapingApi = {

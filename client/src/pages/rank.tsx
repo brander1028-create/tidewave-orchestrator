@@ -38,7 +38,7 @@ import {
   Edit3
 } from "lucide-react";
 import { ColumnDef } from "@tanstack/react-table";
-import { targetsApi, scrapingApi, rankApi, blogKeywordPairsApi } from "@/lib/api";
+import { targetsApi, scrapingApi, rankApi, blogKeywordPairsApi, http } from "@/lib/api";
 import type { TrackedTarget, InsertTrackedTarget, BlogKeywordTarget } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -103,9 +103,7 @@ export default function Rank() {
   const { data: blogKeywordPairs = [], isLoading: pairsLoading } = useQuery<BlogKeywordTarget[]>({
     queryKey: ['/api/pairs'],
     queryFn: async () => {
-      const response = await fetch('/api/pairs', {
-        headers: { 'x-role': 'admin' }
-      });
+      const response = await http('/api/pairs');
       if (!response.ok) {
         throw new Error('Failed to fetch pairs');
       }
@@ -156,11 +154,10 @@ export default function Rank() {
         owner: "admin", // 헤더에서 처리됨
       };
       
-      const response = await fetch('/api/pairs', {
+      const response = await http('/api/pairs', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-role': 'admin',
         },
         body: JSON.stringify(payload),
       });
@@ -257,11 +254,10 @@ export default function Rank() {
   const editPairMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: EditBlogKeywordPairForm }) => {
       console.log('편집 요청 시작:', { id, data });
-      const response = await fetch(`/api/pairs/${id}`, {
+      const response = await http(`/api/pairs/${id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'x-role': 'admin',
         },
         body: JSON.stringify(data),
       });
@@ -353,9 +349,7 @@ export default function Rank() {
     
     setMetadataLoading(true);
     try {
-      const response = await fetch(`/api/metadata?url=${encodeURIComponent(url)}`, {
-        headers: { 'x-role': 'admin' }
-      });
+      const response = await http(`/api/metadata?url=${encodeURIComponent(url)}`);
       if (response.ok) {
         const metadata = await response.json();
         if (metadata.title) {
@@ -372,19 +366,16 @@ export default function Rank() {
     }
   };
 
-  // v7.13.2: Blog 작업 계획 조회 함수
+  // v7.17: Blog 작업 계획 조회 함수 (pairs 기반)
   async function planBlogTasks(pairs: BlogKeywordTarget[]) {
     try {
-      const targetIds = pairs.map(p => p.id).join(',');
-      const queries = pairs.map(p => p.keywordText).join(',');
-      const r = await fetch(`/api/rank/plan?kind=blog&target_ids=${encodeURIComponent(targetIds)}&query_override=${encodeURIComponent(queries)}`, {
-        headers: { 'x-role': 'admin' }
-      });
-      if (r.ok) return await r.json(); // {total,tasks:[{target_id,keyword,nickname}]}
+      const pairIds = pairs.map(p => p.id).join(',');
+      const r = await http(`/api/rank/plan?pair_ids=${encodeURIComponent(pairIds)}`);
+      if (r.ok) return await r.json(); // {total,tasks:[{pair_id,keyword,nickname}]}
     } catch (e) {
       console.error('Plan 조회 실패:', e);
     }
-    return { total: pairs.length, tasks: pairs.map(p => ({target_id:p.id, keyword:p.keywordText, nickname:p.title || p.blogUrl})) };
+    return { total: pairs.length, tasks: pairs.map(p => ({pair_id:p.id, keyword:p.keywordText, nickname:p.title || p.blogUrl})) };
   }
 
   // v7.13.2: 전체 순위 체크 실행 함수 (Blog-only + 진행표시)
@@ -407,19 +398,18 @@ export default function Rank() {
     async function worker(){
       while(!cancelled && i<tasks.length){
         const t = tasks[i++]; 
-        setRowLoading(s=>({...s,[t.target_id]:true}));
+        setRowLoading(s=>({...s,[t.pair_id]:true}));
         setProg(p=>({...p,now:`${t.keyword} · ${t.nickname}`}));
         try { 
-          // Blog-only 배치 체크 API 호출
-          const response = await fetch('/api/scraping/batch-rank-check', {
+          // v7.17: Blog-only 배치 체크 API 호출 (pair_id 사용)
+          const response = await http('/api/scraping/batch-rank-check', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'x-role': 'admin'
             },
             body: JSON.stringify({
               targets: [{
-                targetId: t.target_id,
+                targetId: t.pair_id, // v7.17: pair_id를 targetId로 사용
                 query: t.keyword,
                 kind: 'blog',
                 device: 'mobile'
@@ -430,7 +420,7 @@ export default function Rank() {
         } catch(e){ 
           console.error(`체크 실패 ${t.keyword}:`, e);
         } finally{
-          setRowLoading(s=>({...s,[t.target_id]:false}));
+          setRowLoading(s=>({...s,[t.pair_id]:false}));
           done++; 
           setProg({done,total:plan.total,percent:Math.round(done*100/plan.total),now:t.nickname});
         }
@@ -454,9 +444,7 @@ export default function Rank() {
   const { data: rankSnapshots = [], isLoading: rankLoading } = useQuery({
     queryKey: ['/api/rank-snapshots', 'blog'],
     queryFn: async () => {
-      const response = await fetch('/api/rank-snapshots?kind=blog', {
-        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
-      });
+      const response = await http('/api/rank-snapshots?kind=blog');
       if (!response.ok) return [];
       return response.json();
     },
@@ -537,7 +525,7 @@ export default function Rank() {
     
     setMetadataLoading(true);
     try {
-      const response = await fetch(`/api/metadata?url=${encodeURIComponent(url.trim())}`);
+      const response = await http(`/api/metadata?url=${encodeURIComponent(url.trim())}`);
       if (response.ok) {
         const metadata = await response.json();
         console.log('[v7.13.1] 메타데이터 수집 성공:', metadata);
@@ -675,9 +663,7 @@ export default function Rank() {
     queryKey: ['/api/rank-snapshots/history', selectedRankingDetail?.id],
     queryFn: async () => {
       if (!selectedRankingDetail?.id) return [];
-      const response = await fetch(`/api/rank-snapshots/history?targetId=${selectedRankingDetail.id}`, {
-        headers: { 'x-role': 'admin', 'x-owner': 'admin' }
-      });
+      const response = await http(`/api/rank-snapshots/history?pair_id=${selectedRankingDetail.id}`);
       if (!response.ok) return [];
       const history = await response.json();
       return history.map((item: any) => ({

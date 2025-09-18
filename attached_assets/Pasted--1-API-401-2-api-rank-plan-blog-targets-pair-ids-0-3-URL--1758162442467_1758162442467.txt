@@ -1,0 +1,169 @@
+(1) 메타 API 401(리다이렉트로 헤더 유실), (2) /api/rank/plan이 여전히 blog_targets를 봐서 pair_ids가 0건 처리, (3) URL 편집 후 UI 캐시 갱신 미반영.
+아래 한 방 패치(v7.17) 를 그대로 Replit에 붙여서 적용해. (이미 해둔 것과 겹치는 건 “변경 없음”이라 안전해)
+
+🔧 v7.17 — 한 방 안정화 (메타 401 제거 + plan=Pairs + 편집/진행 UI 고정)
+A) 서버(Express)
+A-1. 키워드 메타 오경로를 “리다이렉트 없이” 내부 처리 (헤더 유지)
+// server/routes.ts — 메타 라우트 근처
+app.get('/api/keywords/lookup/:text', async (req, res) => {
+  const t = decodeURIComponent(req.params.text || '').trim();
+  if (!t) return res.status(400).json({message:'text required'});
+  // 내부 핸들러로 곧장 연결 (리다이렉트 금지)
+  req.query.texts = t;
+  return keywordsLookupHandler(req, res); // 기존 GET /api/keywords/lookup 핸들러 함수 호출
+});
+
+A-2. /api/rank/plan 을 pairs 기반으로 (owner 스코프 포함)
+// server/routes.ts
+app.get('/api/rank/plan', async (req,res) => {
+  const owner = String(req.headers['x-owner'] || 'system'); // ← 통일
+  const ids = []
+    .concat(req.query.pair_ids || req.query.target_ids || [])
+    .map(String);
+
+  const pairs = ids.length
+    ? await storage.findPairsByIds(owner, ids)     // ★ 새 메서드
+    : await storage.getActivePairs(owner);         // ★ 새 메서드
+
+  const tasks = pairs.map(p => ({
+    pair_id : p.id,
+    keyword : p.keywordText,
+    nickname: p.nickname || ''
+  }));
+  return res.json({ total: tasks.length, tasks });
+});
+
+
+storage.ts 에 findPairsByIds(owner, ids[]), getActivePairs(owner) 둘 다 DB/MemStorage 구현되어 있어야 함. (너 지금 추가하는 중 → OK)
+
+A-3. 히스토리 별칭은 리다이렉트 대신 내부 처리
+app.get('/api/rank-snapshots/history', async (req, res) => {
+  // req.query(pair_id, range) 그대로 이용해서 rank/history 핸들러 호출
+  return getRankHistoryHandler(req, res);
+});
+
+A-4. 쇼핑 비활성화(미구현 보호)
+// .env
+FEATURE_SHOP_RANK=false
+
+// server/routes.ts
+app.post('/api/rank/shop/check', (req,res)=>{
+  if (process.env.FEATURE_SHOP_RANK !== 'true') {
+    return res.status(501).json({ok:false,reason:'shop_rank_disabled'});
+  }
+  // ... (미구현 보호)
+});
+
+B) 클라이언트(React)
+B-1. 모든 요청에 동일 owner 헤더 주입(불일치 차단)
+// client/src/lib/api.ts (http 래퍼)
+const role  = localStorage.getItem('role')  ?? 'Admin';
+const owner = localStorage.getItem('owner') ?? 'system'; // ★ 통일
+h.set('x-role', role); h.set('x-owner', owner);
+
+
+한 번만: 콘솔에서 localStorage.owner='system' 저장.
+
+B-2. 키워드 메타 호출 단일화 (새 훅/로컬 fetch 금지)
+export async function lookupKeywordMeta(texts:string[]){
+  const q = encodeURIComponent(texts.join(','));
+  const r = await http(`/api/keywords/lookup?texts=${q}`);
+  if(!r.ok) throw new Error(`kw lookup ${r.status}`);
+  return r.json();  // [{text, volume, score}]
+}
+
+
+전역 검색으로 /keywords/lookup/ 경로, 하드코딩 volume:0/score:0, 로컬 fetch 를 모두 위 함수로 교체.
+
+B-3. 실행 러너 = Blog-only + 진행표시 (버튼·진행바·행별 스피너)
+// client/src/pages/blog-rank.tsx 핵심
+const [isRunning,setIsRunning]=useState(false);
+const [prog,setProg]=useState({done:0,total:0,percent:0,now:''});
+const [rowBusy,setRowBusy]=useState<Record<string,boolean>>({});
+const CONC=3;
+
+async function planBlogTasks(selected: Pair[]){
+  const r = await http('/api/rank/plan');            // 서버가 pairs 기반으로 반환
+  if (r.ok) return r.json();
+  // Fallback: 선택 행으로 직접
+  return { total: selected.length,
+           tasks: selected.map(p=>({pair_id:p.id,keyword:p.keywordText,nickname:p.nickname})) };
+}
+
+async function runAllChecks(){
+  const sel = getSelectedPairs();
+  setIsRunning(true); setProg({done:0,total:0,percent:0,now:'준비중…'});
+
+  const plan = await planBlogTasks(sel);
+  if(!plan.total){ toast('체크할 대상 없음'); setIsRunning(false); return; }
+  setProg(p=>({...p,total:plan.total,now:'시작합니다'}));
+
+  let i=0, done=0, cancelled=false;
+  async function worker(){
+    while(!cancelled && i<plan.tasks.length){
+      const t=plan.tasks[i++]; setRowBusy(s=>({...s,[t.pair_id]:true}));
+      setProg(p=>({...p,now:`${t.keyword} · ${t.nickname}`}));
+      try{ await api.rank.blogCheck({ pair_ids:[t.pair_id] }); } // ★ BLOG ONLY
+      catch(e){ addFail(t,e); }
+      finally{
+        setRowBusy(s=>({...s,[t.pair_id]:false}));
+        done++; setProg({done,total:plan.total,percent:Math.round(done*100/plan.total),now:t.nickname});
+      }
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(CONC,plan.total)}).map(()=>worker()));
+  toast(`완료: ${done}/${plan.total}`); setIsRunning(false);
+}
+
+
+버튼 라벨: isRunning ? \체크 중… (${prog.done}/${prog.total})` : '전체 체크 시작'`
+
+진행바 width: ${prog.percent}%
+
+현재 작업 텍스트: 지금: ${prog.now}
+
+행별 로딩: rowBusy[pair.id] && <Spinner/>
+
+B-4. URL 편집(톱니) — PATCH 후 낙관적 업데이트 + 캐시 무효화
+// onSuccess(수정 성공) 시
+queryClient.setQueryData(['pairs'], (old:any)=>{
+  if(!old) return old;
+  return old.map((p:any)=> p.id===updated.id ? {...p, ...updated} : p);
+});
+setSelectedRankingDetail(null); // 모달 닫기
+
+
+detail 모달도 pairs에서 파생하므로 즉시 반영됨.
+
+C) 스모크(로그로 3줄만 확인)
+
+메타 401 종결
+
+GET /api/keywords/lookup/홍삼스틱 200   // 또는
+GET /api/keywords/lookup?texts=홍삼스틱 200
+
+
+(더 이상 307→401 체인이 없어야 정상)
+
+plan > 0
+
+GET /api/rank/plan 200 :: {"total":N>0,"tasks":[...]}  // owner='system' 기준
+
+
+실행 호출 Blog-only + 진행표시
+
+네트워크: /api/rank/blog/check N회 (쇼핑 없음)
+
+UI: 버튼 스피너·(a/N)%·현재 작업·행별 스피너 표시
+
+왜 이게 한방이냐
+
+401의 근본은 리다이렉트가 헤더를 날려버림 → 내부 처리로 끝.
+
+plan=0의 근본은 blog_targets vs pairs 테이블 미스매치 + owner 불일치 → plan을 pairs + owner 고정으로 끝.
+
+편집 반영 안 됨은 React Query setQueryData 미적용 → 낙관적 업데이트로 끝.
+
+“반응 없음”은 진행표시 미배선 → 러너와 UI 와이어링으로 끝.
+
+원하면 지금 상태 스샷(1) /api/keywords/lookup 200, (2) /api/rank/plan total>0, (3)
