@@ -222,6 +222,183 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Zod schema for step2 validation
+  const step2Schema = z.object({
+    jobId: z.string().min(1, "작업 ID가 필요합니다"),
+    blogIds: z.array(z.string()).min(1, "최소 1개 블로그를 선택해야 합니다").max(10, "최대 10개 블로그까지 선택 가능합니다")
+  });
+
+  // 2단계: 키워드 API 활성화
+  app.post("/api/stepwise-search/step2", async (req, res) => {
+    try {
+      // Validate request body with Zod
+      const result = step2Schema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          error: "입력값이 올바르지 않습니다",
+          details: result.error.errors.map(e => e.message)
+        });
+      }
+
+      const { jobId, blogIds } = result.data;
+
+      console.log(`🔍 [Step2] 키워드 분석 시작: job=${jobId}, blogs=${blogIds.length}개`);
+
+      // 1. Job 존재 확인
+      const job = await storage.getSerpJob(jobId);
+      if (!job) {
+        return res.status(404).json({ error: "작업을 찾을 수 없습니다" });
+      }
+
+      // 2. 선택된 블로그들 확인 (jobId로 조회 후 blogIds로 필터링)
+      const allBlogs = await storage.getDiscoveredBlogs(jobId);
+      const selectedBlogs = allBlogs.filter(blog => blogIds.includes(blog.id));
+      if (selectedBlogs.length !== blogIds.length) {
+        return res.status(400).json({ error: "일부 블로그를 찾을 수 없습니다" });
+      }
+
+      // 3. Job 상태 업데이트
+      await storage.updateSerpJob(jobId, {
+        status: "running",
+        currentStep: "analyzing_posts",
+        currentStepDetail: `${selectedBlogs.length}개 블로그의 키워드 분석 중...`,
+        progress: 30
+      });
+
+      // 4. 각 블로그의 최신 포스트 수집 및 키워드 추출
+      const analysisResults = [];
+      
+      for (let i = 0; i < selectedBlogs.length; i++) {
+        const blog = selectedBlogs[i];
+        console.log(`📝 [Step2] 블로그 분석 중: ${blog.blogName} (${i + 1}/${selectedBlogs.length})`);
+
+        try {
+          // 5. 최신 포스트 수집 (현재는 mock 데이터, 실제로는 RSS 또는 스크래핑)
+          const posts = await collectLatestPosts(blog.blogUrl, blog.blogId);
+          
+          // 6. 포스트에서 키워드 추출
+          const extractedKeywords = await extractKeywordsFromPosts(posts, jobId, blog.id);
+          
+          // 7. 분석된 포스트 수 업데이트
+          await storage.updateDiscoveredBlog(blog.id, {
+            postsAnalyzed: posts.length
+          });
+
+          analysisResults.push({
+            blogId: blog.id,
+            blogName: blog.blogName,
+            postsAnalyzed: posts.length,
+            keywordsExtracted: extractedKeywords.length,
+            topKeywords: extractedKeywords.slice(0, 3).map(k => ({
+              text: k.keyword,
+              frequency: k.frequency,
+              volume: k.volume || 0,
+              rank: k.rank || null
+            }))
+          });
+
+        } catch (error) {
+          console.error(`❌ [Step2] 블로그 분석 실패: ${blog.blogName}`, error);
+          analysisResults.push({
+            blogId: blog.id,
+            blogName: blog.blogName,
+            postsAnalyzed: 0,
+            keywordsExtracted: 0,
+            error: "분석 실패"
+          });
+        }
+
+        // Progress 업데이트
+        const progress = 30 + Math.floor(((i + 1) / selectedBlogs.length) * 40);
+        await storage.updateSerpJob(jobId, {
+          progress,
+          currentStepDetail: `블로그 분석 중... (${i + 1}/${selectedBlogs.length})`
+        });
+      }
+
+      // 8. Job 상태 최종 업데이트
+      await storage.updateSerpJob(jobId, {
+        status: "completed",
+        progress: 70,
+        currentStepDetail: `${selectedBlogs.length}개 블로그 키워드 분석 완료`,
+        completedSteps: 2
+      });
+
+      console.log(`✅ [Step2] 키워드 분석 완료: ${selectedBlogs.length}개 블로그 처리`);
+
+      res.json({
+        jobId,
+        results: analysisResults,
+        message: `${selectedBlogs.length}개 블로그의 키워드 분석이 완료되었습니다`
+      });
+
+    } catch (error) {
+      console.error('❌ [Step2] 키워드 분석 실패:', error);
+      res.status(500).json({
+        error: "키워드 분석 중 오류가 발생했습니다",
+        details: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // Helper function: 최신 포스트 수집
+  async function collectLatestPosts(blogUrl: string, blogId: string): Promise<any[]> {
+    // TODO: 실제 RSS 피드 또는 스크래핑 구현
+    // 현재는 mock 데이터 반환
+    const mockPosts = [
+      {
+        id: `${blogId}_post1`,
+        title: "카페 추천: 서울 최고의 디저트 카페 5곳",
+        content: "서울에서 꼭 가봐야 할 디저트 카페들을 소개합니다. 티라미수, 마카롱, 크로플 등 다양한 디저트와 함께 특별한 시간을 보내세요.",
+        url: `${blogUrl}/post1`,
+        publishedAt: new Date()
+      },
+      {
+        id: `${blogId}_post2`,
+        title: "홈카페 인테리어 아이디어",
+        content: "집에서도 카페 같은 분위기를 연출할 수 있는 인테리어 팁들을 공유합니다. 조명, 가구, 소품 활용법까지.",
+        url: `${blogUrl}/post2`,
+        publishedAt: new Date()
+      }
+    ];
+
+    return mockPosts;
+  }
+
+  // Helper function: 포스트에서 키워드 추출
+  async function extractKeywordsFromPosts(posts: any[], jobId: string, blogId: string): Promise<any[]> {
+    const extractedKeywords = [];
+
+    for (const post of posts) {
+      // TODO: 실제 NLP 키워드 추출 구현
+      // 현재는 mock 키워드 생성
+      const mockKeywords = [
+        { keyword: "카페", frequency: 8, volume: 45000, rank: 3 },
+        { keyword: "디저트", frequency: 5, volume: 28000, rank: 7 },
+        { keyword: "티라미수", frequency: 3, volume: 12000, rank: null },
+        { keyword: "홈카페", frequency: 4, volume: 18000, rank: 5 },
+        { keyword: "인테리어", frequency: 6, volume: 35000, rank: 2 }
+      ];
+
+      for (const kw of mockKeywords) {
+        // 키워드를 extractedKeywords 테이블에 저장
+        const savedKeyword = await storage.createExtractedKeyword({
+          blogId,
+          jobId,
+          keyword: kw.keyword,
+          frequency: kw.frequency,
+          volume: kw.volume,
+          rank: kw.rank,
+          tier: kw.volume > 30000 ? 1 : kw.volume > 15000 ? 2 : 3
+        });
+
+        extractedKeywords.push(savedKeyword);
+      }
+    }
+
+    return extractedKeywords;
+  }
+
   // Helper function: URL에서 블로그 ID 추출
   function extractBlogIdFromUrl(url: string): string | null {
     if (!url) return null;

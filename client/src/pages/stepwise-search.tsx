@@ -30,6 +30,7 @@ export default function StepwiseSearchPage() {
   // 상태 데이터
   const [step1Blogs, setStep1Blogs] = useState<any[]>([]);
   const [step2Blogs, setStep2Blogs] = useState<any[]>([]);
+  const [step2Results, setStep2Results] = useState<any[]>([]);
   const [step3Blogs, setStep3Blogs] = useState<any[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
 
@@ -75,17 +76,52 @@ export default function StepwiseSearchPage() {
   };
 
   const handleStep2Process = async (blogId: string) => {
+    // Guard: jobId가 없으면 2단계 실행 불가
+    if (!jobId) {
+      toast({
+        title: "작업 ID 없음",
+        description: "먼저 1단계 블로그 수집을 완료해주세요",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setStep2Loading(true);
     setSelectedTab("step2"); // 자동으로 2단계 탭으로 전환
     try {
-      // TODO: 키워드 API 활성화 구현
-      setTimeout(() => {
+      console.log(`🔍 [Frontend] 2단계 시작: "${blogId}"`);
+      
+      const res = await apiRequest('POST', '/api/stepwise-search/step2', {
+        jobId: jobId,
+        blogIds: [blogId] // 단일 블로그를 배열로 전달
+      });
+      const response = await res.json();
+
+      if (response.results && response.results.length > 0) {
         setStep2Blogs(prev => [...prev, blogId]);
-        setStep2Loading(false);
+        setStep2Results(prev => [...prev, ...response.results]);
         if (currentStep < 3) setCurrentStep(3);
-      }, 3000);
+        toast({
+          title: "키워드 분석 완료",
+          description: `${response.message}`,
+        });
+        console.log(`✅ [Frontend] 2단계 완료:`, response.results);
+      } else {
+        toast({
+          title: "키워드 분석 실패",
+          description: "키워드를 추출할 수 없습니다",
+          variant: "destructive",
+        });
+      }
+
+      setStep2Loading(false);
     } catch (error) {
-      console.error("2단계 처리 실패:", error);
+      console.error("❌ [Frontend] 2단계 처리 실패:", error);
+      toast({
+        title: "키워드 분석 실패",
+        description: "키워드 분석 중 오류가 발생했습니다",
+        variant: "destructive",
+      });
       setStep2Loading(false);
     }
   };

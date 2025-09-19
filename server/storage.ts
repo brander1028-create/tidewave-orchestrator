@@ -102,24 +102,27 @@ export class MemStorage implements IStorage {
   }
 
   async updateSerpJob(id: string, updates: Partial<SerpJob>): Promise<SerpJob | undefined> {
-    // Update in database instead of memory
-    const updatedData = {
-      ...updates,
-      updatedAt: new Date(),
-    };
-    
-    await db.update(serpJobs)
-      .set(updatedData)
-      .where(eq(serpJobs.id, id));
-    
-    console.log(`📝 Updated SERP job ${id} in database`);
-    
-    // Return the updated job
-    const jobs = await db.select().from(serpJobs)
-      .where(eq(serpJobs.id, id))
-      .limit(1);
-    
-    return jobs[0] || undefined;
+    try {
+      // Update in database and return in one query for better performance
+      const updatedData = {
+        ...updates,
+        updatedAt: new Date(),
+      };
+      
+      const [updatedJob] = await db.update(serpJobs)
+        .set(updatedData)
+        .where(eq(serpJobs.id, id))
+        .returning();
+      
+      if (updatedJob) {
+        console.log(`📝 UPDATE_SUCCESS: serp_jobs`, { id, updates: Object.keys(updates) });
+        return updatedJob;
+      }
+      return undefined;
+    } catch (error) {
+      console.error('UPDATE_FAIL', { table: 'serp_jobs', id, err: error });
+      return undefined;
+    }
   }
 
   async listSerpJobs(limit: number = 50): Promise<SerpJob[]> {
