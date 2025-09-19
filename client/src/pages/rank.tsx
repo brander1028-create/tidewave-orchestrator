@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -500,8 +501,19 @@ export default function Rank() {
       });
   };
 
+  // v7.19: 노출 필터 상태 관리
+  const [exposureFilter, setExposureFilter] = useState<"all" | "exposed" | "hidden">("all");
+
   // v7.13: Current ranking data using new function
-  const currentRankingData = convertPairsToRankingData(blogKeywordPairs);
+  const allRankingData = convertPairsToRankingData(blogKeywordPairs);
+  
+  // v7.19: 노출 필터에 따른 데이터 필터링
+  const currentRankingData = allRankingData.filter(item => {
+    if (exposureFilter === "all") return true;
+    if (exposureFilter === "exposed") return item.rank !== null && item.rank !== 999;
+    if (exposureFilter === "hidden") return item.rank === null || item.rank === 999;
+    return true;
+  });
 
   // v7.13.1: 키워드 메타정보 API 연동
   const keywordTexts = blogKeywordPairs?.map(pair => pair.keywordText).filter(Boolean).join(',') || '';
@@ -600,16 +612,29 @@ export default function Rank() {
       cell: ({ row }) => {
         const rank = row.original.rank;
         const isUnranked = rank === null || rank === 999;
+        const lastCheck = row.original.lastCheck;
+        
         return (
           <div className="space-y-2">
             <div className="text-sm">
               {isUnranked ? (
-                <span className="text-lg font-medium text-muted-foreground">미노출</span>
+                <div className="space-y-1">
+                  <span className="text-lg font-medium text-muted-foreground">미노출</span>
+                  <div className="text-xs text-red-500">검색 결과 없음</div>
+                </div>
               ) : (
-                <>
-                  <span className="text-2xl font-bold text-foreground">{rank}</span>
-                  <span className="text-muted-foreground text-sm ml-1">위</span>
-                </>
+                <div className="space-y-1">
+                  <div>
+                    <span className="text-2xl font-bold text-foreground">{rank}</span>
+                    <span className="text-muted-foreground text-sm ml-1">위</span>
+                  </div>
+                  {rank && rank >= 30 && (
+                    <div className="text-xs text-amber-600">순위 개선 필요</div>
+                  )}
+                  {rank && rank <= 10 && (
+                    <div className="text-xs text-green-600">상위 랭킹</div>
+                  )}
+                </div>
               )}
             </div>
             <StreakBadge days={row.original.streakDays} exposed={row.original.exposed} />
@@ -888,9 +913,10 @@ export default function Rank() {
               <div className="flex items-center gap-3">
                 <Label className="text-sm text-muted-foreground">노출 필터:</Label>
                 <ExposureFilter
-                  value="all"
+                  value={exposureFilter}
                   onChange={(value) => {
                     console.log("Filter changed:", value);
+                    setExposureFilter(value);
                   }}
                 />
               </div>

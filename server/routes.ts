@@ -1194,13 +1194,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (Array.isArray(pair_ids)) {
           ids = pair_ids.map(String).filter(Boolean);
         } else if (typeof pair_ids === 'string') {
-          ids = [pair_ids];
+          // 쉼표로 구분된 문자열을 배열로 분리
+          ids = pair_ids.split(',').map(s => s.trim()).filter(Boolean);
         }
       } else if (target_ids) {
         if (Array.isArray(target_ids)) {
           ids = target_ids.map(String).filter(Boolean);
         } else if (typeof target_ids === 'string') {
-          ids = [target_ids];
+          // 쉼표로 구분된 문자열을 배열로 분리
+          ids = target_ids.split(',').map(s => s.trim()).filter(Boolean);
         }
       }
 
