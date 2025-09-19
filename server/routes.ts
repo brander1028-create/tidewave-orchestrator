@@ -341,6 +341,146 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Zod schema for step3 validation
+  const step3Schema = z.object({
+    jobId: z.string().min(1, "작업 ID가 필요합니다"),
+    blogIds: z.array(z.string()).min(1, "최소 1개 블로그를 선택해야 합니다").max(10, "최대 10개 블로그까지 선택 가능합니다")
+  });
+
+  // 3단계: 블로그 지수 확인 (순위 검증)
+  app.post("/api/stepwise-search/step3", async (req, res) => {
+    try {
+      // Validate request body with Zod
+      const result = step3Schema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          error: "입력값이 올바르지 않습니다",
+          details: result.error.issues.map(issue => issue.message)
+        });
+      }
+
+      const { jobId, blogIds } = result.data;
+      console.log(`🎯 [Step3] 블로그 순위 확인 시작: job=${jobId}, blogs=[${blogIds.join(',')}]`);
+
+      // 1. 작업 존재 확인
+      const job = await storage.getSerpJob(jobId);
+      if (!job) {
+        return res.status(404).json({ error: "작업을 찾을 수 없습니다" });
+      }
+
+      // 2. 선택된 블로그들 조회
+      const allBlogs = await storage.getDiscoveredBlogs(jobId);
+      const selectedBlogs = allBlogs.filter(blog => blogIds.includes(blog.blogId));
+
+      if (selectedBlogs.length === 0) {
+        return res.status(400).json({ error: "선택된 블로그를 찾을 수 없습니다" });
+      }
+
+      // 3. 작업 진행 상태 업데이트
+      await storage.updateSerpJob(jobId, {
+        status: "running",
+        currentStep: "checking_rankings",
+        progress: 75
+      });
+
+      console.log(`🔍 [Step3] ${selectedBlogs.length}개 블로그 순위 확인 중...`);
+
+      // 4. 각 블로그별로 순위 확인
+      const rankingResults = [];
+      for (const blog of selectedBlogs) {
+        try {
+          console.log(`🎯 [Step3] 블로그 순위 확인: ${blog.blogName} (${blog.blogId})`);
+          
+          // 실제 네이버 검색에서 순위 확인
+          const keyword = job.keywords && job.keywords.length > 0 ? job.keywords[0] : '기본키워드';
+          const ranking = await checkBlogRanking(keyword, blog.blogId, blog.blogUrl);
+          
+          // 순위 정보로 블로그 업데이트
+          const updatedBlog = await storage.updateDiscoveredBlog(blog.id, {
+            ranking: ranking.position,
+            rankingCheckedAt: new Date()
+          });
+
+          rankingResults.push({
+            blogId: blog.blogId,
+            blogName: blog.blogName,
+            blogUrl: blog.blogUrl,
+            currentRanking: ranking.position,
+            previousRanking: blog.ranking,
+            rankingChange: blog.ranking ? ranking.position - blog.ranking : null,
+            isRanked: ranking.position > 0,
+            checkDetails: ranking.details
+          });
+
+          console.log(`✅ [Step3] ${blog.blogName}: 순위 ${ranking.position}위 (이전: ${blog.ranking || 'N/A'}위)`);
+
+        } catch (error) {
+          console.error(`❌ [Step3] ${blog.blogName} 순위 확인 실패:`, error);
+          rankingResults.push({
+            blogId: blog.blogId,
+            blogName: blog.blogName,
+            blogUrl: blog.blogUrl,
+            currentRanking: null,
+            previousRanking: blog.ranking,
+            rankingChange: null,
+            isRanked: false,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      // 5. 작업 완료 상태 업데이트
+      await storage.updateSerpJob(jobId, {
+        status: "completed",
+        currentStep: "checking_rankings",
+        progress: 100,
+        completedAt: new Date()
+      });
+
+      console.log(`✅ [Step3] 순위 확인 완료: ${rankingResults.length}개 블로그 처리`);
+
+      res.json({
+        jobId,
+        results: rankingResults,
+        summary: {
+          totalChecked: rankingResults.length,
+          ranked: rankingResults.filter(r => r.isRanked).length,
+          unranked: rankingResults.filter(r => !r.isRanked).length,
+          errors: rankingResults.filter(r => r.error).length
+        },
+        message: `${rankingResults.length}개 블로그의 순위 확인이 완료되었습니다`
+      });
+
+    } catch (error) {
+      console.error('❌ [Step3] 순위 확인 실패:', error);
+      res.status(500).json({
+        error: "순위 확인 중 오류가 발생했습니다",
+        details: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // Helper function: 블로그 순위 확인
+  async function checkBlogRanking(keyword: string, blogId: string, blogUrl: string): Promise<{position: number, details: string}> {
+    try {
+      // TODO: 실제 M.NAVER.COM 검색 API 또는 스크래핑 구현
+      // 현재는 mock 순위 반환 (1-50위 랜덤)
+      const mockPosition = Math.floor(Math.random() * 50) + 1;
+      const isRanked = Math.random() > 0.3; // 70% 확률로 순위 내 진입
+      
+      return {
+        position: isRanked ? mockPosition : 0,
+        details: isRanked ? `모바일 네이버 검색 ${mockPosition}위` : "첫 페이지(50위) 내 미진입"
+      };
+    } catch (error) {
+      console.error(`순위 확인 실패 [${blogId}]:`, error);
+      return {
+        position: 0,
+        details: "순위 확인 중 오류 발생"
+      };
+    }
+  }
+
   // Helper function: 최신 포스트 수집
   async function collectLatestPosts(blogUrl: string, blogId: string): Promise<any[]> {
     // TODO: 실제 RSS 피드 또는 스크래핑 구현

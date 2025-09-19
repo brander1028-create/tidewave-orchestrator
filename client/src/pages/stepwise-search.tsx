@@ -32,6 +32,7 @@ export default function StepwiseSearchPage() {
   const [step2Blogs, setStep2Blogs] = useState<any[]>([]);
   const [step2Results, setStep2Results] = useState<any[]>([]);
   const [step3Blogs, setStep3Blogs] = useState<any[]>([]);
+  const [step3Results, setStep3Results] = useState<any[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
 
   const handleStep1Search = async () => {
@@ -127,16 +128,51 @@ export default function StepwiseSearchPage() {
   };
 
   const handleStep3Check = async (blogId: string) => {
+    // Guard: jobId가 없으면 3단계 실행 불가
+    if (!jobId) {
+      toast({
+        title: "작업 ID 없음",
+        description: "먼저 1단계 블로그 수집을 완료해주세요",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setStep3Loading(true);
     setSelectedTab("step3"); // 자동으로 3단계 탭으로 전환
     try {
-      // TODO: 블로그 지수 확인 구현
-      setTimeout(() => {
+      console.log(`🎯 [Frontend] 3단계 시작: "${blogId}"`);
+      
+      const res = await apiRequest('POST', '/api/stepwise-search/step3', {
+        jobId: jobId,
+        blogIds: [blogId] // 단일 블로그를 배열로 전달
+      });
+      const response = await res.json();
+
+      if (response.results && response.results.length > 0) {
         setStep3Blogs(prev => [...prev, blogId]);
-        setStep3Loading(false);
-      }, 2000);
+        setStep3Results(prev => [...prev, ...response.results]);
+        toast({
+          title: "순위 확인 완료",
+          description: `${response.message}`,
+        });
+        console.log(`✅ [Frontend] 3단계 완료:`, response.results);
+      } else {
+        toast({
+          title: "순위 확인 실패",
+          description: "블로그 순위를 확인할 수 없습니다",
+          variant: "destructive",
+        });
+      }
+
+      setStep3Loading(false);
     } catch (error) {
-      console.error("3단계 확인 실패:", error);
+      console.error("❌ [Frontend] 3단계 처리 실패:", error);
+      toast({
+        title: "순위 확인 실패",
+        description: "순위 확인 중 오류가 발생했습니다",
+        variant: "destructive",
+      });
       setStep3Loading(false);
     }
   };
