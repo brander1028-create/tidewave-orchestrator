@@ -651,7 +651,7 @@ export default function ResultsPage() {
                                                 <h5 className="font-medium mb-2">블로그 총 Top 키워드(통합)</h5>
                                                 <div className="flex flex-wrap gap-2">
                                                   {blog.topKeywords.slice(0, 10).map((keyword, kidx) => (
-                                                    <div key={kidx} className="inline-flex items-center gap-1">
+                                                    <div key={`${blog.blogId}-keyword-${kidx}-${keyword.text}`} className="inline-flex items-center gap-1">
                                                       <Badge variant="outline" className={`${getVolumeColor(keyword.volume)} border`}>
                                                         {keyword.text}
                                                         {!keyword.related && " [관련X]"}
@@ -674,11 +674,11 @@ export default function ResultsPage() {
                                                 <h5 className="font-medium mb-2">포스트별 1~{results.params?.tiersPerPost || 4}티어 (전수검사)</h5>
                                                 <div className="space-y-2">
                                                   {blog.posts.map((post, pidx) => (
-                                                    <Card key={pidx} className="p-3">
+                                                    <Card key={`${blog.blogId}-post-${pidx}`} className="p-3">
                                                       <h6 className="font-medium text-sm mb-2" data-testid={`post-title-${pidx}`}>{post.title}</h6>
                                                       <div className="text-xs space-y-1">
-                                                        {post.tiers.map((tierData) => (
-                                                          <div key={tierData.tier} className="flex items-center gap-2 flex-wrap">
+                                                        {post.tiers.map((tierData, tierIdx) => (
+                                                          <div key={`${blog.blogId}-post-${pidx}-tier-${tierData.tier}-${tierIdx}`} className="flex items-center gap-2 flex-wrap">
                                                             <span className="font-medium min-w-12">{tierData.tier}티어:</span>
                                                             <div className="flex items-center gap-2 flex-wrap">
                                                               <span className="text-gray-700 font-medium" data-testid={`tier-text-${tierData.tier}`}>
