@@ -15,6 +15,8 @@ import {
   FileText,
   BarChart3
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 export default function StepwiseSearchPage() {
   const [keyword, setKeyword] = useState("");
@@ -23,48 +25,51 @@ export default function StepwiseSearchPage() {
   const [step1Loading, setStep1Loading] = useState(false);
   const [step2Loading, setStep2Loading] = useState(false);
   const [step3Loading, setStep3Loading] = useState(false);
+  const { toast } = useToast();
   
-  // 임시 상태 데이터
+  // 상태 데이터
   const [step1Blogs, setStep1Blogs] = useState<any[]>([]);
   const [step2Blogs, setStep2Blogs] = useState<any[]>([]);
   const [step3Blogs, setStep3Blogs] = useState<any[]>([]);
+  const [jobId, setJobId] = useState<string | null>(null);
 
   const handleStep1Search = async () => {
     if (!keyword.trim()) return;
     
     setStep1Loading(true);
     try {
-      // TODO: API 호출 구현
-      // 임시 데이터로 대체
-      setTimeout(() => {
-        setStep1Blogs([
-          {
-            id: "1",
-            blogName: "맛집탐방기",
-            blogUrl: "https://blog.naver.com/foodlover",
-            rank: 3,
-            volume: 15000,
-            score: 85,
-            searchDate: new Date().toISOString(),
-            status: "수집됨"
-          },
-          {
-            id: "2", 
-            blogName: "여행일기",
-            blogUrl: "https://blog.naver.com/traveler",
-            rank: 7,
-            volume: 8500,
-            score: 72,
-            searchDate: new Date().toISOString(),
-            status: "수집됨"
-          }
-        ]);
-        setStep1Loading(false);
+      console.log(`🔍 [Frontend] 1단계 시작: "${keyword}"`);
+      
+      const res = await apiRequest('POST', '/api/stepwise-search/step1', {
+        keyword: keyword.trim()
+      });
+      const response = await res.json();
+
+      if (response.blogs && response.blogs.length > 0) {
+        setStep1Blogs(response.blogs);
+        setJobId(response.jobId);
         setCurrentStep(2);
-        console.log("1단계 완료: 블로그 데이터 설정됨");
-      }, 2000);
+        console.log(`✅ [Frontend] 1단계 완료: ${response.blogs.length}개 블로그 수집`);
+        
+        toast({
+          title: "블로그 수집 완료",
+          description: `${response.blogs.length}개의 블로그를 발견했습니다`,
+        });
+      } else {
+        toast({
+          title: "검색 결과 없음",
+          description: "해당 키워드로 블로그를 찾을 수 없습니다",
+          variant: "destructive"
+        });
+      }
     } catch (error) {
-      console.error("1단계 검색 실패:", error);
+      console.error("❌ [Frontend] 1단계 검색 실패:", error);
+      toast({
+        title: "검색 실패",
+        description: "블로그 검색 중 오류가 발생했습니다",
+        variant: "destructive"
+      });
+    } finally {
       setStep1Loading(false);
     }
   };

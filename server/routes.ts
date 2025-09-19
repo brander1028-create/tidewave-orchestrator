@@ -21,6 +21,7 @@ import { metaSet, metaGet } from './store/meta';
 import { db } from './db';
 import type { HealthResponse } from './types';
 import multer from 'multer';
+import { NaverApiService } from './services/naver-api';
 
 // ✅ 하이브리드 모드: DB 캐시 우선, 새 키워드만 제한적 API 호출
 const HYBRID_MODE = true;
@@ -114,6 +115,116 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const HEALTH_TTL_MS = 60_000; // 60s
   let healthCache: { data: any|null; ts: number; inFlight: Promise<any>|null; disabled: boolean } =
     { data: null, ts: 0, inFlight: null, disabled: false };
+
+  // Initialize Naver API service
+  const naverApi = new NaverApiService();
+
+  // === Stepwise Search APIs ===
+  
+  // 1단계: 블로그 수집
+  app.post("/api/stepwise-search/step1", async (req, res) => {
+    try {
+      const { keyword } = req.body;
+      
+      if (!keyword || typeof keyword !== 'string') {
+        return res.status(400).json({ error: "키워드가 필요합니다" });
+      }
+
+      console.log(`🔍 [Step1] 블로그 검색 시작: "${keyword}"`);
+      
+      // 1. SERP job 생성
+      const serpJob = await storage.createSerpJob({
+        keywords: [keyword],
+        status: "running",
+        currentStep: "discovering_blogs",
+        currentStepDetail: `"${keyword}" 키워드로 블로그 수집 중...`,
+        progress: 10
+      });
+
+      // 2. Naver API로 블로그 검색 (첫 페이지, 10개)
+      const searchResults = await naverApi.searchBlogs(keyword, 10, 'date');
+      
+      if (searchResults.length === 0) {
+        await storage.updateSerpJob(serpJob.id, {
+          status: "completed",
+          progress: 100,
+          currentStepDetail: "검색 결과가 없습니다"
+        });
+        return res.json({ 
+          blogs: [], 
+          message: "검색 결과가 없습니다",
+          jobId: serpJob.id 
+        });
+      }
+
+      // 3. 검색 결과를 discoveredBlogs에 저장
+      const discoveredBlogs = [];
+      for (let i = 0; i < searchResults.length; i++) {
+        const result = searchResults[i];
+        
+        // 블로그 ID 추출 (blog.naver.com/blogId 또는 bloggerlink에서)
+        const blogId = extractBlogIdFromUrl(result.bloggerlink || result.link);
+        if (!blogId) continue;
+
+        const blog = await storage.createDiscoveredBlog({
+          jobId: serpJob.id,
+          seedKeyword: keyword,
+          rank: i + 1,
+          blogId: blogId,
+          blogName: result.bloggername || '알 수 없음',
+          blogUrl: result.bloggerlink || result.link,
+          postsAnalyzed: 0
+        });
+
+        discoveredBlogs.push({
+          id: blog.id,
+          blogName: blog.blogName,
+          blogUrl: blog.blogUrl,
+          rank: blog.rank,
+          volume: Math.floor(Math.random() * 50000) + 5000, // 임시 데이터
+          score: Math.floor(Math.random() * 40) + 60, // 60-100점
+          searchDate: blog.createdAt,
+          status: "수집됨"
+        });
+      }
+
+      // 4. Job 상태 업데이트
+      await storage.updateSerpJob(serpJob.id, {
+        status: "completed",
+        progress: 100,
+        currentStepDetail: `${discoveredBlogs.length}개 블로그 수집 완료`
+      });
+
+      console.log(`✅ [Step1] 블로그 수집 완료: ${discoveredBlogs.length}개 블로그`);
+      
+      res.json({ 
+        blogs: discoveredBlogs,
+        jobId: serpJob.id,
+        message: `${discoveredBlogs.length}개 블로그를 수집했습니다`
+      });
+
+    } catch (error) {
+      console.error('❌ [Step1] 블로그 수집 실패:', error);
+      res.status(500).json({ 
+        error: "블로그 수집 중 오류가 발생했습니다",
+        details: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // Helper function: URL에서 블로그 ID 추출
+  function extractBlogIdFromUrl(url: string): string | null {
+    if (!url) return null;
+    
+    // blog.naver.com/blogId 패턴
+    const naverBlogMatch = url.match(/blog\.naver\.com\/([^\/\?]+)/);
+    if (naverBlogMatch) {
+      return naverBlogMatch[1];
+    }
+    
+    // 다른 패턴들도 처리 가능
+    return null;
+  }
 
   // === Blog Registry Management APIs ===
   
