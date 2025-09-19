@@ -121,14 +121,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // === Stepwise Search APIs ===
   
+  // Zod schema for step1 validation
+  const step1Schema = z.object({
+    keyword: z.string().min(1, "키워드는 최소 1글자 이상이어야 합니다").trim()
+  });
+
   // 1단계: 블로그 수집
   app.post("/api/stepwise-search/step1", async (req, res) => {
     try {
-      const { keyword } = req.body;
-      
-      if (!keyword || typeof keyword !== 'string') {
-        return res.status(400).json({ error: "키워드가 필요합니다" });
+      // Validate request body with Zod
+      const result = step1Schema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          error: "입력값이 올바르지 않습니다",
+          details: result.error.errors.map(e => e.message)
+        });
       }
+      
+      const { keyword } = result.data;
 
       console.log(`🔍 [Step1] 블로그 검색 시작: "${keyword}"`);
       
