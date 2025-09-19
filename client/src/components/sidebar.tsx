@@ -10,7 +10,8 @@ import {
   Settings,
   TestTube,
   X,
-  Menu
+  Menu,
+  Workflow
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -36,6 +37,13 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       icon: Search,
       description: "키워드 SERP 분석",
       active: location === "/" || location.startsWith("/dashboard"),
+    },
+    {
+      href: "/stepwise-search",
+      label: "단계별 검색",
+      icon: Workflow,
+      description: "3단계 블로그 분석 프로세스",
+      active: location === "/stepwise-search" || location.startsWith("/stepwise-search"),
     },
     {
       href: "/keywords", 
