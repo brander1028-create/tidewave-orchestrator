@@ -397,20 +397,40 @@ export default function StepwiseSearchPage() {
                 <div className="space-y-4">
                   {step3Blogs.map((blogId) => {
                     const blog = step1Blogs.find(b => b.id === blogId);
+                    const result = step3Results.find(r => r.blogId === blogId);
                     return (
                       <div key={blogId} className="border rounded-lg p-4" data-testid={`blog-step3-${blogId}`}>
                         <div className="space-y-2">
-                          <h4 className="font-medium">{blog?.blogName} - 지수 확인 완료</h4>
-                          <div className="text-sm text-gray-600">
+                          <h4 className="font-medium" data-testid={`text-blog-name-${blogId}`}>
+                            {blog?.blogName} - 지수 확인 완료
+                          </h4>
+                          <div className="text-sm text-gray-600" data-testid={`text-description-${blogId}`}>
                             키워드별 네이버 모바일 노출 순위가 확인되었습니다
                           </div>
                           <div className="flex gap-2">
-                            <Badge variant="outline" className="text-green-600">
-                              노출 키워드: 3개
-                            </Badge>
-                            <Badge variant="outline" className="text-blue-600">
-                              평균 순위: 5.2위
-                            </Badge>
+                            {result ? (
+                              <>
+                                <Badge 
+                                  variant={result.isRanked ? "default" : "secondary"} 
+                                  className={result.isRanked ? "text-green-600" : "text-gray-600"}
+                                  data-testid={`badge-status-${blogId}`}
+                                >
+                                  {result.isRanked ? `${result.ranking}위 진입` : "순위 미진입"}
+                                </Badge>
+                                <Badge variant="outline" className="text-blue-600" data-testid={`badge-details-${blogId}`}>
+                                  {result.details || "순위 확인 완료"}
+                                </Badge>
+                                {result.error && (
+                                  <Badge variant="destructive" data-testid={`badge-error-${blogId}`}>
+                                    오류 발생
+                                  </Badge>
+                                )}
+                              </>
+                            ) : (
+                              <Badge variant="outline" data-testid={`badge-processing-${blogId}`}>
+                                처리 중...
+                              </Badge>
+                            )}
                           </div>
                         </div>
                       </div>
