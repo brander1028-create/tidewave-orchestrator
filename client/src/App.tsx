@@ -11,6 +11,7 @@ import TitleAnalysisPage from "@/pages/title-analysis";
 import ResultsPage from "@/pages/results";
 import HistoryPage from "@/pages/history";
 import BlogDatabasePage from "@/pages/blog-database";
+import StepwiseSearchPage from "@/pages/stepwise-search";
 import AdminPage from "@/pages/admin";
 import SandboxPage from "@/pages/sandbox";
 import NotFound from "@/pages/not-found";
@@ -24,6 +25,7 @@ function Router() {
       <Route path="/results/:jobId" component={ResultsPage} />
       <Route path="/history" component={HistoryPage} />
       <Route path="/blog-database" component={BlogDatabasePage} />
+      <Route path="/stepwise-search" component={StepwiseSearchPage} />
       <Route path="/admin" component={AdminPage} />
       <Route path="/sandbox" component={SandboxPage} />
       <Route component={NotFound} />
