@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// Node.js 18+ provides global fetch - no import needed
 
 export interface MobileNaverBlogResult {
   title: string;

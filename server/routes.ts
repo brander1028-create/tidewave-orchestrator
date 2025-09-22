@@ -178,8 +178,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // 3. 검색 결과를 discoveredBlogs에 저장
-      const discoveredBlogs = [];
+      // 3. 검색 결과를 discoveredBlogsList에 저장
+      const discoveredBlogsList = [];
       for (let i = 0; i < searchResults.length; i++) {
         const result = searchResults[i];
         
@@ -197,7 +197,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           postsAnalyzed: 0
         });
 
-        discoveredBlogs.push({
+        discoveredBlogsList.push({
           id: blog.id,
           blogName: blog.blogName,
           blogUrl: blog.blogUrl,
@@ -213,15 +213,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.updateSerpJob(serpJob.id, {
         status: "completed",
         progress: 100,
-        currentStepDetail: `${discoveredBlogs.length}개 블로그 수집 완료`
+        currentStepDetail: `${discoveredBlogsList.length}개 블로그 수집 완료`
       });
 
-      console.log(`✅ [Step1] 블로그 수집 완료: ${discoveredBlogs.length}개 블로그`);
+      console.log(`✅ [Step1] 블로그 수집 완료: ${discoveredBlogsList.length}개 블로그`);
       
       res.json({ 
-        blogs: discoveredBlogs,
+        blogs: discoveredBlogsList,
         jobId: serpJob.id,
-        message: `${discoveredBlogs.length}개 블로그를 수집했습니다`
+        message: `${discoveredBlogsList.length}개 블로그를 수집했습니다`
       });
 
     } catch (error) {
@@ -381,7 +381,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // 2. 선택된 블로그들 조회
       const allBlogs = await storage.getDiscoveredBlogs(jobId);
-      const selectedBlogs = allBlogs.filter(blog => blogIds.includes(blog.blogId));
+      const selectedBlogs = allBlogs.filter(blog => blogIds.includes(blog.id));
 
       if (selectedBlogs.length === 0) {
         return res.status(400).json({ error: "선택된 블로그를 찾을 수 없습니다" });
@@ -474,14 +474,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Helper function: 블로그 순위 확인
   async function checkBlogRanking(keyword: string, blogId: string, blogUrl: string): Promise<{position: number, details: string}> {
     try {
-      // TODO: 실제 M.NAVER.COM 검색 API 또는 스크래핑 구현
-      // 현재는 mock 순위 반환 (1-50위 랜덤)
-      const mockPosition = Math.floor(Math.random() * 50) + 1;
-      const isRanked = Math.random() > 0.3; // 70% 확률로 순위 내 진입
+      console.log(`🔍 [Ranking] 실제 순위 확인 시작: ${blogId} for "${keyword}"`);
       
+      // 실제 M.NAVER.COM 모바일 스크래핑으로 순위 확인
+      const searchResults = await mobileNaverScraper.searchBlogs(keyword, 50);
+      
+      // 검색 결과에서 해당 blogId 찾기
+      for (let i = 0; i < searchResults.length; i++) {
+        const result = searchResults[i];
+        const resultBlogId = extractBlogIdFromUrl(result.url);
+        
+        if (resultBlogId === blogId || result.url.includes(blogId)) {
+          const position = i + 1;
+          console.log(`🎯 [Ranking] 순위 발견: ${blogId} = ${position}위`);
+          return {
+            position,
+            details: `모바일 네이버 검색 ${position}위에서 발견`
+          };
+        }
+      }
+      
+      // 50위 안에 없으면 0 반환
+      console.log(`❌ [Ranking] 순위 미발견: ${blogId} (50위 밖)`);
       return {
-        position: isRanked ? mockPosition : 0,
-        details: isRanked ? `모바일 네이버 검색 ${mockPosition}위` : "첫 페이지(50위) 내 미진입"
+        position: 0,
+        details: "첫 페이지(50위) 내 미진입"
       };
     } catch (error) {
       console.error(`순위 확인 실패 [${blogId}]:`, error);
@@ -560,7 +577,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return naverBlogMatch[1];
     }
     
-    // 다른 패턴들도 처리 가능
+    // m.blog.naver.com/blogId 패턴 (모바일)
+    const mobileNaverBlogMatch = url.match(/m\.blog\.naver\.com\/([^\/\?]+)/);
+    if (mobileNaverBlogMatch) {
+      return mobileNaverBlogMatch[1];
+    }
+    
+    // URL 객체로 처리 (fallback)
+    try {
+      const urlObj = new URL(url);
+      if (urlObj.hostname === 'blog.naver.com' || urlObj.hostname === 'm.blog.naver.com') {
+        const pathParts = urlObj.pathname.split('/').filter(p => p);
+        if (pathParts.length > 0) {
+          return pathParts[0]; // First part is the blog ID
+        }
+      }
+    } catch (error) {
+      console.warn(`URL 파싱 실패: ${url}`);
+    }
+    
     return null;
   }
 
@@ -3395,34 +3430,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   return httpServer;
 }
 
-// Helper function to extract blog ID from URL
-function extractBlogIdFromUrl(url: string): string {
-  try {
-    const urlObj = new URL(url);
-    
-    // Handle blog.naver.com/blogId format
-    if (urlObj.hostname === 'blog.naver.com') {
-      const pathParts = urlObj.pathname.split('/').filter(p => p);
-      if (pathParts.length > 0) {
-        return pathParts[0]; // First part is the blog ID
-      }
-    }
-    
-    // Handle m.blog.naver.com/blogId format  
-    if (urlObj.hostname === 'm.blog.naver.com') {
-      const pathParts = urlObj.pathname.split('/').filter(p => p);
-      if (pathParts.length > 0) {
-        return pathParts[0]; // First part is the blog ID
-      }
-    }
-    
-    // Fallback: use entire URL as ID if can't extract
-    return url.replace(/[^a-zA-Z0-9]/g, '').substring(0, 50);
-  } catch (error) {
-    // Fallback for invalid URLs
-    return url.replace(/[^a-zA-Z0-9]/g, '').substring(0, 50);
-  }
-}
+// Duplicate function removed - using the one defined earlier in the file
 
 // Background SERP analysis job processing
 export async function processSerpAnalysisJob(
