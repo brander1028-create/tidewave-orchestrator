@@ -191,6 +191,60 @@ export default function StepwiseSearchPage() {
     }
   };
 
+  // 제목 스크래핑 함수
+  const handleTitleScraping = async () => {
+    if (!jobId) {
+      toast({
+        title: "작업 ID 없음",
+        description: "먼저 1단계 블로그 수집을 완료해주세요",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    try {
+      console.log(`🔍 [Frontend] 제목 스크래핑 시작`);
+      
+      const res = await apiRequest('POST', '/api/stepwise-search/scrape-titles', {
+        jobId: jobId
+      });
+      const response = await res.json();
+      
+      if (response.results && response.results.length > 0) {
+        // UI에 제목 업데이트 반영
+        const updatedBlogs = step1Blogs.map(blog => {
+          const scraped = response.results.find((r: any) => r.id === blog.id);
+          if (scraped && scraped.title) {
+            return { ...blog, title: scraped.title };
+          }
+          return blog;
+        });
+        
+        setStep1Blogs(updatedBlogs);
+        
+        console.log(`✅ [Frontend] 제목 스크래핑 완료: 성공 ${response.summary.scraped}개, 실패 ${response.summary.failed}개`);
+        
+        toast({
+          title: "제목 스크래핑 완료",
+          description: `${response.summary.scraped}개 제목을 성공적으로 가져왔습니다`,
+        });
+      } else {
+        toast({
+          title: "스크래핑 결과 없음",
+          description: "새로 가져올 제목이 없습니다",
+          variant: "default"
+        });
+      }
+    } catch (error) {
+      console.error("❌ [Frontend] 제목 스크래핑 실패:", error);
+      toast({
+        title: "스크래핑 실패",
+        description: "제목 스크래핑 중 오류가 발생했습니다",
+        variant: "destructive"
+      });
+    }
+  };
+
   const handleStep2Process = async (blogId: string) => {
     // Guard: jobId가 없으면 2단계 실행 불가
     if (!jobId) {
@@ -401,24 +455,33 @@ export default function StepwiseSearchPage() {
                   </CardDescription>
                 </div>
                 {step1Blogs.length > 0 && (
-                  <Button 
-                    onClick={handleBulkActivation}
-                    disabled={step2Loading || step1Blogs.every(blog => step2Blogs.includes(blog.id))}
-                    className="ml-4"
-                    size="sm"
-                    data-testid="button-bulk-activate"
-                  >
-                    {step2Loading ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                        일괄 활성화 중...
-                      </>
-                    ) : step1Blogs.every(blog => step2Blogs.includes(blog.id)) ? (
-                      "모두 활성화됨"
-                    ) : (
-                      "모두 활성화"
-                    )}
-                  </Button>
+                  <div className="flex items-center gap-2 ml-4">
+                    <Button 
+                      onClick={handleBulkActivation}
+                      disabled={step2Loading || step1Blogs.every(blog => step2Blogs.includes(blog.id))}
+                      size="sm"
+                      data-testid="button-bulk-activate"
+                    >
+                      {step2Loading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          일괄 활성화 중...
+                        </>
+                      ) : step1Blogs.every(blog => step2Blogs.includes(blog.id)) ? (
+                        "모두 활성화됨"
+                      ) : (
+                        "모두 활성화"
+                      )}
+                    </Button>
+                    <Button
+                      onClick={handleTitleScraping}
+                      variant="outline"
+                      size="sm"
+                      data-testid="button-title-scraping"
+                    >
+                      제목 긁어오기
+                    </Button>
+                  </div>
                 )}
               </div>
             </CardHeader>

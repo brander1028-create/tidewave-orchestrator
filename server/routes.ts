@@ -474,6 +474,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Zod schema for scrape-titles validation
+  const scrapeTitlesSchema = z.object({
+    jobId: z.string().min(1, "작업 ID가 필요합니다")
+  });
+
+  // 제목 스크래핑 API
+  app.post("/api/stepwise-search/scrape-titles", async (req, res) => {
+    try {
+      // Validate request body with Zod
+      const result = scrapeTitlesSchema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          error: "입력값이 올바르지 않습니다",
+          details: result.error.errors.map(e => e.message)
+        });
+      }
+      
+      const { jobId } = result.data;
+      
+      console.log(`🔍 [Scrape Titles] 제목 스크래핑 시작: jobId=${jobId}`);
+      
+      // 1. 해당 job의 발견된 블로그 목록 조회
+      const discoveredBlogs = await storage.getDiscoveredBlogs(jobId);
+      
+      if (!discoveredBlogs || discoveredBlogs.length === 0) {
+        return res.status(404).json({ error: '블로그 목록을 찾을 수 없습니다.' });
+      }
+      
+      console.log(`📋 [Scrape Titles] ${discoveredBlogs.length}개 블로그 제목 스크래핑 시작`);
+      
+      // 2. 각 블로그 URL에서 제목 스크래핑
+      const results = [];
+      for (const blog of discoveredBlogs) {
+        const titleResult = await mobileNaverScraper.scrapeTitleFromUrl(blog.blogUrl);
+        
+        if (titleResult.title) {
+          results.push({
+            id: blog.id,
+            blogName: blog.blogName,
+            title: titleResult.title,
+            status: 'scraped'
+          });
+          
+          console.log(`✅ [Scrape Titles] ${blog.blogName}: "${titleResult.title}"`);
+        } else {
+          results.push({
+            id: blog.id,
+            blogName: blog.blogName,
+            title: null,
+            status: 'failed',
+            error: titleResult.error
+          });
+          
+          console.log(`❌ [Scrape Titles] ${blog.blogName}: 실패`);
+        }
+        
+        // 요청 간 지연 (1초)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+      console.log(`✅ [Scrape Titles] 스크래핑 완료: 성공 ${results.filter(r => r.status === 'scraped').length}개, 실패 ${results.filter(r => r.status === 'failed').length}개`);
+      
+      res.json({
+        message: `제목 스크래핑이 완료되었습니다.`,
+        results: results,
+        summary: {
+          total: results.length,
+          scraped: results.filter(r => r.status === 'scraped').length,
+          failed: results.filter(r => r.status === 'failed').length
+        }
+      });
+      
+    } catch (error) {
+      console.error('❌ [Scrape Titles] 제목 스크래핑 오류:', error);
+      res.status(500).json({ error: '제목 스크래핑 중 오류가 발생했습니다.' });
+    }
+  });
+
   // Helper function: 블로그 순위 확인
   async function checkBlogRanking(keyword: string, blogId: string, blogUrl: string): Promise<{position: number, details: string}> {
     try {
