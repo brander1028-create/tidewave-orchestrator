@@ -42,7 +42,7 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
 import { nanoid } from 'nanoid';
-import { blogRegistry, discoveredBlogs, analyzedPosts, extractedKeywords, postTierChecks, appMeta, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
+import { blogRegistry, discoveredBlogs, analyzedPosts, extractedKeywords, managedKeywords, postTierChecks, appMeta, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 
 // Helper function for tier distribution analysis and augmentation
@@ -487,7 +487,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       console.log('📊 [Stepwise DB] 단계별 DB 현황 조회 시작');
 
-      // 1. 모든 discoveredBlogs 조회 (1단계 완료)
+      // 1. 모든 discoveredBlogs 조회 (1단계 완료) + 키워드 정보 조인
       const allDiscoveredBlogs = await db.select({
         id: discoveredBlogs.id,
         jobId: discoveredBlogs.jobId,
@@ -498,8 +498,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         blogUrl: discoveredBlogs.blogUrl,
         blogType: discoveredBlogs.blogType,
         postsAnalyzed: discoveredBlogs.postsAnalyzed,
-        createdAt: discoveredBlogs.createdAt
+        createdAt: discoveredBlogs.createdAt,
+        // 키워드 관리 테이블에서 조회량과 점수 정보 가져오기
+        keywordVolume: managedKeywords.volume,
+        keywordScore: managedKeywords.score
       }).from(discoveredBlogs)
+        .leftJoin(managedKeywords, eq(discoveredBlogs.seedKeyword, managedKeywords.text))
         .orderBy(desc(discoveredBlogs.createdAt))
         .limit(200); // 최근 200개로 제한
 

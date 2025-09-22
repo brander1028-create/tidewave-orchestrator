@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ExternalLink, Calendar, ChevronRight, Database, Layers, CheckCircle } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ExternalLink, Calendar, ChevronRight, Database, Layers, CheckCircle, TrendingUp, Star } from "lucide-react";
 import { Link } from "wouter";
 
 interface StepwiseDbBlog {
@@ -19,6 +20,8 @@ interface StepwiseDbBlog {
   blogType?: 'top_exposure' | 'search_feed';
   postsAnalyzed: number;
   createdAt: string;
+  keywordVolume?: number; // 키워드 조회량
+  keywordScore?: number; // 키워드 점수
   stepStatus: {
     step1: boolean; // 블로그 수집
     step2: boolean; // 키워드 API 활성화
@@ -38,6 +41,7 @@ interface StepwiseDbResponse {
 
 export default function StepwiseDbPage() {
   const [selectedTab, setSelectedTab] = useState("step1");
+  const [sortBy, setSortBy] = useState<"default" | "volume" | "volume_score">("default");
 
   // 단계별 DB 조회
   const { data: stepwiseData, isLoading } = useQuery<StepwiseDbResponse>({
@@ -45,22 +49,53 @@ export default function StepwiseDbPage() {
     refetchInterval: 10000, // 10초마다 새로고침
   });
 
-  const renderBlogTable = (blogs: StepwiseDbBlog[], showStepStatus = true) => (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>블로그명</TableHead>
-          <TableHead>키워드</TableHead>
-          <TableHead>순위</TableHead>
-          <TableHead>타입</TableHead>
-          <TableHead>포스트</TableHead>
-          {showStepStatus && <TableHead>단계</TableHead>}
-          <TableHead>수집일</TableHead>
-          <TableHead>링크</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {blogs.map((blog) => (
+  // 정렬 함수
+  const sortBlogs = (blogs: StepwiseDbBlog[]) => {
+    if (sortBy === "volume") {
+      return [...blogs].sort((a, b) => {
+        const aVolume = a.keywordVolume || 0;
+        const bVolume = b.keywordVolume || 0;
+        if (bVolume !== aVolume) return bVolume - aVolume;
+        // 동점자 처리: 점수 내림차순, 그 다음 최신순
+        const aScore = a.keywordScore || 0;
+        const bScore = b.keywordScore || 0;
+        if (bScore !== aScore) return bScore - aScore;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+    } else if (sortBy === "volume_score") {
+      return [...blogs].sort((a, b) => {
+        const aTotal = (a.keywordVolume || 0) + (a.keywordScore || 0);
+        const bTotal = (b.keywordVolume || 0) + (b.keywordScore || 0);
+        if (bTotal !== aTotal) return bTotal - aTotal;
+        // 동점자 처리: 조회량 내림차순, 그 다음 최신순
+        const aVolume = a.keywordVolume || 0;
+        const bVolume = b.keywordVolume || 0;
+        if (bVolume !== aVolume) return bVolume - aVolume;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+    }
+    return blogs; // 기본 정렬 (최신순)
+  };
+
+  const renderBlogTable = (blogs: StepwiseDbBlog[], showStepStatus = true) => {
+    const sortedBlogs = sortBlogs(blogs);
+    
+    return (
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>블로그명</TableHead>
+            <TableHead>키워드</TableHead>
+            <TableHead>순위</TableHead>
+            <TableHead>타입</TableHead>
+            <TableHead>포스트</TableHead>
+            {showStepStatus && <TableHead>단계</TableHead>}
+            <TableHead>수집일</TableHead>
+            <TableHead>링크</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {sortedBlogs.map((blog) => (
           <TableRow key={blog.id} data-testid={`blog-row-${blog.id}`}>
             <TableCell className="font-medium">
               <div className="max-w-48 truncate" title={blog.blogName}>
@@ -69,9 +104,28 @@ export default function StepwiseDbPage() {
               <div className="text-sm text-gray-500">{blog.blogId}</div>
             </TableCell>
             <TableCell>
-              <Badge variant="outline" data-testid={`keyword-${blog.seedKeyword}`}>
-                {blog.seedKeyword}
-              </Badge>
+              <div className="space-y-1">
+                <Badge variant="outline" data-testid={`keyword-${blog.seedKeyword}`}>
+                  {blog.seedKeyword}
+                </Badge>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  {blog.keywordVolume !== undefined && blog.keywordVolume !== null && (
+                    <div className="flex items-center gap-1">
+                      <TrendingUp className="w-3 h-3" />
+                      <span data-testid={`volume-${blog.id}`}>{blog.keywordVolume.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {blog.keywordScore !== undefined && blog.keywordScore !== null && (
+                    <div className="flex items-center gap-1">
+                      <Star className="w-3 h-3" />
+                      <span data-testid={`score-${blog.id}`}>{blog.keywordScore}</span>
+                    </div>
+                  )}
+                  {(blog.keywordVolume == null && blog.keywordScore == null) && (
+                    <span className="text-gray-400">데이터 없음</span>
+                  )}
+                </div>
+              </div>
             </TableCell>
             <TableCell>
               <div className="flex items-center space-x-2">
@@ -113,10 +167,11 @@ export default function StepwiseDbPage() {
               </Button>
             </TableCell>
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
+          ))}
+        </TableBody>
+      </Table>
+    );
+  };
 
   if (isLoading) {
     return (
@@ -237,6 +292,21 @@ export default function StepwiseDbPage() {
             3단계 통과 ({step3Blogs.length})
           </TabsTrigger>
         </TabsList>
+
+        {/* 정렬 옵션 */}
+        <div className="flex items-center gap-2 mt-4 mb-4">
+          <span className="text-sm font-medium">정렬:</span>
+          <Select value={sortBy} onValueChange={(value: "default" | "volume" | "volume_score") => setSortBy(value)}>
+            <SelectTrigger className="w-48" data-testid="sort-select">
+              <SelectValue placeholder="정렬 방식 선택" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default" data-testid="sort-default">기본 (최신순)</SelectItem>
+              <SelectItem value="volume" data-testid="sort-volume">조회량 높은순</SelectItem>
+              <SelectItem value="volume_score" data-testid="sort-volume-score">조회량+점수 높은순</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
         <TabsContent value="step1" className="space-y-4">
           <Card>
