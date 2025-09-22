@@ -35,8 +35,9 @@ export default function SerpProgress({ jobId }: SerpProgressProps) {
   const { data: job, isLoading } = useQuery<SerpJob>({
     queryKey: ["/api/serp/jobs", jobId],
     refetchInterval: (query) => {
-      // Stop refetching when completed or failed  
-      return query.state.data?.status === "running" ? 2000 : false;
+      // Only refetch when job is running
+      const status = query.state.data?.status;
+      return status === "running" ? 2000 : false;
     },
   });
 

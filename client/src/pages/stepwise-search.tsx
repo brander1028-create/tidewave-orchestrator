@@ -82,44 +82,16 @@ export default function StepwiseSearchPage() {
       });
       const response = await res.json();
 
-      if (response.jobId) {
+      if (response.blogs && response.blogs.length > 0) {
+        setStep1Blogs(response.blogs);
         setJobId(response.jobId);
-        console.log(`🎯 [Frontend] Job ${response.jobId} 시작됨, polling 대기 중...`);
+        setCurrentStep(2);
+        console.log(`✅ [Frontend] 1단계 완료: ${response.blogs.length}개 블로그 수집`);
         
-        // Job 완료까지 polling
-        const pollJob = async () => {
-          const jobRes = await apiRequest('GET', `/api/serp/jobs/${response.jobId}`);
-          const jobData = await jobRes.json();
-          
-          console.log(`📊 [Frontend] Job 상태: ${jobData.status}, 진행률: ${jobData.progress}%`);
-          
-          if (jobData.status === 'completed' && jobData.results?.discoveredBlogs) {
-            setStep1Blogs(jobData.results.discoveredBlogs);
-            setCurrentStep(2);
-            console.log(`✅ [Frontend] 1단계 완료: ${jobData.results.discoveredBlogs.length}개 블로그 수집`);
-            
-            toast({
-              title: "블로그 수집 완료",
-              description: `${jobData.results.discoveredBlogs.length}개의 블로그를 발견했습니다`,
-            });
-            return;
-          }
-          
-          if (jobData.status === 'failed') {
-            toast({
-              title: "검색 실패",
-              description: "블로그 검색 중 오류가 발생했습니다",
-              variant: "destructive"
-            });
-            return;
-          }
-          
-          // 아직 진행 중이면 1초 후 다시 polling
-          setTimeout(pollJob, 1000);
-        };
-        
-        // Polling 시작
-        pollJob();
+        toast({
+          title: "블로그 수집 완료",
+          description: `${response.blogs.length}개의 블로그를 발견했습니다`,
+        });
       } else {
         toast({
           title: "검색 결과 없음",
