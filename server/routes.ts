@@ -189,8 +189,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const blogId = mobileResult.blogId;
         if (!blogId) continue;
 
-        // 순위에 따라 블로그 타입 구분 (1-5위: 상위노출, 6위부터: 서치피드)
-        const blogType = (i + 1) <= 5 ? 'top_exposure' : 'search_feed';
+        // mobile-scraper에서 동적으로 결정된 blogType 사용 (서치피드 문구 기준)
+        const blogType = mobileResult.blogType || 'top_exposure'; // 기본값은 상위노출
 
         const blog = await storage.createDiscoveredBlog({
           jobId: serpJob.id,
@@ -209,7 +209,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           blogUrl: mobileResult.url,
           title: mobileResult.postTitle, // 실제 포스트 제목
           rank: blog.rank,
-          blogType: blogType, // 블로그 타입 추가
+          blogType: blog.blogType, // 동적으로 결정된 블로그 타입 사용
           volume: Math.floor(Math.random() * 50000) + 5000, // 임시 데이터
           score: Math.floor(Math.random() * 40) + 60, // 60-100점
           searchDate: blog.createdAt,
