@@ -151,8 +151,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         progress: 10
       });
 
-      // 2. Naver API로 블로그 검색 (첫 페이지, 10개)
-      const searchResults = await naverApi.searchBlogs(keyword, 10, 'date');
+      // 2. Naver API로 블로그 검색 (첫 페이지, 10개) - 유사도순으로 변경
+      const searchResults = await naverApi.searchBlogs(keyword, 10, 'sim');
       
       if (searchResults.length === 0) {
         await storage.updateSerpJob(serpJob.id, {
