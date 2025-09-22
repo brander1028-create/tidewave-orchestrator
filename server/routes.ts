@@ -189,6 +189,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const blogId = mobileResult.blogId;
         if (!blogId) continue;
 
+        // 순위에 따라 블로그 타입 구분 (1-5위: 상위노출, 6위부터: 서치피드)
+        const blogType = (i + 1) <= 5 ? 'top_exposure' : 'search_feed';
+
         const blog = await storage.createDiscoveredBlog({
           jobId: serpJob.id,
           seedKeyword: keyword,
@@ -196,6 +199,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           blogId: blogId,
           blogName: mobileResult.nickname || mobileResult.blogName || '알 수 없음',
           blogUrl: mobileResult.url,
+          blogType: blogType,
           postsAnalyzed: 0
         });
 
@@ -205,6 +209,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           blogUrl: mobileResult.url,
           title: mobileResult.postTitle, // 실제 포스트 제목
           rank: blog.rank,
+          blogType: blogType, // 블로그 타입 추가
           volume: Math.floor(Math.random() * 50000) + 5000, // 임시 데이터
           score: Math.floor(Math.random() * 40) + 60, // 60-100점
           searchDate: blog.createdAt,
