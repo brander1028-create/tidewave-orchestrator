@@ -409,7 +409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 순위 정보로 블로그 업데이트
           const updatedBlog = await storage.updateDiscoveredBlog(blog.id, {
             ranking: ranking.position,
-            rankingCheckedAt: new Date()
+            rankingCheckedAt: new Date().toISOString()
           });
 
           rankingResults.push({
@@ -445,7 +445,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status: "completed",
         currentStep: "checking_rankings",
         progress: 100,
-        completedAt: new Date()
+        completedAt: new Date().toISOString()
       });
 
       console.log(`✅ [Step3] 순위 확인 완료: ${rankingResults.length}개 블로그 처리`);

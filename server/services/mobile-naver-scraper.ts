@@ -289,7 +289,7 @@ export class MobileNaverScraperService {
     return !!(
       result.blogId &&
       result.url &&
-      result.url.includes('blog.naver.com') &&
+      (result.url.includes('blog.naver.com') || result.url.includes('m.blog.naver.com')) &&
       result.blogId.length > 0 &&
       result.blogId.length < 50
     );
