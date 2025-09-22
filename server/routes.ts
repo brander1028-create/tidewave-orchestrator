@@ -184,7 +184,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const result = searchResults[i];
         
         // 블로그 ID 추출 (blog.naver.com/blogId 또는 bloggerlink에서)
-        const blogId = extractBlogIdFromUrl(result.bloggerlink || result.link);
+        const blogId = extractBlogIdFromUrlHelper(result.bloggerlink || result.link);
         if (!blogId) continue;
 
         const blog = await storage.createDiscoveredBlog({
@@ -409,7 +409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 순위 정보로 블로그 업데이트
           const updatedBlog = await storage.updateDiscoveredBlog(blog.id, {
             ranking: ranking.position,
-            rankingCheckedAt: new Date().toISOString()
+            rankingCheckedAt: new Date()
           });
 
           rankingResults.push({
@@ -482,7 +482,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 검색 결과에서 해당 blogId 찾기
       for (let i = 0; i < searchResults.length; i++) {
         const result = searchResults[i];
-        const resultBlogId = extractBlogIdFromUrl(result.url);
+        const resultBlogId = extractBlogIdFromUrlHelper(result.url);
         
         if (resultBlogId === blogId || result.url.includes(blogId)) {
           const position = i + 1;
@@ -3974,8 +3974,12 @@ export async function processSerpAnalysisJob(
     }
     
     // ✅ NEW: Tier distribution analysis and auto-augmentation (G feature)
-    console.log(`\n🔄 [Tier Analysis] Starting tier distribution check for automatic augmentation...`);
-    await checkAndAugmentTierDistribution(jobId, keywords);
+    try {
+      console.log(`\n🔄 [Tier Analysis] Starting tier distribution check for automatic augmentation...`);
+      await checkAndAugmentTierDistribution(jobId, keywords);
+    } catch (tierError) {
+      console.warn(`⚠️ [Tier Analysis] Failed but continuing job completion:`, tierError);
+    }
     
     // Complete the job with detailed results
     await storage.updateSerpJob(jobId, {

@@ -58,16 +58,18 @@ export class MobileNaverScraperService {
         const html = await response.text();
         console.log(`📄 [Mobile Scraper] HTML 응답 크기: ${html.length} bytes`);
         
-        // 디버깅: HTML 샘플 출력 (첫 1000자와 마지막 1000자)
-        console.log(`🔍 [DEBUG] HTML 시작 1000자:`, html.substring(0, 1000));
-        console.log(`🔍 [DEBUG] HTML 끝 1000자:`, html.substring(html.length - 1000));
-        
-        // 디버깅: 블로그 관련 키워드 검색
-        const blogKeywords = ['blog.naver.com', 'm.blog.naver.com', 'class=', 'href='];
-        blogKeywords.forEach(keyword => {
-          const count = (html.match(new RegExp(keyword, 'gi')) || []).length;
-          console.log(`🔍 [DEBUG] "${keyword}" 발견 횟수: ${count}`);
-        });
+        // 디버깅: HTML 샘플 출력 (DEBUG_MOBILE_SCRAPER=true일 때만)
+        if (process.env.DEBUG_MOBILE_SCRAPER === 'true') {
+          console.log(`🔍 [DEBUG] HTML 시작 1000자:`, html.substring(0, 1000));
+          console.log(`🔍 [DEBUG] HTML 끝 1000자:`, html.substring(html.length - 1000));
+          
+          // 디버깅: 블로그 관련 키워드 검색
+          const blogKeywords = ['blog.naver.com', 'm.blog.naver.com', 'class=', 'href='];
+          blogKeywords.forEach(keyword => {
+            const count = (html.match(new RegExp(keyword, 'gi')) || []).length;
+            console.log(`🔍 [DEBUG] "${keyword}" 발견 횟수: ${count}`);
+          });
+        }
         
         // HTML에서 블로그 결과 파싱
         const results = this.parseBlogs(html, keyword);
