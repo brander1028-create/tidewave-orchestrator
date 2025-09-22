@@ -5,6 +5,7 @@ export interface MobileNaverBlogResult {
   url: string;
   blogName: string;
   blogId: string;
+  postId?: string;
   rank: number;
   description?: string;
   timestamp?: string;
@@ -95,47 +96,62 @@ export class MobileNaverScraperService {
     const results: MobileNaverBlogResult[] = [];
     
     try {
-      // 블로그 포스트 패턴들 정의 (더 포괄적인 패턴들)
-      const patterns = [
-        // 패턴 1: 일반적인 블로그 결과
-        /<div[^>]*class="[^"]*total_wrap[^"]*"[^>]*>[\s\S]*?<\/div>/gi,
-        // 패턴 2: 모바일 전용 블로그 결과
-        /<article[^>]*class="[^"]*bx[^"]*"[^>]*>[\s\S]*?<\/article>/gi,
-        // 패턴 3: 리스트 형태 블로그 결과  
-        /<li[^>]*class="[^"]*item[^"]*"[^>]*>[\s\S]*?<\/li>/gi,
-        // 패턴 4: 포괄적인 div 패턴 (블로그 URL 포함)
-        /<div[^>]*>[\s\S]*?blog\.naver\.com[\s\S]*?<\/div>/gi,
-        // 패턴 5: 포괄적인 모바일 블로그 패턴
-        /<div[^>]*>[\s\S]*?m\.blog\.naver\.com[\s\S]*?<\/div>/gi,
-        // 패턴 6: 링크 태그 기반 패턴
-        /<a[^>]*href="[^"]*blog\.naver\.com[^"]*"[^>]*>[\s\S]*?<\/a>/gi,
-        // 패턴 7: 모바일 링크 태그 패턴
-        /<a[^>]*href="[^"]*m\.blog\.naver\.com[^"]*"[^>]*>[\s\S]*?<\/a>/gi
-      ];
+      // 직접 포스트 URL 추출 (가장 정확한 방법)
+      const postUrlPattern = /(?:blog\.naver\.com|m\.blog\.naver\.com)\/([^\/\s"']+)\/(\d+)/g;
+      let match;
+      let rank = 1;
       
-      for (const pattern of patterns) {
-        const matches = html.match(pattern) || [];
+      while ((match = postUrlPattern.exec(html)) !== null && results.length < 10) {
+        const blogId = match[1];
+        const postId = match[2];
+        const fullUrl = `https://blog.naver.com/${blogId}/${postId}`;
         
-        for (let i = 0; i < matches.length && results.length < 20; i++) {
-          const match = matches[i];
-          const blogResult = this.extractBlogInfo(match, results.length + 1);
+        // 중복 체크
+        if (!results.find(r => r.url === fullUrl)) {
+          const blogResult: MobileNaverBlogResult = {
+            title: `${blogId}의 포스트`,
+            url: fullUrl,
+            blogName: blogId,
+            blogId: blogId,
+            postId: postId,
+            rank: rank++,
+            description: ''
+          };
           
-          if (blogResult && this.isValidBlogResult(blogResult)) {
+          results.push(blogResult);
+          console.log(`📝 [Mobile Scraper] 포스트 발견: ${blogResult.rank}위 - ${blogResult.blogName}/${blogResult.postId}`);
+        }
+      }
+      
+      // 포스트 URL이 없으면 블로그 홈 URL 시도
+      if (results.length === 0) {
+        const blogUrlPattern = /(?:blog\.naver\.com|m\.blog\.naver\.com)\/([^\/\s"']+)(?!\/\d)/g;
+        let blogMatch;
+        let blogRank = 1;
+        
+        while ((blogMatch = blogUrlPattern.exec(html)) !== null && results.length < 5) {
+          const blogId = blogMatch[1];
+          const fullUrl = `https://blog.naver.com/${blogId}`;
+          
+          // 중복 체크
+          if (!results.find(r => r.blogId === blogId)) {
+            const blogResult: MobileNaverBlogResult = {
+              title: `${blogId}의 블로그`,
+              url: fullUrl,
+              blogName: blogId,
+              blogId: blogId,
+              postId: undefined,
+              rank: blogRank++,
+              description: ''
+            };
+            
             results.push(blogResult);
-            console.log(`📝 [Mobile Scraper] 블로그 발견: ${blogResult.rank}위 - ${blogResult.blogName} (${blogResult.blogId})`);
+            console.log(`📝 [Mobile Scraper] 블로그 발견: ${blogResult.rank}위 - ${blogResult.blogName} (블로그 홈)`);
           }
         }
       }
       
-      // 중복 제거 (같은 blogId)
-      const uniqueResults = results.filter((result, index, self) => 
-        index === self.findIndex(r => r.blogId === result.blogId)
-      );
-      
-      // 순위 재정렬
-      return uniqueResults
-        .sort((a, b) => a.rank - b.rank)
-        .map((result, index) => ({ ...result, rank: index + 1 }));
+      return results;
         
     } catch (error) {
       console.error(`❌ [Mobile Scraper] HTML 파싱 실패:`, error);
@@ -170,8 +186,8 @@ export class MobileNaverScraperService {
       // URL 정리 (리다이렉트 제거)
       url = this.cleanUrl(url);
       
-      // 블로그 ID 추출
-      const blogId = this.extractBlogId(url);
+      // 블로그 ID와 포스트 ID 추출
+      const { blogId, postId } = this.extractBlogAndPostId(url);
       if (!blogId) return null;
       
       // 제목 추출
@@ -215,6 +231,7 @@ export class MobileNaverScraperService {
         url,
         blogName,
         blogId,
+        postId: postId || undefined,
         rank,
         description: this.extractDescription(htmlBlock)
       };
@@ -226,25 +243,28 @@ export class MobileNaverScraperService {
   }
   
   /**
-   * URL에서 블로그 ID 추출
+   * URL에서 블로그 ID와 포스트 ID 추출
    */
-  private extractBlogId(url: string): string | null {
+  private extractBlogAndPostId(url: string): { blogId: string | null; postId: string | null } {
     try {
       const urlObj = new URL(url);
       
-      // blog.naver.com/{blogId} 패턴
+      // blog.naver.com/{blogId}/{postId} 패턴
       const pathParts = urlObj.pathname.split('/').filter(Boolean);
-      if (pathParts.length > 0) {
-        return pathParts[0];
+      if (pathParts.length >= 1) {
+        const blogId = pathParts[0];
+        const postId = pathParts.length >= 2 ? pathParts[1] : null;
+        return { blogId, postId };
       }
       
-      // 쿼리 파라미터에서 blogId 추출
+      // 쿼리 파라미터에서 blogId와 logNo 추출
       const blogId = urlObj.searchParams.get('blogId');
-      if (blogId) return blogId;
+      const postId = urlObj.searchParams.get('logNo');
+      if (blogId) return { blogId, postId };
       
-      return null;
+      return { blogId: null, postId: null };
     } catch {
-      return null;
+      return { blogId: null, postId: null };
     }
   }
   
