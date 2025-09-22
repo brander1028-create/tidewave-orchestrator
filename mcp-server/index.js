@@ -29,7 +29,7 @@ const port = process.env.PORT || 3000;
 
 app.use(bodyParser.json({ limit: '10mb' }));
 
-// Create a single Octokit instance. It will throw if the token is missing.
+// Creat
 const ghToken = process.env.GH_TOKEN;
 let octokit;
 if (ghToken) {
@@ -37,8 +37,6 @@ if (ghToken) {
 } else {
   console.warn('Warning: GH_TOKEN not set. GitHub endpoints will fail.');
 }
-const ghOwner = process.env.GH_OWNER;
-const ghRepo = process.env.GH_REPO;
 const ghOwner = process.env.GH_OWNER;
 const ghRepo = process.env.GH_REPO;
 
@@ -54,9 +52,7 @@ async function readGitHubFile(path) {
   if (Array.isArray(result.data)) {
     throw new Error('Path ' + path + ' is a directory. Only files are supported.');
   }
-  const buff = Buffer.from(result.data.content, 'base64');
-  return buff.toString('utf-8');
-}
+  const 
 
 /**
  * Helper to write file contents to a GitHub repository. If the file exists,
