@@ -43,6 +43,8 @@ import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
 import { nanoid } from 'nanoid';
 import { blogRegistry, discoveredBlogs, analyzedPosts, extractedKeywords, managedKeywords, postTierChecks, appMeta, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
+import { advancedKeywordSelector } from './services/advanced-keyword-selector';
+import { defaultKeywordSelectionSettings, validateKeywordSelectionSettings } from '../shared/keyword-selection-settings';
 import { eq, and, desc, sql } from 'drizzle-orm';
 
 // Helper function for tier distribution analysis and augmentation
@@ -292,11 +294,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`📝 [Step2] 블로그 분석 중: ${blog.blogName} (${i + 1}/${selectedBlogs.length})`);
 
         try {
-          // 5. 최신 포스트 수집 (현재는 mock 데이터, 실제로는 RSS 또는 스크래핑)
-          const posts = await collectLatestPosts(blog.blogUrl, blog.blogId);
+          // 5. 실제 블로그 포스트 제목 수집
+          const posts = await collectRealPosts(blog.blogUrl, blog.blogId);
           
-          // 6. 포스트에서 키워드 추출
-          const extractedKeywords = await extractKeywordsFromPosts(posts, jobId, blog.id);
+          // 6. 새로운 키워드 선정 알고리즘 사용
+          const selectedKeywords = await selectTop4KeywordsFromPosts(posts, jobId, blog.id);
           
           // 7. 분석된 포스트 수 업데이트
           await storage.updateDiscoveredBlog(blog.id, {
@@ -307,12 +309,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
             blogId: blog.id,
             blogName: blog.blogName,
             postsAnalyzed: posts.length,
-            keywordsExtracted: extractedKeywords.length,
-            topKeywords: extractedKeywords.slice(0, 3).map(k => ({
+            keywordsExtracted: selectedKeywords.length,
+            topKeywords: selectedKeywords.map((k: any) => ({
               text: k.keyword,
-              frequency: k.frequency,
-              volume: k.volume || 0,
-              rank: k.rank || null
+              volume: k.volume,
+              score: k.score,
+              cpc: k.cpc,
+              position: k.position,
+              isCombo: k.isCombo || false
             }))
           });
 
@@ -698,7 +702,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   }
 
-  // Helper function: 최신 포스트 수집
+  // 실제 블로그 포스트 제목 수집 (RSS 피드 + 스크래핑)
+  async function collectRealPosts(blogUrl: string, blogId: string): Promise<any[]> {
+    try {
+      console.log(`📡 [Step2] 실제 포스트 수집 시작: ${blogUrl}`);
+      
+      // scraper 서비스를 사용해서 실제 포스트 수집
+      const posts = await scraper.scrapeBlogPosts(blogUrl, 10);
+      
+      if (posts.length > 0) {
+        console.log(`✅ [Step2] 실제 포스트 수집 성공: ${posts.length}개`);
+        return posts;
+      } else {
+        console.log(`⚠️ [Step2] 실제 포스트 없음, fallback 데이터 사용`);
+        // Fallback: 기본 제목들 생성
+        return [
+          {
+            id: `${blogId}_fallback1`,
+            title: `${blogId} 블로그 최신 포스트`,
+            content: "",
+            url: `${blogUrl}/fallback1`,
+            publishedAt: new Date()
+          }
+        ];
+      }
+    } catch (error) {
+      console.error(`❌ [Step2] 포스트 수집 실패:`, error);
+      // 에러 시에도 fallback 데이터 반환
+      return [
+        {
+          id: `${blogId}_error_fallback`,
+          title: `${blogId} 블로그`,
+          content: "",
+          url: blogUrl,
+          publishedAt: new Date()
+        }
+      ];
+    }
+  }
+
+  // Helper function: 최신 포스트 수집 (기존 mock - 하위 호환성 유지)
   async function collectLatestPosts(blogUrl: string, blogId: string): Promise<any[]> {
     // TODO: 실제 RSS 피드 또는 스크래핑 구현
     // 현재는 mock 데이터 반환
@@ -754,6 +797,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
 
     return extractedKeywords;
+  }
+
+  // 새로운 키워드 선정 알고리즘 - 포스트에서 상위 4개 키워드 선정
+  async function selectTop4KeywordsFromPosts(posts: any[], jobId: string, blogId: string): Promise<any[]> {
+    try {
+      console.log(`🎯 [Step2] 키워드 선정 알고리즘 시작: ${posts.length}개 포스트`);
+      
+      // 1. 포스트 제목들 추출
+      const titles = posts.map(post => post.title || '').filter(title => title.trim().length > 0);
+      
+      if (titles.length === 0) {
+        console.log(`⚠️ [Step2] 유효한 제목이 없음`);
+        return [];
+      }
+
+      console.log(`📝 [Step2] 추출된 제목들: ${titles.slice(0, 3).join(', ')}...`);
+      
+      // 2. localStorage 또는 기본 설정값 사용 (서버사이드에서는 기본값)
+      const settings = defaultKeywordSelectionSettings;
+      
+      // 3. 새로운 키워드 선정 알고리즘 실행
+      const selectedKeywords = await advancedKeywordSelector.selectTop4Keywords(titles, settings);
+      
+      if (selectedKeywords.length === 0) {
+        console.log(`⚠️ [Step2] 선정된 키워드가 없음`);
+        return [];
+      }
+      
+      console.log(`✅ [Step2] 키워드 선정 완료: ${selectedKeywords.length}개`);
+      selectedKeywords.forEach((k, i) => console.log(`   ${k.position}. ${k.keyword} (조회량:${k.volume}, 점수:${k.score}, CPC:${k.cpc})`));
+      
+      // 4. extractedKeywords 테이블에 저장
+      const savedKeywords = [];
+      
+      for (const keyword of selectedKeywords) {
+        try {
+          const savedKeyword = await storage.createExtractedKeyword({
+            blogId,
+            jobId,
+            keyword: keyword.keyword,
+            frequency: keyword.position, // position을 frequency 필드에 저장
+            volume: keyword.volume,
+            rank: null, // 아직 순위 확인 전
+            tier: keyword.volume > 30000 ? 1 : keyword.volume > 15000 ? 2 : 3
+          });
+          
+          savedKeywords.push({
+            ...savedKeyword,
+            combinedScore: keyword.combinedScore,
+            cpc: keyword.cpc,
+            position: keyword.position,
+            isCombo: keyword.isCombo || false
+          });
+          
+        } catch (error) {
+          console.error(`❌ [Step2] 키워드 저장 실패: ${keyword.keyword}`, error);
+        }
+      }
+      
+      console.log(`💾 [Step2] DB 저장 완료: ${savedKeywords.length}개`);
+      return savedKeywords;
+      
+    } catch (error) {
+      console.error(`❌ [Step2] 키워드 선정 실패:`, error);
+      return [];
+    }
   }
 
   // Helper function: URL에서 블로그 ID 추출

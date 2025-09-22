@@ -15,6 +15,7 @@ import StepwiseSearchPage from "@/pages/stepwise-search";
 import StepwiseDbPage from "@/pages/stepwise-db";
 import AdminPage from "@/pages/admin";
 import SandboxPage from "@/pages/sandbox";
+import KeywordSelectionSettingsPage from "@/pages/keyword-selection-settings";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -28,6 +29,7 @@ function Router() {
       <Route path="/blog-database" component={BlogDatabasePage} />
       <Route path="/stepwise-search" component={StepwiseSearchPage} />
       <Route path="/stepwise-db" component={StepwiseDbPage} />
+      <Route path="/keyword-selection-settings" component={KeywordSelectionSettingsPage} />
       <Route path="/admin" component={AdminPage} />
       <Route path="/sandbox" component={SandboxPage} />
       <Route component={NotFound} />

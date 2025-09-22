@@ -12,7 +12,8 @@ import {
   X,
   Menu,
   Workflow,
-  Layers
+  Layers,
+  Sliders
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -73,6 +74,13 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       icon: Layers,
       description: "단계별 수집된 블로그 현황",
       active: location === "/stepwise-db" || location.startsWith("/stepwise-db"),
+    },
+    {
+      href: "/keyword-selection-settings",
+      label: "키워드 선정 설정",
+      icon: Sliders,
+      description: "키워드 선정 알고리즘 조정",
+      active: location === "/keyword-selection-settings" || location.startsWith("/keyword-selection-settings"),
     },
     {
       href: "/history",
