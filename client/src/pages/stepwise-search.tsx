@@ -451,7 +451,7 @@ export default function StepwiseSearchPage() {
                     1단계 블로그 ({step1Blogs.length}개)
                   </CardTitle>
                   <CardDescription>
-                    첫페이지에서 수집된 블로그 목록 (피치피드 위까지)
+                    첫페이지에서 수집된 블로그 목록
                   </CardDescription>
                 </div>
                 {step1Blogs.length > 0 && (
@@ -508,11 +508,11 @@ export default function StepwiseSearchPage() {
                             )}
                           </div>
                           <div className="flex items-center gap-4 text-sm text-gray-600">
-                            <span>순위: {blog.rank}위</span>
+                            <span>순위: {blog.blogType === 'top_exposure' ? `상위노출 ${blog.rank}위` : `서치피드 ${blog.rank}위`}</span>
                             <span>조회량: {blog.volume?.toLocaleString()}</span>
                             <span>점수: {blog.score}점</span>
-                            <Badge variant={blog.status === "수집됨" ? "default" : "secondary"}>
-                              {blog.status}
+                            <Badge variant={blog.blogType === "top_exposure" ? "default" : "secondary"}>
+                              {blog.blogType === 'top_exposure' ? '상위노출' : '서치피드'}
                             </Badge>
                           </div>
                         </div>
