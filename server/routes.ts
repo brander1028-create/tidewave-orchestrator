@@ -42,7 +42,7 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import * as XLSX from 'xlsx';
 import { nanoid } from 'nanoid';
-import { blogRegistry, discoveredBlogs, postTierChecks, appMeta, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
+import { blogRegistry, discoveredBlogs, analyzedPosts, extractedKeywords, postTierChecks, appMeta, type BlogRegistry, insertBlogRegistrySchema } from '@shared/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 
 // Helper function for tier distribution analysis and augmentation
@@ -452,8 +452,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.updateSerpJob(jobId, {
         status: "completed",
         currentStep: "checking_rankings",
-        progress: 100,
-        completedAt: new Date().toISOString()
+        progress: 100
       });
 
       console.log(`✅ [Step3] 순위 확인 완료: ${rankingResults.length}개 블로그 처리`);
@@ -474,6 +473,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error('❌ [Step3] 순위 확인 실패:', error);
       res.status(500).json({
         error: "순위 확인 중 오류가 발생했습니다",
+        details: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // ==================== 단계별 DB API ====================
+
+  /**
+   * 단계별 DB 현황 조회 - 1단계, 2단계, 3단계 통과한 블로그들 현황
+   */
+  app.get("/api/stepwise-db", async (req, res) => {
+    try {
+      console.log('📊 [Stepwise DB] 단계별 DB 현황 조회 시작');
+
+      // 1. 모든 discoveredBlogs 조회 (1단계 완료)
+      const allDiscoveredBlogs = await db.select({
+        id: discoveredBlogs.id,
+        jobId: discoveredBlogs.jobId,
+        seedKeyword: discoveredBlogs.seedKeyword,
+        rank: discoveredBlogs.rank,
+        blogId: discoveredBlogs.blogId,
+        blogName: discoveredBlogs.blogName,
+        blogUrl: discoveredBlogs.blogUrl,
+        blogType: discoveredBlogs.blogType,
+        postsAnalyzed: discoveredBlogs.postsAnalyzed,
+        createdAt: discoveredBlogs.createdAt
+      }).from(discoveredBlogs)
+        .orderBy(desc(discoveredBlogs.createdAt))
+        .limit(200); // 최근 200개로 제한
+
+      console.log(`📊 [Stepwise DB] 발견된 블로그 수: ${allDiscoveredBlogs.length}`);
+
+      // 2. 각 블로그에 대해 단계별 완료 상태 확인
+      const blogsWithSteps = [];
+      
+      for (const blog of allDiscoveredBlogs) {
+        // 2단계: analyzedPosts에 해당 블로그의 포스트가 있는지 확인
+        const postsCount = await db.select({ count: sql<number>`count(*)` })
+          .from(analyzedPosts)
+          .where(eq(analyzedPosts.blogId, blog.id));
+        
+        const hasStep2 = (postsCount[0]?.count || 0) > 0;
+
+        // 3단계: extractedKeywords에 해당 블로그의 키워드가 있는지 확인
+        const keywordsCount = await db.select({ count: sql<number>`count(*)` })
+          .from(extractedKeywords)
+          .where(eq(extractedKeywords.blogId, blog.id));
+        
+        const hasStep3 = (keywordsCount[0]?.count || 0) > 0;
+
+        blogsWithSteps.push({
+          ...blog,
+          stepStatus: {
+            step1: true, // discoveredBlogs에 있으면 1단계 완료
+            step2: hasStep2,
+            step3: hasStep3
+          }
+        });
+      }
+
+      // 3. 통계 계산
+      const summary = {
+        totalBlogs: blogsWithSteps.length,
+        step1Only: blogsWithSteps.filter(b => b.stepStatus.step1 && !b.stepStatus.step2).length,
+        step2Complete: blogsWithSteps.filter(b => b.stepStatus.step2).length,
+        step3Complete: blogsWithSteps.filter(b => b.stepStatus.step3).length
+      };
+
+      console.log(`📊 [Stepwise DB] 통계: 전체 ${summary.totalBlogs}, 1단계만 ${summary.step1Only}, 2단계 완료 ${summary.step2Complete}, 3단계 완료 ${summary.step3Complete}`);
+
+      res.json({
+        blogs: blogsWithSteps,
+        summary
+      });
+
+    } catch (error) {
+      console.error('❌ [Stepwise DB] 조회 실패:', error);
+      res.status(500).json({
+        error: "단계별 DB 현황 조회 중 오류가 발생했습니다",
         details: error instanceof Error ? error.message : String(error)
       });
     }
@@ -1175,7 +1253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         // ★ 1-4 티어 생성 (키워드당 최대 4티어, 아키텍트 권장사항 적용)
         const minimalTiers = [];
-        for (const [kwIndex, kw] of keywords.entries()) {
+        for (const [kwIndex, kw] of Array.from(keywords.entries())) {
           // 키워드당 최대 4개 티어 생성
           for (let tierNum = 1; tierNum <= 4; tierNum++) {
             const blog = blogData[Math.min(kwIndex, blogData.length - 1)] || {
@@ -3828,7 +3906,7 @@ export async function processSerpAnalysisJob(
             };
 
             keywordResults = {
-              detail: titleResult.topN.map((kw, index) => ({
+              detail: titleResult.topN.map((kw: any, index: number) => ({
                 keyword: kw.text,
                 tier: `tier${index + 1}` as 'tier1'|'tier2'|'tier3'|'tier4',
                 volume_total: kw.raw_volume || 0,
@@ -3849,9 +3927,9 @@ export async function processSerpAnalysisJob(
             // 🎯 C. 제목 선별 결과 검증 로그
             const candidateCount = titleResult.stats?.candidates || 0;
             const eligibleCount = titleResult.stats?.db_hits || 0;
-            console.log(`🔤 TITLE_TOP: blog=${blog.blogName}, titles=${titles.length}, cands=${candidateCount}, dbHits1000=${eligibleCount}, mode=${titleResult.mode}, top4=[${titleResult.topN.map(k => `${k.text}(${k.combined_score})`).join(', ')}]`);
+            console.log(`🔤 TITLE_TOP: blog=${blog.blogName}, titles=${titles.length}, cands=${candidateCount}, dbHits1000=${eligibleCount}, mode=${titleResult.mode}, top4=[${titleResult.topN.map((k: any) => `${k.text}(${k.combined_score})`).join(', ')}]`);
             
-            console.log(`   🏆 [Title Extract] Top ${titleResult.topN.length} keywords for ${blog.blogName} (${titleResult.mode}): ${titleResult.topN.map(kw => `${kw.text} (${kw.combined_score}pts)`).join(', ')}`);
+            console.log(`   🏆 [Title Extract] Top ${titleResult.topN.length} keywords for ${blog.blogName} (${titleResult.mode}): ${titleResult.topN.map((kw: any) => `${kw.text} (${kw.combined_score}pts)`).join(', ')}`);
           } catch (error) {
             console.error(`   ❌ [Title Extract] Failed for ${blog.blogName}:`, error);
             // Fallback to original method

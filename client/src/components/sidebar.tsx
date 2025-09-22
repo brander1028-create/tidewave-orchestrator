@@ -11,7 +11,8 @@ import {
   TestTube,
   X,
   Menu,
-  Workflow
+  Workflow,
+  Layers
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -65,6 +66,13 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       icon: FolderOpen, 
       description: "블로그 데이터베이스 관리",
       active: location === "/blog-database" || location.startsWith("/blog-database"),
+    },
+    {
+      href: "/stepwise-db",
+      label: "단계별 DB",
+      icon: Layers,
+      description: "단계별 수집된 블로그 현황",
+      active: location === "/stepwise-db" || location.startsWith("/stepwise-db"),
     },
     {
       href: "/history",
