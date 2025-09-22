@@ -155,14 +155,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 2. 실제 M.NAVER.COM 모바일 스크래핑으로 블로그 검색 (첫 페이지, 10개)
       const mobileResults = await mobileNaverScraper.searchBlogs(keyword, 10);
       
-      // 기존 API 형태로 변환
+      // 기존 API 형태로 변환 (nickname과 postTitle 보존)
       const searchResults = mobileResults.map(result => ({
         title: result.title,
         link: result.url,
         description: result.description || '',
         bloggername: result.blogName,
         bloggerlink: result.url,
-        postdate: result.timestamp || new Date().toISOString()
+        postdate: result.timestamp || new Date().toISOString(),
+        nickname: result.nickname, // 실제 닉네임 보존
+        postTitle: result.postTitle // 실제 포스트 제목 보존
       }));
       
       if (searchResults.length === 0) {
@@ -178,13 +180,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // 3. 검색 결과를 discoveredBlogsList에 저장
+      // 3. 검색 결과를 discoveredBlogsList에 저장 (mobileResults 직접 사용)
       const discoveredBlogsList = [];
-      for (let i = 0; i < searchResults.length; i++) {
-        const result = searchResults[i];
+      for (let i = 0; i < mobileResults.length; i++) {
+        const mobileResult = mobileResults[i];
         
-        // 블로그 ID 추출 (blog.naver.com/blogId 또는 bloggerlink에서)
-        const blogId = extractBlogIdFromUrlHelper(result.bloggerlink || result.link);
+        // 블로그 ID 추출
+        const blogId = mobileResult.blogId;
         if (!blogId) continue;
 
         const blog = await storage.createDiscoveredBlog({
@@ -192,15 +194,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           seedKeyword: keyword,
           rank: i + 1,
           blogId: blogId,
-          blogName: result.bloggername || '알 수 없음',
-          blogUrl: result.bloggerlink || result.link,
+          blogName: mobileResult.nickname || mobileResult.blogName || '알 수 없음',
+          blogUrl: mobileResult.url,
           postsAnalyzed: 0
         });
 
         discoveredBlogsList.push({
           id: blog.id,
-          blogName: blog.blogName,
-          blogUrl: blog.blogUrl,
+          blogName: mobileResult.nickname || mobileResult.blogName || '알 수 없음', // 실제 닉네임 우선
+          blogUrl: mobileResult.url,
+          title: mobileResult.postTitle, // 실제 포스트 제목
           rank: blog.rank,
           volume: Math.floor(Math.random() * 50000) + 5000, // 임시 데이터
           score: Math.floor(Math.random() * 40) + 60, // 60-100점
