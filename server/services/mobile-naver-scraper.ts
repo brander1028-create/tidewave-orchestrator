@@ -133,11 +133,11 @@ export class MobileNaverScraperService {
           }
           
           if (blogId && !results.find(r => r.blogId === blogId)) {
-            // 닉네임과 포스트 제목 추출 시도
-            const { nickname, postTitle } = this.extractNicknameAndTitle(html, url, blogId);
+            // 닉네임 추출 (제목은 현재 HTML에서 신뢰할 수 없음)
+            const { nickname } = this.extractNicknameAndTitle(html, url, blogId);
             
             const blogResult: MobileNaverBlogResult = {
-              title: postTitle || `${blogId}의 ${isInfluencer ? '인플루언서' : '포스트'}`,
+              title: `${nickname || blogId}의 ${isInfluencer ? '인플루언서' : '포스트'}`,
               url: actualUrl,
               blogName: nickname || blogId,
               blogId: blogId,
@@ -145,11 +145,11 @@ export class MobileNaverScraperService {
               rank: rank++,
               description: isInfluencer ? '네이버 인플루언서' : '',
               nickname: nickname,
-              postTitle: postTitle
+              postTitle: undefined // 현재 HTML에서 신뢰할 수 있는 제목 추출 불가
             };
             
             results.push(blogResult);
-            console.log(`📝 [Mobile Scraper] ${isInfluencer ? '인플루언서' : '포스트'} 발견: ${blogResult.rank}위 - ${nickname || blogId}${postTitle ? ` | ${postTitle}` : ''}${postId ? ' /' + postId : ''}`);
+            console.log(`📝 [Mobile Scraper] ${isInfluencer ? '인플루언서' : '포스트'} 발견: ${blogResult.rank}위 - ${nickname || blogId}${postId ? ' /' + postId : ''}`);
           }
         }
       }
@@ -215,7 +215,7 @@ export class MobileNaverScraperService {
         // 포스트 제목 추출 시도
         let postTitle = this.extractPostTitle(context);
         
-        console.log(`🔍 [Mobile Scraper] ${blogId} 컨텍스트 분석: nickname="${nickname || 'N/A'}", title="${postTitle || 'N/A'}"`);
+        console.log(`🔍 [Mobile Scraper] ${blogId} 컨텍스트 분석: nickname="${nickname || 'N/A'}"`);
         
         return { nickname, postTitle };
       }
@@ -259,28 +259,117 @@ export class MobileNaverScraperService {
    * 컨텍스트에서 포스트 제목 추출
    */
   private extractPostTitle(context: string): string | undefined {
-    // 제목 패턴 (한글 포함, 특수문자 허용)
-    const titlePatterns = [
-      /[\uAC00-\uD7AF\w\s!@#$%^&*(),.?":{}|<>]{10,100}/g, // 한글+영문+특수문자
-      /[가-힣\w\s!,.?]{5,50}/g,  // 더 간단한 패턴
+    try {
+      // 강력한 HTML 태그 및 인코딩 제거
+      let cleanContext = context
+        // URL 디코딩
+        .replace(/%[0-9A-Fa-f]{2}/g, ' ')
+        // HTML 엔티티 디코딩
+        .replace(/&gt;/g, '>')
+        .replace(/&lt;/g, '<')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&')
+        .replace(/&[^;]+;/g, ' ')
+        // HTML 태그 제거 (인코딩된 것도 포함)
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&lt;[^&]*&gt;/g, ' ')
+        // 특수 문자 및 ID 제거
+        .replace(/['"]{1,}/g, ' ')
+        .replace(/[<>]{1,}/g, ' ')
+        .replace(/[{}[\]\\|`~]/g, ' ')
+        .replace(/\b[A-Za-z0-9]{8,}\b/g, ' ') // 긴 영숫자 ID 제거
+        // 연속 공백 제거
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      // 실제 의미있는 한글 텍스트 추출
+      const meaningfulTexts = this.extractMeaningfulKoreanText(cleanContext);
+      
+      for (const text of meaningfulTexts) {
+        if (this.isValidTitle(text)) {
+          return text;
+        }
+      }
+      
+      return undefined;
+    } catch (error) {
+      console.warn('⚠️ [Mobile Scraper] 제목 추출 중 오류:', error);
+      return undefined;
+    }
+  }
+  
+  /**
+   * 의미있는 한글 텍스트 추출
+   */
+  private extractMeaningfulKoreanText(text: string): string[] {
+    const results: string[] = [];
+    
+    // 다양한 패턴으로 한글 텍스트 추출
+    const patterns = [
+      // 홍삼스틱과 같은 제품명 + 설명
+      /홍삼[가-힣\s]{2,20}/g,
+      // 일반적인 한글 문장 (동사/형용사 포함)
+      /[가-힣]{2,}(?:\s+[가-힣]{1,}){1,8}/g,
+      // 간단한 한글 구문
+      /[가-힣]{3,15}/g,
     ];
     
-    for (const pattern of titlePatterns) {
-      const matches = context.match(pattern);
+    for (const pattern of patterns) {
+      const matches = text.match(pattern);
       if (matches) {
         for (const match of matches) {
           const cleaned = match.trim();
-          // 유효한 제목인지 검증
-          if (cleaned.length >= 5 && cleaned.length <= 100 && 
-              !/^[\d\s]+$/.test(cleaned) && // 숫자와 공백만 있으면 제외
-              !/^[^\uAC00-\uD7AF]*$/.test(cleaned)) { // 한글이 하나라도 있어야 함
-            return cleaned;
+          if (cleaned.length >= 3 && cleaned.length <= 50) {
+            results.push(cleaned);
           }
         }
       }
     }
     
-    return undefined;
+    // 중복 제거 및 길이순 정렬 (더 긴 것이 더 구체적일 가능성)
+    return [...new Set(results)].sort((a, b) => b.length - a.length);
+  }
+  
+  /**
+   * 유효한 제목인지 검증
+   */
+  private isValidTitle(title: string): boolean {
+    if (!title || title.length < 3 || title.length > 80) return false;
+    
+    // 한글이 포함되어야 함
+    if (!/[가-힣]/.test(title)) return false;
+    
+    // 숫자만 있으면 제외
+    if (/^[\d\s]+$/.test(title)) return false;
+    
+    // 의미없는 문자열 제외 (강화된 버전)
+    const meaninglessPatterns = [
+      /^[^\w가-힣]+$/, // 특수문자만
+      /^(.)\1{3,}$/, // 같은 문자 반복
+      /^[a-zA-Z]{1,2}$/, // 짧은 영문
+      /[A-Za-z0-9]{6,}/, // 긴 영숫자 조합 (ID 같은 것)
+      /[<>"\s&;]+/, // HTML 관련 문자
+      /^\s*[가-힣]{1,3}\s*$/, // 너무 짧은 한글 (닉네임일 가능성)
+    ];
+    
+    for (const pattern of meaninglessPatterns) {
+      if (pattern.test(title)) return false;
+    }
+    
+    // 실제 의미있는 내용인지 추가 검증
+    // 홍삼, 제품명, 리뷰 등이 포함된 경우만 유효한 제목으로 간주
+    const meaningfulKeywords = [
+      '홍삼', '스틱', '추천', '리뷰', '후기', '사용', '효과', '건강', 
+      '선물', '명절', '구매', '가격', '맛', '좋은', '베스트', '인기'
+    ];
+    
+    const hasKeyword = meaningfulKeywords.some(keyword => title.includes(keyword));
+    if (!hasKeyword) {
+      console.log(`🚫 [Mobile Scraper] 의미있는 키워드가 없는 제목 제외: "${title}"`);
+      return false;
+    }
+    
+    return true;
   }
 
   /**
