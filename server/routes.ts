@@ -487,7 +487,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       console.log('📊 [Stepwise DB] 단계별 DB 현황 조회 시작');
 
-      // 1. 모든 discoveredBlogs 조회 (1단계 완료) + 키워드 정보 조인
+      // 1. 모든 discoveredBlogs 조회 (1단계 완료)
       const allDiscoveredBlogs = await db.select({
         id: discoveredBlogs.id,
         jobId: discoveredBlogs.jobId,
@@ -498,18 +498,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         blogUrl: discoveredBlogs.blogUrl,
         blogType: discoveredBlogs.blogType,
         postsAnalyzed: discoveredBlogs.postsAnalyzed,
-        createdAt: discoveredBlogs.createdAt,
-        // 키워드 관리 테이블에서 조회량과 점수 정보 가져오기
-        keywordVolume: managedKeywords.volume,
-        keywordScore: managedKeywords.score
+        createdAt: discoveredBlogs.createdAt
       }).from(discoveredBlogs)
-        .leftJoin(managedKeywords, eq(discoveredBlogs.seedKeyword, managedKeywords.text))
         .orderBy(desc(discoveredBlogs.createdAt))
         .limit(200); // 최근 200개로 제한
 
       console.log(`📊 [Stepwise DB] 발견된 블로그 수: ${allDiscoveredBlogs.length}`);
 
-      // 2. 각 블로그에 대해 단계별 완료 상태 확인
+      // 2. 키워드 관리 정보 조회 (공백 제거하여 매칭)
+      const keywordMap = new Map();
+      for (const blog of allDiscoveredBlogs) {
+        const normalizedKeyword = blog.seedKeyword.replace(/\s+/g, ''); // 공백 제거
+        if (!keywordMap.has(normalizedKeyword)) {
+          const keywordInfo = await db.select({
+            volume: managedKeywords.volume,
+            score: managedKeywords.score
+          }).from(managedKeywords)
+            .where(eq(managedKeywords.text, normalizedKeyword))
+            .limit(1);
+          
+          keywordMap.set(normalizedKeyword, {
+            volume: keywordInfo[0]?.volume || 0,
+            score: keywordInfo[0]?.score || 0
+          });
+        }
+      }
+
+      // 3. 각 블로그에 대해 단계별 완료 상태 확인
       const blogsWithSteps = [];
       
       for (const blog of allDiscoveredBlogs) {
@@ -527,8 +542,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         const hasStep3 = (keywordsCount[0]?.count || 0) > 0;
 
+        // 키워드 정보 추가
+        const normalizedKeyword = blog.seedKeyword.replace(/\s+/g, '');
+        const keywordInfo = keywordMap.get(normalizedKeyword) || { volume: 0, score: 0 };
+
         blogsWithSteps.push({
           ...blog,
+          keywordVolume: keywordInfo.volume,
+          keywordScore: keywordInfo.score,
           stepStatus: {
             step1: true, // discoveredBlogs에 있으면 1단계 완료
             step2: hasStep2,
@@ -537,7 +558,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // 3. 통계 계산
+      // 4. 통계 계산
       const summary = {
         totalBlogs: blogsWithSteps.length,
         step1Only: blogsWithSteps.filter(b => b.stepStatus.step1 && !b.stepStatus.step2).length,

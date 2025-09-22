@@ -64,8 +64,9 @@ export default function StepwiseDbPage() {
       });
     } else if (sortBy === "volume_score") {
       return [...blogs].sort((a, b) => {
-        const aTotal = (a.keywordVolume || 0) + (a.keywordScore || 0);
-        const bTotal = (b.keywordVolume || 0) + (b.keywordScore || 0);
+        // 점수에 가중치를 주어 균형 맞추기 (점수 * 1000)
+        const aTotal = (a.keywordVolume || 0) + (a.keywordScore || 0) * 1000;
+        const bTotal = (b.keywordVolume || 0) + (b.keywordScore || 0) * 1000;
         if (bTotal !== aTotal) return bTotal - aTotal;
         // 동점자 처리: 조회량 내림차순, 그 다음 최신순
         const aVolume = a.keywordVolume || 0;
