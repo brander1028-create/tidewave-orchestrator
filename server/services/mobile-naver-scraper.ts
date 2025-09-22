@@ -327,7 +327,7 @@ export class MobileNaverScraperService {
     }
     
     // 중복 제거 및 길이순 정렬 (더 긴 것이 더 구체적일 가능성)
-    return [...new Set(results)].sort((a, b) => b.length - a.length);
+    return Array.from(new Set(results)).sort((a, b) => b.length - a.length);
   }
   
   /**
