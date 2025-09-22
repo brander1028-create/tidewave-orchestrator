@@ -52,7 +52,6 @@ async function readGitHubFile(path) {
   if (Array.isArray(result.data)) {
     throw new Error('Path ' + path + ' is a directory. Only files are supported.');
   }
-  const 
 
 /**
  * Helper to write file contents to a GitHub repository. If the file exists,
