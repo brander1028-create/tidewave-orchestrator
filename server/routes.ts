@@ -22,6 +22,7 @@ import { db } from './db';
 import type { HealthResponse } from './types';
 import multer from 'multer';
 import { NaverApiService } from './services/naver-api';
+import { mobileNaverScraper } from './services/mobile-naver-scraper';
 
 // ✅ 하이브리드 모드: DB 캐시 우선, 새 키워드만 제한적 API 호출
 const HYBRID_MODE = true;
@@ -151,8 +152,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         progress: 10
       });
 
-      // 2. Naver API로 블로그 검색 (첫 페이지, 10개) - 유사도순으로 변경
-      const searchResults = await naverApi.searchBlogs(keyword, 10, 'sim');
+      // 2. 실제 M.NAVER.COM 모바일 스크래핑으로 블로그 검색 (첫 페이지, 10개)
+      const mobileResults = await mobileNaverScraper.searchBlogs(keyword, 10);
+      
+      // 기존 API 형태로 변환
+      const searchResults = mobileResults.map(result => ({
+        title: result.title,
+        link: result.url,
+        description: result.description || '',
+        bloggername: result.blogName,
+        bloggerlink: result.url,
+        postdate: result.timestamp || new Date().toISOString()
+      }));
       
       if (searchResults.length === 0) {
         await storage.updateSerpJob(serpJob.id, {
