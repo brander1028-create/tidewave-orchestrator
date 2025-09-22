@@ -133,11 +133,11 @@ export class MobileNaverScraperService {
           }
           
           if (blogId && !results.find(r => r.blogId === blogId)) {
-            // 닉네임 추출 (제목은 현재 HTML에서 신뢰할 수 없음)
-            const { nickname } = this.extractNicknameAndTitle(html, url, blogId);
+            // 닉네임과 포스트 제목 추출
+            const { nickname, postTitle } = this.extractNicknameAndTitle(html, url, blogId);
             
             const blogResult: MobileNaverBlogResult = {
-              title: `${nickname || blogId}의 ${isInfluencer ? '인플루언서' : '포스트'}`,
+              title: postTitle || `${nickname || blogId}의 ${isInfluencer ? '인플루언서' : '포스트'}`,
               url: actualUrl,
               blogName: nickname || blogId,
               blogId: blogId,
@@ -145,11 +145,11 @@ export class MobileNaverScraperService {
               rank: rank++,
               description: isInfluencer ? '네이버 인플루언서' : '',
               nickname: nickname,
-              postTitle: undefined // 현재 HTML에서 신뢰할 수 있는 제목 추출 불가
+              postTitle: postTitle
             };
             
             results.push(blogResult);
-            console.log(`📝 [Mobile Scraper] ${isInfluencer ? '인플루언서' : '포스트'} 발견: ${blogResult.rank}위 - ${nickname || blogId}${postId ? ' /' + postId : ''}`);
+            console.log(`📝 [Mobile Scraper] ${isInfluencer ? '인플루언서' : '포스트'} 발견: ${blogResult.rank}위 - ${nickname || blogId}${postTitle ? ` | ${postTitle}` : ''}${postId ? ' /' + postId : ''}`);
           }
         }
       }
@@ -356,18 +356,8 @@ export class MobileNaverScraperService {
       if (pattern.test(title)) return false;
     }
     
-    // 실제 의미있는 내용인지 추가 검증
-    // 홍삼, 제품명, 리뷰 등이 포함된 경우만 유효한 제목으로 간주
-    const meaningfulKeywords = [
-      '홍삼', '스틱', '추천', '리뷰', '후기', '사용', '효과', '건강', 
-      '선물', '명절', '구매', '가격', '맛', '좋은', '베스트', '인기'
-    ];
-    
-    const hasKeyword = meaningfulKeywords.some(keyword => title.includes(keyword));
-    if (!hasKeyword) {
-      console.log(`🚫 [Mobile Scraper] 의미있는 키워드가 없는 제목 제외: "${title}"`);
-      return false;
-    }
+    // 너무 엄격한 키워드 검증은 제거하고, 기본적인 한글 의미 검증만 유지
+    // 실제 포스트 제목도 다양할 수 있으므로 키워드 필터링 완화
     
     return true;
   }
