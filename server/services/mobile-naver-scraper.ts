@@ -9,6 +9,8 @@ export interface MobileNaverBlogResult {
   rank: number;
   description?: string;
   timestamp?: string;
+  nickname?: string;
+  postTitle?: string;
 }
 
 export class MobileNaverScraperService {
@@ -131,18 +133,23 @@ export class MobileNaverScraperService {
           }
           
           if (blogId && !results.find(r => r.blogId === blogId)) {
+            // 닉네임과 포스트 제목 추출 시도
+            const { nickname, postTitle } = this.extractNicknameAndTitle(html, url, blogId);
+            
             const blogResult: MobileNaverBlogResult = {
-              title: `${blogId}의 ${isInfluencer ? '인플루언서' : '포스트'}`,
+              title: postTitle || `${blogId}의 ${isInfluencer ? '인플루언서' : '포스트'}`,
               url: actualUrl,
-              blogName: blogId,
+              blogName: nickname || blogId,
               blogId: blogId,
               postId: postId || undefined,
               rank: rank++,
-              description: isInfluencer ? '네이버 인플루언서' : ''
+              description: isInfluencer ? '네이버 인플루언서' : '',
+              nickname: nickname,
+              postTitle: postTitle
             };
             
             results.push(blogResult);
-            console.log(`📝 [Mobile Scraper] ${isInfluencer ? '인플루언서' : '포스트'} 발견: ${blogResult.rank}위 - ${blogResult.blogName}${postId ? '/' + postId : ''}`);
+            console.log(`📝 [Mobile Scraper] ${isInfluencer ? '인플루언서' : '포스트'} 발견: ${blogResult.rank}위 - ${nickname || blogId}${postTitle ? ` | ${postTitle}` : ''}${postId ? ' /' + postId : ''}`);
           }
         }
       }
@@ -184,6 +191,98 @@ export class MobileNaverScraperService {
     }
   }
   
+  /**
+   * HTML에서 닉네임과 포스트 제목 추출
+   */
+  private extractNicknameAndTitle(html: string, url: string, blogId: string): { nickname?: string; postTitle?: string } {
+    try {
+      // data-url 주변 컨텍스트에서 제목과 닉네임 추출 시도
+      const urlEscaped = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // data-url 앞뒤 500자 범위에서 텍스트 추출
+      const dataUrlRegex = new RegExp(`data-url="${urlEscaped}"`, 'i');
+      const match = html.match(dataUrlRegex);
+      
+      if (match) {
+        const matchIndex = match.index!;
+        const contextStart = Math.max(0, matchIndex - 500);
+        const contextEnd = Math.min(html.length, matchIndex + 500);
+        const context = html.slice(contextStart, contextEnd);
+        
+        // 닉네임 추출 시도 (다양한 패턴)
+        let nickname = this.extractNickname(context, blogId);
+        
+        // 포스트 제목 추출 시도
+        let postTitle = this.extractPostTitle(context);
+        
+        console.log(`🔍 [Mobile Scraper] ${blogId} 컨텍스트 분석: nickname="${nickname || 'N/A'}", title="${postTitle || 'N/A'}"`);
+        
+        return { nickname, postTitle };
+      }
+      
+      return {};
+    } catch (error) {
+      console.warn(`⚠️ [Mobile Scraper] 닉네임/제목 추출 실패 (${blogId}):`, error);
+      return {};
+    }
+  }
+  
+  /**
+   * 컨텍스트에서 닉네임 추출
+   */
+  private extractNickname(context: string, blogId: string): string | undefined {
+    // 한글 닉네임 패턴 (가장 일반적)
+    const koreanNicknamePatterns = [
+      /[\uAC00-\uD7AF\s,]{2,20}/g, // 한글 + 공백 + 쉼표
+      /[\uAC00-\uD7AF]{2,10}/g,    // 순수 한글만
+    ];
+    
+    for (const pattern of koreanNicknamePatterns) {
+      const matches = context.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          const cleaned = match.trim();
+          // 유효한 닉네임인지 검증 (너무 짧거나 숫자만 있으면 제외)
+          if (cleaned.length >= 2 && cleaned.length <= 20 && 
+              !/^\d+$/.test(cleaned) && 
+              !cleaned.includes(blogId)) {
+            return cleaned;
+          }
+        }
+      }
+    }
+    
+    return undefined;
+  }
+  
+  /**
+   * 컨텍스트에서 포스트 제목 추출
+   */
+  private extractPostTitle(context: string): string | undefined {
+    // 제목 패턴 (한글 포함, 특수문자 허용)
+    const titlePatterns = [
+      /[\uAC00-\uD7AF\w\s!@#$%^&*(),.?":{}|<>]{10,100}/g, // 한글+영문+특수문자
+      /[가-힣\w\s!,.?]{5,50}/g,  // 더 간단한 패턴
+    ];
+    
+    for (const pattern of titlePatterns) {
+      const matches = context.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          const cleaned = match.trim();
+          // 유효한 제목인지 검증
+          if (cleaned.length >= 5 && cleaned.length <= 100 && 
+              !/^[\d\s]+$/.test(cleaned) && // 숫자와 공백만 있으면 제외
+              !/^[^\uAC00-\uD7AF]*$/.test(cleaned)) { // 한글이 하나라도 있어야 함
+            return cleaned;
+          }
+        }
+      }
+    }
+    
+    return undefined;
+  }
+
   /**
    * 개별 블로그 정보 추출
    */
