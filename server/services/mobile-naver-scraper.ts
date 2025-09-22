@@ -104,7 +104,7 @@ export class MobileNaverScraperService {
       let match;
       let rank = 1;
       
-      while ((match = dataUrlPattern.exec(html)) !== null && results.length < 3) {
+      while ((match = dataUrlPattern.exec(html)) !== null && results.length < 9) {
         const url = match[1];
         
         // 네이버 블로그 또는 인플루언서 URL만 처리
@@ -154,13 +154,13 @@ export class MobileNaverScraperService {
         }
       }
       
-      // 인기글 섹션에서 3개 미만이면 기존 방식으로 보완
-      if (results.length < 3) {
+      // 인기글 섹션에서 9개 미만이면 기존 방식으로 보완
+      if (results.length < 9) {
         console.log(`⚠️ [Mobile Scraper] 인기글 ${results.length}개만 발견, 기존 방식으로 보완 시도`);
         const postUrlPattern = /(?:blog\.naver\.com|m\.blog\.naver\.com)\/([^\/\s"']+)\/(\d+)/g;
         let fallbackMatch;
         
-        while ((fallbackMatch = postUrlPattern.exec(html)) !== null && results.length < 3) {
+        while ((fallbackMatch = postUrlPattern.exec(html)) !== null && results.length < 9) {
           const blogId = fallbackMatch[1];
           const postId = fallbackMatch[2];
           const fullUrl = `https://blog.naver.com/${blogId}/${postId}`;
@@ -182,7 +182,7 @@ export class MobileNaverScraperService {
         }
       }
       
-      console.log(`✅ [Mobile Scraper] 인기글 파싱 완료: ${results.length}개 발견 (최대 3개 제한)`);
+      console.log(`✅ [Mobile Scraper] 인기글 파싱 완료: ${results.length}개 발견 (최대 9개 제한)`);
       return results;
         
     } catch (error) {
