@@ -1,35 +1,13 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import { Octokit } from '@octokit/rest';
-import axios from 'axios';
-
-/*
- * Minimal MCP server for ChatGPT connectors.
- *
- * This server exposes a handful of endpoints that implement the core
- * functionality required to build a Git/Vercel based development loop.
- *
- * Each endpoint expects JSON bodies and returns JSON responses. Errors
- * propagate as HTTP 400 responses with an "error" message.
- *
- * To use this server you must supply several environment variables:
- *
- *   GH_TOKEN  – a GitHub personal access token with repo scope.
- *   GH_OWNER  – the GitHub username or organization that owns the repository.
- *   GH_REPO   – the repository name (without owner).
- *   VERCEL_DEPLOY_HOOK (optional) – a deploy hook URL for Vercel.
- *   RENDER_DEPLOY_HOOK (optional) – a deploy hook URL for Render.
- *
- * This file is intentionally lightweight and avoids complex build/run logic.
- * Users can extend the endpoints as needed or plug in other services.
- */
+const express = require('express');
+const bodyParser = require('body-parser');
+const { Octokit } = require('@octokit/rest');
+const axios = require('axios');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(bodyParser.json({ limit: '10mb' }));
 
-// Creat
 const ghToken = process.env.GH_TOKEN;
 let octokit;
 if (ghToken) {
@@ -52,6 +30,9 @@ async function readGitHubFile(path) {
   if (Array.isArray(result.data)) {
     throw new Error('Path ' + path + ' is a directory. Only files are supported.');
   }
+  const content = Buffer.from(result.data.content, result.data.encoding).toString('utf8');
+  return content;
+}
 
 /**
  * Helper to write file contents to a GitHub repository. If the file exists,
@@ -69,13 +50,12 @@ async function writeGitHubFile(path, content, message = 'Update file') {
   const encoded = Buffer.from(content).toString('base64');
   let sha;
   try {
-    // Try to get existing file SHA to update
     const { data } = await octokit.repos.getContent({ owner: ghOwner, repo: ghRepo, path });
     if (!Array.isArray(data)) {
       sha = data.sha;
     }
   } catch (err) {
-    // File does not exist; ignore.
+    // File does not exist; ignore
   }
   const res = await octokit.repos.createOrUpdateFileContents({
     owner: ghOwner,
@@ -88,16 +68,9 @@ async function writeGitHubFile(path, content, message = 'Update file') {
   return res.data.commit.sha;
 }
 
-// --- Endpoint definitions ---
+// Endpoint definitions
 
-/**
- * POST /fs_read
- *
- * Body:
- *   { "file_path": "path/to/file.txt" }
- *
- * Reads a single file from GitHub and returns its contents.
- */
+// fs_read: reads a single file from GitHub and returns its contents
 app.post('/fs_read', async (req, res) => {
   const { file_path } = req.body;
   if (!file_path) {
@@ -111,18 +84,7 @@ app.post('/fs_read', async (req, res) => {
   }
 });
 
-/**
- * POST /fs_write
- *
- * Body:
- *   {
- *     "file_path": "path/to/file.txt",
- *     "content": "New file contents",
- *     "message": "Commit message" (optional)
- *   }
- *
- * Writes a file to GitHub, creating or updating it, and returns the commit SHA.
- */
+// fs_write: writes a file to GitHub, creating or updating it
 app.post('/fs_write', async (req, res) => {
   const { file_path, content, message } = req.body;
   if (!file_path || typeof content !== 'string') {
@@ -136,12 +98,7 @@ app.post('/fs_write', async (req, res) => {
   }
 });
 
-/**
- * POST /deploy_vercel
- *
- * Triggers a Vercel deployment using the configured deploy hook. Returns
- * the response from Vercel or a status message if the hook is not set.
- */
+// deploy_vercel: triggers a Vercel deployment using the configured deploy hook
 app.post('/deploy_vercel', async (req, res) => {
   const hook = process.env.VERCEL_DEPLOY_HOOK;
   if (!hook) {
@@ -155,12 +112,7 @@ app.post('/deploy_vercel', async (req, res) => {
   }
 });
 
-/**
- * POST /deploy_render
- *
- * Triggers a Render deployment using the configured deploy hook. Returns
- * the response from Render or a status message if the hook is not set.
- */
+// deploy_render: triggers a Render deployment using the configured deploy hook
 app.post('/deploy_render', async (req, res) => {
   const hook = process.env.RENDER_DEPLOY_HOOK;
   if (!hook) {
@@ -174,13 +126,7 @@ app.post('/deploy_render', async (req, res) => {
   }
 });
 
-/**
- * POST /preview_url_get
- *
- * Returns a pre-configured preview URL. This is a simple implementation
- * that just returns the value of PREVIEW_URL environment variable. Users
- * should update this variable externally (e.g., via deployment logs).
- */
+// preview_url_get: returns a pre-configured preview URL
 app.post('/preview_url_get', (req, res) => {
   const url = process.env.PREVIEW_URL;
   if (!url) {
