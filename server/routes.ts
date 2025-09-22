@@ -297,8 +297,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 5. 실제 블로그 포스트 제목 수집
           const posts = await collectRealPosts(blog.blogUrl, blog.blogId);
           
-          // 6. 새로운 키워드 선정 알고리즘 사용
-          const selectedKeywords = await selectTop4KeywordsFromPosts(posts, jobId, blog.id);
+          // 6. 새로운 키워드 선정 알고리즘 사용 (사용자 설정 전달)
+          const userSettings = req.body.keywordSettings; // 요청에서 설정값 받기
+          const selectedKeywords = await selectTop4KeywordsFromPosts(posts, jobId, blog.id, userSettings);
           
           // 7. 분석된 포스트 수 업데이트
           await storage.updateDiscoveredBlog(blog.id, {
@@ -800,7 +801,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   // 새로운 키워드 선정 알고리즘 - 포스트에서 상위 4개 키워드 선정
-  async function selectTop4KeywordsFromPosts(posts: any[], jobId: string, blogId: string): Promise<any[]> {
+  async function selectTop4KeywordsFromPosts(posts: any[], jobId: string, blogId: string, userSettings?: any): Promise<any[]> {
     try {
       console.log(`🎯 [Step2] 키워드 선정 알고리즘 시작: ${posts.length}개 포스트`);
       
@@ -814,8 +815,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`📝 [Step2] 추출된 제목들: ${titles.slice(0, 3).join(', ')}...`);
       
-      // 2. localStorage 또는 기본 설정값 사용 (서버사이드에서는 기본값)
-      const settings = defaultKeywordSelectionSettings;
+      // 2. 사용자 설정값 또는 기본값 사용
+      const settings = userSettings && validateKeywordSelectionSettings(userSettings) 
+        ? userSettings 
+        : defaultKeywordSelectionSettings;
+      
+      console.log(`⚙️ [Step2] 사용 중인 설정: CPC최소=${settings.minCpc}, 점수가중치=${settings.scoreWeight}`);
       
       // 3. 새로운 키워드 선정 알고리즘 실행
       const selectedKeywords = await advancedKeywordSelector.selectTop4Keywords(titles, settings);
@@ -828,7 +833,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`✅ [Step2] 키워드 선정 완료: ${selectedKeywords.length}개`);
       selectedKeywords.forEach((k, i) => console.log(`   ${k.position}. ${k.keyword} (조회량:${k.volume}, 점수:${k.score}, CPC:${k.cpc})`));
       
-      // 4. extractedKeywords 테이블에 저장
+      // 4. analyzedPosts 테이블에 포스트들 저장
+      for (const post of posts) {
+        try {
+          await storage.createAnalyzedPost({
+            blogId,
+            jobId,
+            postTitle: post.title || '',
+            postUrl: post.url || '',
+            postContent: post.content || '',
+            publishedAt: post.publishedAt || new Date()
+          });
+        } catch (error) {
+          console.error(`❌ [Step2] 포스트 저장 실패: ${post.title}`, error);
+        }
+      }
+
+      // 5. extractedKeywords 테이블에 선정된 키워드들 저장
       const savedKeywords = [];
       
       for (const keyword of selectedKeywords) {
@@ -845,6 +866,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           savedKeywords.push({
             ...savedKeyword,
+            score: keyword.score,
             combinedScore: keyword.combinedScore,
             cpc: keyword.cpc,
             position: keyword.position,

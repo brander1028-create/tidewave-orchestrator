@@ -261,9 +261,14 @@ export default function StepwiseSearchPage() {
     try {
       console.log(`🔍 [Frontend] 2단계 시작: "${blogId}"`);
       
+      // localStorage에서 키워드 선정 설정값 읽어오기
+      const savedSettings = localStorage.getItem('keywordSelectionSettings');
+      const keywordSettings = savedSettings ? JSON.parse(savedSettings) : null;
+      
       const res = await apiRequest('POST', '/api/stepwise-search/step2', {
         jobId: jobId,
-        blogIds: [blogId] // 단일 블로그를 배열로 전달
+        blogIds: [blogId], // 단일 블로그를 배열로 전달
+        keywordSettings: keywordSettings // 사용자 설정값 전달
       });
       const response = await res.json();
 
