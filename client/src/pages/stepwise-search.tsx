@@ -139,13 +139,20 @@ export default function StepwiseSearchPage() {
           
           const res = await apiRequest('POST', `/api/stepwise-search/step2`, {
             jobId,
-            blogId: blog.id
+            blogIds: [blog.id]
           });
           
-          await res.json();
+          if (!res.ok) {
+            throw new Error(`API 요청 실패: ${res.status}`);
+          }
           
-          // 성공 시 step2Blogs에 추가
+          const response = await res.json();
+          
+          // 성공 시 step2Blogs와 step2Results에 추가
           setStep2Blogs(prev => [...prev, blog.id]);
+          if (response.results && response.results.length > 0) {
+            setStep2Results(prev => [...prev, ...response.results]);
+          }
           
           console.log(`✅ [Frontend] 블로그 "${blog.blogName}" 활성화 완료`);
           
@@ -156,13 +163,16 @@ export default function StepwiseSearchPage() {
           console.error(`❌ [Frontend] 블로그 "${blog.blogName}" 활성화 실패:`, error);
           toast({
             title: `${blog.blogName} 활성화 실패`,
-            description: "계속 진행합니다...",
+            description: `오류: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
             variant: "destructive"
           });
         }
       }
       
       console.log(`🎉 [Frontend] 일괄 활성화 완료: ${blogsToProcess.length}개 처리됨`);
+      
+      // Step2 탭으로 자동 전환
+      setSelectedTab("step2");
       
       toast({
         title: "일괄 활성화 완료",
@@ -423,7 +433,7 @@ export default function StepwiseSearchPage() {
                             <h4 className="font-medium">{blog.blogName}</h4>
                             <span className="text-gray-400">/</span>
                             <button
-                              onClick={() => window.open(blog.blogUrl, '_blank')}
+                              onClick={() => window.open(blog.blogUrl, '_blank', 'noopener,noreferrer')}
                               className="p-1 hover:bg-gray-100 rounded transition-colors"
                               title="블로그 새창에서 열기"
                               data-testid={`button-open-blog-${blog.id}`}
