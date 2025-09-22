@@ -3432,6 +3432,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
 // Duplicate function removed - using the one defined earlier in the file
 
+// Helper function for extracting blog ID from URL (for processSerpAnalysisJob)
+function extractBlogIdFromUrlHelper(url: string): string | null {
+  if (!url) return null;
+  
+  // blog.naver.com/blogId 패턴
+  const naverBlogMatch = url.match(/blog\.naver\.com\/([^\/\?]+)/);
+  if (naverBlogMatch) {
+    return naverBlogMatch[1];
+  }
+  
+  // m.blog.naver.com/blogId 패턴 (모바일)
+  const mobileNaverBlogMatch = url.match(/m\.blog\.naver\.com\/([^\/\?]+)/);
+  if (mobileNaverBlogMatch) {
+    return mobileNaverBlogMatch[1];
+  }
+  
+  // URL 객체로 처리 (fallback)
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname === 'blog.naver.com' || urlObj.hostname === 'm.blog.naver.com') {
+      const pathParts = urlObj.pathname.split('/').filter(p => p);
+      if (pathParts.length > 0) {
+        return pathParts[0]; // First part is the blog ID
+      }
+    }
+  } catch (error) {
+    console.warn(`URL 파싱 실패: ${url}`);
+  }
+  
+  return null;
+}
+
 // Background SERP analysis job processing
 export async function processSerpAnalysisJob(
   jobId: string, 
@@ -3541,7 +3573,7 @@ export async function processSerpAnalysisJob(
         for (const result of serpResults) {
           if (!allDiscoveredBlogs.has(result.url)) {
             // Extract blog ID from URL (e.g., riche1862 from blog.naver.com/riche1862)
-            const blogId = extractBlogIdFromUrl(result.url);
+            const blogId = extractBlogIdFromUrlHelper(result.url);
             if (!blogId || blogId.length === 0) {
               console.warn(`❌ Failed to extract blog ID from URL: ${result.url}`);
               continue;

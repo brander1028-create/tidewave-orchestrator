@@ -58,6 +58,17 @@ export class MobileNaverScraperService {
         const html = await response.text();
         console.log(`📄 [Mobile Scraper] HTML 응답 크기: ${html.length} bytes`);
         
+        // 디버깅: HTML 샘플 출력 (첫 1000자와 마지막 1000자)
+        console.log(`🔍 [DEBUG] HTML 시작 1000자:`, html.substring(0, 1000));
+        console.log(`🔍 [DEBUG] HTML 끝 1000자:`, html.substring(html.length - 1000));
+        
+        // 디버깅: 블로그 관련 키워드 검색
+        const blogKeywords = ['blog.naver.com', 'm.blog.naver.com', 'class=', 'href='];
+        blogKeywords.forEach(keyword => {
+          const count = (html.match(new RegExp(keyword, 'gi')) || []).length;
+          console.log(`🔍 [DEBUG] "${keyword}" 발견 횟수: ${count}`);
+        });
+        
         // HTML에서 블로그 결과 파싱
         const results = this.parseBlogs(html, keyword);
         console.log(`✅ [Mobile Scraper] 파싱 완료: ${results.length}개 블로그 발견`);
@@ -82,14 +93,22 @@ export class MobileNaverScraperService {
     const results: MobileNaverBlogResult[] = [];
     
     try {
-      // 블로그 포스트 패턴들 정의
+      // 블로그 포스트 패턴들 정의 (더 포괄적인 패턴들)
       const patterns = [
         // 패턴 1: 일반적인 블로그 결과
         /<div[^>]*class="[^"]*total_wrap[^"]*"[^>]*>[\s\S]*?<\/div>/gi,
         // 패턴 2: 모바일 전용 블로그 결과
         /<article[^>]*class="[^"]*bx[^"]*"[^>]*>[\s\S]*?<\/article>/gi,
         // 패턴 3: 리스트 형태 블로그 결과  
-        /<li[^>]*class="[^"]*item[^"]*"[^>]*>[\s\S]*?<\/li>/gi
+        /<li[^>]*class="[^"]*item[^"]*"[^>]*>[\s\S]*?<\/li>/gi,
+        // 패턴 4: 포괄적인 div 패턴 (블로그 URL 포함)
+        /<div[^>]*>[\s\S]*?blog\.naver\.com[\s\S]*?<\/div>/gi,
+        // 패턴 5: 포괄적인 모바일 블로그 패턴
+        /<div[^>]*>[\s\S]*?m\.blog\.naver\.com[\s\S]*?<\/div>/gi,
+        // 패턴 6: 링크 태그 기반 패턴
+        /<a[^>]*href="[^"]*blog\.naver\.com[^"]*"[^>]*>[\s\S]*?<\/a>/gi,
+        // 패턴 7: 모바일 링크 태그 패턴
+        /<a[^>]*href="[^"]*m\.blog\.naver\.com[^"]*"[^>]*>[\s\S]*?<\/a>/gi
       ];
       
       for (const pattern of patterns) {
