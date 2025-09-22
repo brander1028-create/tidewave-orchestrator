@@ -89,67 +89,93 @@ export class MobileNaverScraperService {
   }
   
   /**
-   * HTML에서 블로그 결과 추출
+   * HTML에서 인기글 섹션의 블로그 결과 추출
    */
   private parseBlogs(html: string, keyword: string): MobileNaverBlogResult[] {
     const results: MobileNaverBlogResult[] = [];
     
     try {
-      // 직접 포스트 URL 추출 (가장 정확한 방법)
-      const postUrlPattern = /(?:blog\.naver\.com|m\.blog\.naver\.com)\/([^\/\s"']+)\/(\d+)/g;
+      console.log(`🎯 [Mobile Scraper] 인기글 섹션에서 data-url 추출 시작`);
+      
+      // data-url 속성에서 블로그/인플루언서 URL 추출
+      const dataUrlPattern = /data-url="([^"]+)"/g;
       let match;
       let rank = 1;
       
-      while ((match = postUrlPattern.exec(html)) !== null && results.length < 10) {
-        const blogId = match[1];
-        const postId = match[2];
-        const fullUrl = `https://blog.naver.com/${blogId}/${postId}`;
+      while ((match = dataUrlPattern.exec(html)) !== null && results.length < 3) {
+        const url = match[1];
         
-        // 중복 체크
-        if (!results.find(r => r.url === fullUrl)) {
-          const blogResult: MobileNaverBlogResult = {
-            title: `${blogId}의 포스트`,
-            url: fullUrl,
-            blogName: blogId,
-            blogId: blogId,
-            postId: postId,
-            rank: rank++,
-            description: ''
-          };
+        // 네이버 블로그 또는 인플루언서 URL만 처리
+        if (url.includes('blog.naver.com') || url.includes('in.naver.com')) {
+          let blogId = '';
+          let postId = '';
+          let actualUrl = url;
+          let isInfluencer = false;
           
-          results.push(blogResult);
-          console.log(`📝 [Mobile Scraper] 포스트 발견: ${blogResult.rank}위 - ${blogResult.blogName}/${blogResult.postId}`);
-        }
-      }
-      
-      // 포스트 URL이 없으면 블로그 홈 URL 시도
-      if (results.length === 0) {
-        const blogUrlPattern = /(?:blog\.naver\.com|m\.blog\.naver\.com)\/([^\/\s"']+)(?!\/\d)/g;
-        let blogMatch;
-        let blogRank = 1;
-        
-        while ((blogMatch = blogUrlPattern.exec(html)) !== null && results.length < 5) {
-          const blogId = blogMatch[1];
-          const fullUrl = `https://blog.naver.com/${blogId}`;
+          if (url.includes('in.naver.com')) {
+            // 인플루언서 계정 처리: in.naver.com/rabbitmom_/contents/internal/xxxxx
+            const influencerMatch = url.match(/in\.naver\.com\/([^\/]+)/);
+            if (influencerMatch) {
+              blogId = influencerMatch[1];
+              isInfluencer = true;
+              actualUrl = `https://in.naver.com/${blogId}`;
+            }
+          } else if (url.includes('blog.naver.com')) {
+            // 일반 블로그 처리: blog.naver.com/blogId/postId
+            const blogMatch = url.match(/blog\.naver\.com\/([^\/]+)(?:\/(\d+))?/);
+            if (blogMatch) {
+              blogId = blogMatch[1];
+              postId = blogMatch[2] || '';
+              actualUrl = postId ? `https://blog.naver.com/${blogId}/${postId}` : `https://blog.naver.com/${blogId}`;
+            }
+          }
           
-          // 중복 체크
-          if (!results.find(r => r.blogId === blogId)) {
+          if (blogId && !results.find(r => r.blogId === blogId)) {
             const blogResult: MobileNaverBlogResult = {
-              title: `${blogId}의 블로그`,
-              url: fullUrl,
+              title: `${blogId}의 ${isInfluencer ? '인플루언서' : '포스트'}`,
+              url: actualUrl,
               blogName: blogId,
               blogId: blogId,
-              postId: undefined,
-              rank: blogRank++,
-              description: ''
+              postId: postId || undefined,
+              rank: rank++,
+              description: isInfluencer ? '네이버 인플루언서' : ''
             };
             
             results.push(blogResult);
-            console.log(`📝 [Mobile Scraper] 블로그 발견: ${blogResult.rank}위 - ${blogResult.blogName} (블로그 홈)`);
+            console.log(`📝 [Mobile Scraper] ${isInfluencer ? '인플루언서' : '포스트'} 발견: ${blogResult.rank}위 - ${blogResult.blogName}${postId ? '/' + postId : ''}`);
           }
         }
       }
       
+      // 인기글 섹션에서 3개 미만이면 기존 방식으로 보완
+      if (results.length < 3) {
+        console.log(`⚠️ [Mobile Scraper] 인기글 ${results.length}개만 발견, 기존 방식으로 보완 시도`);
+        const postUrlPattern = /(?:blog\.naver\.com|m\.blog\.naver\.com)\/([^\/\s"']+)\/(\d+)/g;
+        let fallbackMatch;
+        
+        while ((fallbackMatch = postUrlPattern.exec(html)) !== null && results.length < 3) {
+          const blogId = fallbackMatch[1];
+          const postId = fallbackMatch[2];
+          const fullUrl = `https://blog.naver.com/${blogId}/${postId}`;
+          
+          if (!results.find(r => r.blogId === blogId)) {
+            const blogResult: MobileNaverBlogResult = {
+              title: `${blogId}의 포스트`,
+              url: fullUrl,
+              blogName: blogId,
+              blogId: blogId,
+              postId: postId,
+              rank: results.length + 1,
+              description: ''
+            };
+            
+            results.push(blogResult);
+            console.log(`📝 [Mobile Scraper] 보완 포스트 발견: ${blogResult.rank}위 - ${blogResult.blogName}/${blogResult.postId}`);
+          }
+        }
+      }
+      
+      console.log(`✅ [Mobile Scraper] 인기글 파싱 완료: ${results.length}개 발견 (최대 3개 제한)`);
       return results;
         
     } catch (error) {

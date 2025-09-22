@@ -3448,6 +3448,12 @@ function extractBlogIdFromUrlHelper(url: string): string | null {
     return mobileNaverBlogMatch[1];
   }
   
+  // in.naver.com/blogId 패턴 (인플루언서)
+  const influencerMatch = url.match(/in\.naver\.com\/([^\/\?]+)/);
+  if (influencerMatch) {
+    return influencerMatch[1];
+  }
+  
   // URL 객체로 처리 (fallback)
   try {
     const urlObj = new URL(url);
