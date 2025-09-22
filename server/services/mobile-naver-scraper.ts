@@ -21,14 +21,13 @@ export class MobileNaverScraperService {
     try {
       console.log(`🔍 [Mobile Scraper] 모바일 네이버 검색 시작: "${keyword}"`);
       
-      // 모바일 네이버 검색 URL 구성
+      // 통합 검색에서 인기글 섹션 URL 구성 (블로그 탭 아님)
       const searchUrl = `https://m.search.naver.com/search.naver`;
       const params = new URLSearchParams({
-        where: 'post',
+        where: 'm',
         query: keyword,
-        sm: 'mtb_jum',
-        ie: 'utf8',
-        start: '1'
+        sm: 'mtp_hty.top',
+        ackey: 'q6fujsfr'
       });
       
       const fullUrl = `${searchUrl}?${params}`;
