@@ -1,0 +1,14 @@
+{
+  "name": "mcp-server",
+  "version": "1.0.0",
+  "description": "Model Connector Proxy server for ChatGPT to interact with GitHub and deployment platforms",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@octokit/rest": "^20.1.0",
+    "axios": "^1.3.0"
+  }
+}
