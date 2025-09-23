@@ -113,6 +113,91 @@ export default function StepwiseSearchPage() {
   };
 
   // 일괄 활성화 함수
+  const handleBulkStep2Analysis = async () => {
+    if (!jobId) {
+      toast({
+        title: "작업 ID 없음",
+        description: "먼저 1단계 블로그 수집을 완료해주세요",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setStep2Loading(true);
+    try {
+      // 아직 키워드 분석이 안된 블로그들만 처리
+      const blogsToProcess = step1Blogs.filter(blog => !step2Blogs.includes(blog.id));
+      
+      if (blogsToProcess.length === 0) {
+        toast({
+          title: "처리할 블로그 없음",
+          description: "모든 블로그가 이미 키워드 분석되었습니다",
+        });
+        return;
+      }
+      
+      console.log(`🔄 [Frontend] 일괄 키워드 분석 시작: ${blogsToProcess.length}개 블로그`);
+      
+      for (const blog of blogsToProcess) {
+        try {
+          console.log(`🔄 [Frontend] 블로그 "${blog.blogName}" 키워드 분석 중...`);
+          
+          // localStorage에서 키워드 선정 설정값 읽어오기
+          const savedSettings = localStorage.getItem('keywordSelectionSettings');
+          const keywordSettings = savedSettings ? JSON.parse(savedSettings) : null;
+          
+          const res = await apiRequest('POST', '/api/stepwise-search/step2', {
+            jobId: jobId,
+            blogIds: [blog.id],
+            keywordSettings: keywordSettings
+          });
+          
+          if (!res.ok) {
+            throw new Error(`API 요청 실패: ${res.status}`);
+          }
+          
+          const response = await res.json();
+          
+          // 성공 시 step2Blogs와 step2Results에 추가
+          setStep2Blogs(prev => [...prev, blog.id]);
+          if (response.results && response.results.length > 0) {
+            setStep2Results(prev => [...prev, ...response.results]);
+          }
+          
+          console.log(`✅ [Frontend] 블로그 "${blog.blogName}" 키워드 분석 완료`);
+          
+          // 잠시 대기 (서버 부하 방지)
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+        } catch (error) {
+          console.error(`❌ [Frontend] 블로그 "${blog.blogName}" 키워드 분석 실패:`, error);
+          toast({
+            title: `${blog.blogName} 키워드 분석 실패`,
+            description: `오류: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+            variant: "destructive"
+          });
+        }
+      }
+      
+      console.log(`🎉 [Frontend] 일괄 키워드 분석 완료: ${blogsToProcess.length}개 처리됨`);
+      
+      toast({
+        title: "일괄 키워드 분석 완료",
+        description: `${blogsToProcess.length}개 블로그의 키워드가 분석되었습니다`,
+      });
+      
+    } catch (error) {
+      console.error("❌ [Frontend] 일괄 키워드 분석 실패:", error);
+      toast({
+        title: "일괄 키워드 분석 실패", 
+        description: "키워드 분석 중 오류가 발생했습니다",
+        variant: "destructive"
+      });
+    } finally {
+      setStep2Loading(false);
+    }
+  };
+
   const handleBulkActivation = async () => {
     if (!jobId) {
       toast({
@@ -559,20 +644,69 @@ export default function StepwiseSearchPage() {
               <CardDescription>
                 블로그 최신글에서 키워드를 추출하고 분석합니다
               </CardDescription>
+              {step2Blogs.length > 0 && step2Blogs.length < step1Blogs.length && (
+                <div className="flex items-center gap-2">
+                  <Button 
+                    onClick={handleBulkStep2Analysis}
+                    disabled={step2Loading}
+                    size="sm"
+                    data-testid="button-bulk-step2-analysis"
+                  >
+                    {step2Loading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        일괄 키워드 분석 중...
+                      </>
+                    ) : (
+                      "남은 블로그 일괄 키워드 분석"
+                    )}
+                  </Button>
+                </div>
+              )}
             </CardHeader>
             <CardContent>
               {step2Blogs.length > 0 ? (
                 <div className="space-y-4">
                   {step2Blogs.map((blogId) => {
                     const blog = step1Blogs.find(b => b.id === blogId);
+                    const result = step2Results.find(r => r.blogId === blogId);
                     return (
                       <div key={blogId} className="border rounded-lg p-4" data-testid={`blog-step2-${blogId}`}>
                         <div className="flex items-center justify-between">
-                          <div className="space-y-2">
+                          <div className="space-y-2 flex-1">
                             <h4 className="font-medium">{blog?.blogName} - 키워드 추출 완료</h4>
-                            <div className="text-sm text-gray-600">
-                              제목에서 키워드를 추출하고 조회량 및 경쟁도를 분석했습니다
-                            </div>
+                            {result && result.topKeywords && result.topKeywords.length > 0 ? (
+                              <div className="space-y-2">
+                                <div className="text-sm text-gray-600">
+                                  선정된 상위 {result.topKeywords.length}개 키워드:
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {result.topKeywords.map((kw: any, idx: number) => (
+                                    <div key={idx} className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm">
+                                      <div className="flex items-center gap-1">
+                                        <span className="font-medium">{idx + 1}. {kw.text || kw.keyword}</span>
+                                        {kw.isCombo && <span className="text-blue-600 text-xs">(조합)</span>}
+                                      </div>
+                                      <div className="flex items-center gap-3 text-xs text-gray-600 mt-1">
+                                        <span className="flex items-center gap-1">
+                                          📈 {(kw.volume || 0).toLocaleString()}
+                                        </span>
+                                        <span className="flex items-center gap-1">
+                                          ⭐ {kw.score || kw.cpc || 0}
+                                        </span>
+                                        {kw.position && (
+                                          <span className="text-blue-600">#{kw.position}위</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-sm text-gray-600">
+                                제목에서 키워드를 추출하고 조회량 및 경쟁도를 분석했습니다
+                              </div>
+                            )}
                           </div>
                           <Button 
                             onClick={() => handleStep3Check(blogId)}

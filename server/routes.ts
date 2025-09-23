@@ -842,10 +842,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           await storage.createAnalyzedPost({
             blogId,
-            jobId,
-            postTitle,
-            postUrl,
-            postContent: post.content || post.postContent || '',
+            url: postUrl,
+            title: postTitle,
             publishedAt: post.publishedAt || new Date()
           });
           
