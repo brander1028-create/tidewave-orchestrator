@@ -292,17 +292,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Zod schema for step2 validation
+  // Zod schema for step2 validation (포스트 제목 수집)
   const step2Schema = z.object({
     jobId: z.string().min(1, "작업 ID가 필요합니다"),
     blogIds: z.array(z.string()).min(1, "최소 1개 블로그를 선택해야 합니다").max(10, "최대 10개 블로그까지 선택 가능합니다"),
     postsPerBlog: z.number().min(1).max(10).default(5) // 🔥 글당 개수 설정 추가 (기본 5개, 최대 10개)
   });
 
-  // 2단계: 키워드 API 활성화
+  // 2단계: 포스트 제목 수집 (기존 BlogScraper 활용)
   console.log(`🚀 [Routes] Step2 라우트 등록: POST /api/stepwise-search/step2`);
   app.post("/api/stepwise-search/step2", async (req, res) => {
-    console.log(`🔥 [Step2 API] 키워드 분석 요청 시작`);
+    console.log(`🔥 [Step2 API] 포스트 제목 수집 요청 시작`);
     
     try {
       // Validate request body with Zod
@@ -316,9 +316,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { jobId, blogIds, postsPerBlog } = result.data;
-      const keywordSettings = req.body.keywordSettings;
 
-      console.log(`🔍 [Step2] 키워드 분석 시작: job=${jobId}, blogs=${blogIds.length}개, posts=${postsPerBlog}개/블로그`);
+      console.log(`🔍 [Step2] 포스트 제목 수집 시작: job=${jobId}, blogs=${blogIds.length}개, posts=${postsPerBlog}개/블로그`);
 
       // 1. Job 존재 확인
       const job = await storage.getSerpJob(jobId);
@@ -336,107 +335,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 3. Job 상태 업데이트
       await storage.updateSerpJob(jobId, {
         status: "running",
-        currentStep: "analyzing_posts",
-        currentStepDetail: `${selectedBlogs.length}개 블로그의 키워드 분석 중...`,
+        currentStep: "scraping_posts",
+        currentStepDetail: `${selectedBlogs.length}개 블로그에서 포스트 제목 수집 중...`,
         progress: 30
       });
 
-      const analysisResults = [];
+      const postCollectionResults = [];
+      // 기존 imported scraper 인스턴스 활용
       
       for (let i = 0; i < selectedBlogs.length; i++) {
         const blog = selectedBlogs[i];
-        console.log(`📝 [Step2] 블로그 분석 중: ${blog.blogName} (${i + 1}/${selectedBlogs.length})`);
+        console.log(`📝 [Step2] 포스트 수집 중: ${blog.blogName} (${i + 1}/${selectedBlogs.length})`);
 
         try {
-          // 4. 실제 블로그 포스트 제목 수집 
-          const posts = await collectRealPosts(blog.blogUrl, blog.blogId, postsPerBlog, jobId);
+          // 4. 기존 BlogScraper.scrapeBlogPosts() 활용하여 포스트 수집
+          const scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
           
-          // 5. 기존 키워드 추출 로직으로 키워드 생성
-          const extractedKeywords = await selectTop4KeywordsFromPosts(posts, jobId, blog.id, keywordSettings, postsPerBlog);
-          
-          if (extractedKeywords.length === 0) {
-            console.log(`⚠️ [Step2] 키워드 추출 결과 없음: ${blog.blogName}`);
-            analysisResults.push({
+          if (scrapedPosts.length === 0) {
+            console.log(`⚠️ [Step2] 포스트 수집 실패: ${blog.blogName}`);
+            postCollectionResults.push({
               blogId: blog.id,
               blogName: blog.blogName,
-              postsAnalyzed: posts.length,
-              keywordsExtracted: 0,
-              topKeywords: []
+              postsScraped: 0,
+              titles: []
             });
             continue;
           }
-          
-          // 6. 추출된 키워드들 중 managedKeywords DB에 없는 것들 찾기
-          const keywordTexts = extractedKeywords.map(k => k.keyword);
-          console.log(`🔍 [Step2] 추출된 키워드: ${keywordTexts.slice(0, 3).join(', ')}... (총 ${keywordTexts.length}개)`);
-          
-          // managedKeywords 테이블에서 기존 키워드 조회
-          const existingKeywords = await db.select()
-            .from(managedKeywords)
-            .where(inArray(managedKeywords.text, keywordTexts));
-            
-          const existingTexts = new Set(existingKeywords.map(k => k.text));
-          const missingKeywords = keywordTexts.filter(text => !existingTexts.has(text));
-          
-          console.log(`📊 [Step2] 기존 키워드: ${existingTexts.size}개, 누락 키워드: ${missingKeywords.length}개`);
-          
-          // 7. 누락된 키워드들을 네이버 검색광고 API로 업데이트
-          if (missingKeywords.length > 0) {
-            console.log(`🚀 [Step2] API 호출로 키워드 업데이트: ${missingKeywords.slice(0, 3).join(', ')}...`);
-            
-            // 누락된 키워드들을 기반으로 API 호출 (최대 5개까지)
-            for (const missingKeyword of missingKeywords.slice(0, 5)) {
-              try {
-                await upsertKeywordsFromSearchAds(missingKeyword, 30); // 각 키워드당 최대 30개 관련 키워드
-                console.log(`✅ [Step2] API 업데이트 완료: ${missingKeyword}`);
-              } catch (apiError) {
-                console.warn(`⚠️ [Step2] API 호출 실패: ${missingKeyword} - ${apiError}`);
-                // 실패해도 계속 진행
-              }
-            }
-          }
-          
-          // 8. 업데이트된 키워드 정보로 다시 조회하여 결과 생성
-          const updatedKeywords = await db.select()
-            .from(managedKeywords)
-            .where(inArray(managedKeywords.text, keywordTexts));
-            
-          // 9. 키워드 정보와 함께 결과 생성
-          const enrichedResults = extractedKeywords.map(extracted => {
-            const managedKeyword = updatedKeywords.find(mk => mk.text === extracted.keyword);
-            
-            return {
-              text: extracted.keyword,
-              volume: managedKeyword?.volume || 0,
-              score: managedKeyword?.score || extracted.score || 0,
-              cpc: managedKeyword?.est_cpc_krw || 0,
-              position: extracted.position || 0,
-              isCombo: extracted.isCombo || false,
-              hasApiData: !!managedKeyword,
-              blogId: blog.id,
-              seedKeyword: blog.seedKeyword,
-              blogName: blog.blogName
-            };
-          });
-          
-          analysisResults.push({
-            blogId: blog.id,
-            blogName: blog.blogName,
-            postsAnalyzed: posts.length,
-            keywordsExtracted: enrichedResults.length,
-            topKeywords: enrichedResults
-          });
-          
-          console.log(`✅ [Step2] 블로그 ${blog.blogName} 처리 완료: ${enrichedResults.length}개 키워드`);
 
-        } catch (error) {
-          console.error(`❌ [Step2] 블로그 분석 실패: ${blog.blogName}`, error);
-          analysisResults.push({
+          // 5. 수집된 포스트를 DB에 저장
+          const postTitles = scrapedPosts.map(post => post.title);
+          
+          // discoveredBlogs 테이블의 postsAnalyzed 업데이트
+          await storage.updateDiscoveredBlog(blog.id, {
+            postsAnalyzed: scrapedPosts.length
+          });
+
+          console.log(`✅ [Step2] 포스트 수집 완료: ${blog.blogName} - ${scrapedPosts.length}개 포스트`);
+          
+          postCollectionResults.push({
             blogId: blog.id,
             blogName: blog.blogName,
-            postsAnalyzed: 0,
-            keywordsExtracted: 0,
-            error: "분석 실패"
+            postsScraped: scrapedPosts.length,
+            titles: postTitles.slice(0, 10) // 최대 10개 제목만 반환
+          });
+          
+        } catch (error) {
+          console.error(`❌ [Step2] 포스트 수집 실패: ${blog.blogName}`, error);
+          postCollectionResults.push({
+            blogId: blog.id,
+            blogName: blog.blogName,
+            postsScraped: 0,
+            titles: [],
+            error: "수집 실패"
           });
         }
 
@@ -444,7 +394,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const progress = 30 + Math.floor(((i + 1) / selectedBlogs.length) * 40);
         await storage.updateSerpJob(jobId, {
           progress,
-          currentStepDetail: `블로그 분석 중... (${i + 1}/${selectedBlogs.length})`
+          currentStepDetail: `포스트 수집 중... (${i + 1}/${selectedBlogs.length})`
         });
       }
 
@@ -452,22 +402,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.updateSerpJob(jobId, {
         status: "completed",
         progress: 70,
-        currentStepDetail: `${selectedBlogs.length}개 블로그 키워드 분석 완료`,
+        currentStepDetail: `${selectedBlogs.length}개 블로그 포스트 수집 완료`,
         completedSteps: 2
       });
 
-      console.log(`✅ [Step2] 키워드 분석 완료: ${selectedBlogs.length}개 블로그 처리`);
+      console.log(`✅ [Step2] 포스트 수집 완료: ${selectedBlogs.length}개 블로그 처리`);
 
       res.json({
         jobId,
-        results: analysisResults,
-        message: `${selectedBlogs.length}개 블로그의 키워드 분석이 완료되었습니다 (API 데이터 포함)`
+        results: postCollectionResults,
+        message: `${selectedBlogs.length}개 블로그에서 포스트 제목 수집이 완료되었습니다`
       });
 
     } catch (error) {
-      console.error('❌ [Step2] 키워드 분석 실패:', error);
+      console.error('❌ [Step2] 포스트 수집 실패:', error);
       res.status(500).json({
-        error: "키워드 분석 중 오류가 발생했습니다",
+        error: "포스트 수집 중 오류가 발생했습니다",
         details: error instanceof Error ? error.message : String(error)
       });
     }
