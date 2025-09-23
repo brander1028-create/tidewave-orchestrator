@@ -752,6 +752,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get stepwise search job status
+  app.get("/api/stepwise-search/jobs/:jobId", async (req, res) => {
+    try {
+      const job = await storage.getSerpJob(req.params.jobId);
+      if (!job) {
+        return res.status(404).json({ error: '작업을 찾을 수 없습니다.' });
+      }
+      res.json(job);
+    } catch (error) {
+      console.error('❌ [Stepwise Jobs] jobId 조회 실패:', error);
+      res.status(500).json({ error: '작업 조회 중 오류가 발생했습니다.' });
+    }
+  });
+
+  // Get stepwise search jobs list
+  app.get("/api/stepwise-search/jobs", async (req, res) => {
+    try {
+      const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 10));
+      const allJobs = await storage.listSerpJobs(limit);
+      res.json(allJobs);
+    } catch (error) {
+      console.error('❌ [Stepwise Jobs] 목록 조회 실패:', error);
+      res.status(500).json({ error: '작업 목록 조회 중 오류가 발생했습니다.' });
+    }
+  });
+
+  // Get stepwise search titles for a job
+  app.get("/api/stepwise-search/titles", async (req, res) => {
+    try {
+      const jobId = req.query.jobId as string;
+      if (!jobId) {
+        return res.status(400).json({ error: 'jobId가 필요합니다.' });
+      }
+
+      const job = await storage.getSerpJob(jobId);
+      if (!job) {
+        return res.status(404).json({ error: '작업을 찾을 수 없습니다.' });
+      }
+
+      // Get blogs with their scraped titles
+      const blogs = await storage.getDiscoveredBlogs(jobId);
+      const titlesData = {
+        jobId,
+        titles: blogs.map(blog => ({
+          blogId: blog.id,
+          blogName: blog.blogName,
+          title: blog.firstPostTitle || blog.blogName,
+          url: blog.blogUrl,
+          isInfluencer: blog.blogType === 'influencer' || false
+        })),
+        titlesCount: blogs.length
+      };
+
+      res.json(titlesData);
+    } catch (error) {
+      console.error('❌ [Stepwise Titles] 제목 조회 실패:', error);
+      res.status(500).json({ error: '제목 조회 중 오류가 발생했습니다.' });
+    }
+  });
+
   // Zod schema for scrape-titles validation
   const scrapeTitlesSchema = z.object({
     jobId: z.string().min(1, "작업 ID가 필요합니다")

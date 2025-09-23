@@ -29,14 +29,16 @@ export default function StepwiseSearchPage() {
   const [step1Loading, setStep1Loading] = useState(false);
   const [step2Loading, setStep2Loading] = useState(false);
   const [step3Loading, setStep3Loading] = useState(false);
+  const [step4Loading, setStep4Loading] = useState(false);
   const { toast } = useToast();
   
   // 상태 데이터
   const [step1Blogs, setStep1Blogs] = useState<any[]>([]);
-  const [step2Blogs, setStep2Blogs] = useState<any[]>([]);
-  const [step2Results, setStep2Results] = useState<any[]>([]);
+  const [step2Posts, setStep2Posts] = useState<any[]>([]); // 🔥 2단계: 포스트 제목 수집
   const [step3Blogs, setStep3Blogs] = useState<any[]>([]);
   const [step3Results, setStep3Results] = useState<any[]>([]);
+  const [step4Blogs, setStep4Blogs] = useState<any[]>([]);
+  const [step4Results, setStep4Results] = useState<any[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [postsPerBlog, setPostsPerBlog] = useState(5); // 🔥 블로그당 포스트 개수 설정 (기본 5개)
 
@@ -56,6 +58,7 @@ export default function StepwiseSearchPage() {
       setStep1Loading(false);
       setStep2Loading(false);
       setStep3Loading(false);
+      setStep4Loading(false);
       
       toast({
         title: "분석 중단됨",
@@ -129,7 +132,7 @@ export default function StepwiseSearchPage() {
     setStep2Loading(true);
     try {
       // 아직 키워드 분석이 안된 블로그들만 처리
-      const blogsToProcess = step1Blogs.filter(blog => !step2Blogs.includes(blog.id));
+      const blogsToProcess = step1Blogs.filter(blog => !step3Blogs.includes(blog.id));
       
       if (blogsToProcess.length === 0) {
         toast({
@@ -162,10 +165,10 @@ export default function StepwiseSearchPage() {
           
           const response = await res.json();
           
-          // 성공 시 step2Blogs와 step2Results에 추가
-          setStep2Blogs(prev => [...prev, blog.id]);
+          // 성공 시 step3Blogs와 step3Results에 추가
+          setStep3Blogs(prev => [...prev, blog.id]);
           if (response.results && response.results.length > 0) {
-            setStep2Results(prev => [...prev, ...response.results]);
+            setStep3Results(prev => [...prev, ...response.results]);
           }
           
           console.log(`✅ [Frontend] 블로그 "${blog.blogName}" 키워드 분석 완료`);
@@ -215,12 +218,12 @@ export default function StepwiseSearchPage() {
     setStep2Loading(true);
     try {
       const totalBlogs = step1Blogs.length;
-      const activatedBlogs = step2Blogs.length;
+      const activatedBlogs = step3Blogs.length;
       
       console.log(`🔄 [Frontend] 일괄 활성화 시작: ${totalBlogs - activatedBlogs}개 블로그`);
       
       // 아직 활성화되지 않은 블로그들만 처리
-      const blogsToProcess = step1Blogs.filter(blog => !step2Blogs.includes(blog.id));
+      const blogsToProcess = step1Blogs.filter(blog => !step3Blogs.includes(blog.id));
       
       for (const blog of blogsToProcess) {
         try {
@@ -248,10 +251,10 @@ export default function StepwiseSearchPage() {
             throw new Error(`서버 응답이 JSON 형식이 아닙니다: ${responseText.substring(0, 100)}`);
           }
           
-          // 성공 시 step2Blogs와 step2Results에 추가
-          setStep2Blogs(prev => [...prev, blog.id]);
+          // 성공 시 step3Blogs와 step3Results에 추가
+          setStep3Blogs(prev => [...prev, blog.id]);
           if (response.results && response.results.length > 0) {
-            setStep2Results(prev => [...prev, ...response.results]);
+            setStep3Results(prev => [...prev, ...response.results]);
           }
           
           console.log(`✅ [Frontend] 블로그 "${blog.blogName}" 활성화 완료`);
@@ -402,8 +405,8 @@ export default function StepwiseSearchPage() {
       }
 
       if (response.results && response.results.length > 0) {
-        setStep2Blogs(prev => [...prev, blogId]);
-        setStep2Results(prev => [...prev, ...response.results]);
+        setStep3Blogs(prev => [...prev, blogId]);
+        setStep3Results(prev => [...prev, ...response.results]);
         if (currentStep < 3) setCurrentStep(3);
         toast({
           title: "키워드 분석 완료",
@@ -506,7 +509,7 @@ export default function StepwiseSearchPage() {
             </div>
             <div className="h-px bg-gray-300 flex-1" />
             <div className={`flex items-center gap-2 ${currentStep >= 2 ? 'text-blue-600' : 'text-gray-400'}`}>
-              {step2Blogs.length > 0 ? <CheckCircle className="h-5 w-5 text-green-600" /> : <Circle className="h-5 w-5" />}
+              {step3Blogs.length > 0 ? <CheckCircle className="h-5 w-5 text-green-600" /> : <Circle className="h-5 w-5" />}
               <span className="font-medium">2단계: 키워드 API</span>
             </div>
             <div className="h-px bg-gray-300 flex-1" />
@@ -593,15 +596,18 @@ export default function StepwiseSearchPage() {
 
       {/* 탭으로 각 단계 결과 표시 */}
       <Tabs value={selectedTab} onValueChange={setSelectedTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="step1">
             1단계: 블로그 수집
           </TabsTrigger>
           <TabsTrigger value="step2" disabled={step1Blogs.length === 0}>
-            2단계: 키워드 API
+            2단계: 포스트 제목
           </TabsTrigger>
-          <TabsTrigger value="step3" disabled={step2Blogs.length === 0}>
-            3단계: 지수 확인
+          <TabsTrigger value="step3" disabled={step2Posts.length === 0}>
+            3단계: 키워드 API
+          </TabsTrigger>
+          <TabsTrigger value="step4" disabled={step3Blogs.length === 0}>
+            4단계: 지수 확인
           </TabsTrigger>
         </TabsList>
 
@@ -623,7 +629,7 @@ export default function StepwiseSearchPage() {
                   <div className="flex items-center gap-2 ml-4">
                     <Button 
                       onClick={handleBulkActivation}
-                      disabled={step2Loading || step1Blogs.every(blog => step2Blogs.includes(blog.id))}
+                      disabled={step2Loading || step1Blogs.every(blog => step3Blogs.includes(blog.id))}
                       size="sm"
                       data-testid="button-bulk-activate"
                     >
@@ -632,7 +638,7 @@ export default function StepwiseSearchPage() {
                           <Loader2 className="h-4 w-4 animate-spin mr-2" />
                           일괄 활성화 중...
                         </>
-                      ) : step1Blogs.every(blog => step2Blogs.includes(blog.id)) ? (
+                      ) : step1Blogs.every(blog => step3Blogs.includes(blog.id)) ? (
                         "모두 활성화됨"
                       ) : (
                         "모두 활성화"
@@ -690,13 +696,13 @@ export default function StepwiseSearchPage() {
                         </div>
                         <Button 
                           onClick={() => handleStep2Process(blog.id)}
-                          disabled={step2Loading || step2Blogs.includes(blog.id)}
+                          disabled={step2Loading || step3Blogs.includes(blog.id)}
                           size="sm"
                           data-testid={`button-step2-${blog.id}`}
                         >
                           {step2Loading ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : step2Blogs.includes(blog.id) ? (
+                          ) : step3Blogs.includes(blog.id) ? (
                             "활성화됨"
                           ) : (
                             "키워드 API 활성화"
@@ -715,18 +721,57 @@ export default function StepwiseSearchPage() {
           </Card>
         </TabsContent>
 
-        {/* 2단계 결과 - SERP 스타일 티어별 키워드 표시 */}
+        {/* 2단계: 최근 포스팅 제목 수집 */}
         <TabsContent value="step2" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
-                2단계: 키워드 API 활성화 ({step2Blogs.length}개 처리됨)
+                2단계: 최근 포스팅 제목 수집 ({step2Posts.length}개 수집됨)
               </CardTitle>
               <CardDescription>
-                블로그 최신글에서 키워드를 추출하고 분석합니다
+                선택된 블로그들의 최근 포스팅 제목을 수집합니다 (1단계 제목 제외)
               </CardDescription>
-              {step2Blogs.length > 0 && step2Blogs.length < step1Blogs.length && (
+            </CardHeader>
+            <CardContent>
+              {step2Posts.length > 0 ? (
+                <div className="space-y-4">
+                  {step2Posts.map((post, index) => (
+                    <div key={index} className="border rounded-lg p-4" data-testid={`post-step2-${index}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-2">
+                          <h4 className="font-medium">{post.title}</h4>
+                          <div className="text-sm text-gray-600">
+                            <span>블로그: {post.blogName}</span>
+                            <span className="mx-2">•</span>
+                            <span>발행일: {post.publishDate}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-gray-500 text-center py-8">
+                  1단계 블로그 수집 후 포스트 제목을 수집해주세요
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* 3단계 결과 - SERP 스타일 티어별 키워드 표시 */}
+        <TabsContent value="step3" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                3단계: 키워드 API 활성화 ({step3Blogs.length}개 처리됨)
+              </CardTitle>
+              <CardDescription>
+                2단계 포스트 제목들에서 키워드를 추출하고 분석합니다
+              </CardDescription>
+              {step3Blogs.length > 0 && step3Blogs.length < step1Blogs.length && (
                 <div className="flex items-center gap-2">
                   <Button 
                     onClick={handleBulkStep2Analysis}
@@ -747,11 +792,11 @@ export default function StepwiseSearchPage() {
               )}
             </CardHeader>
             <CardContent>
-              {step2Blogs.length > 0 ? (
+              {step3Blogs.length > 0 ? (
                 <div className="space-y-6">
-                  {step2Blogs.map((blogId) => {
+                  {step3Blogs.map((blogId) => {
                     const blog = step1Blogs.find(b => b.id === blogId);
-                    const result = step2Results.find(r => r.blogId === blogId);
+                    const result = step3Results.find(r => r.blogId === blogId);
                     
                     // SERP UI 스타일 헬퍼 함수
                     const fmtVol = (v: number | null) => v === null ? "–" : v.toLocaleString();
@@ -908,24 +953,24 @@ export default function StepwiseSearchPage() {
           </Card>
         </TabsContent>
 
-        {/* 3단계 결과 */}
-        <TabsContent value="step3" className="space-y-4">
+        {/* 4단계 결과 */}
+        <TabsContent value="step4" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <TrendingUp className="h-5 w-5" />
-                3단계: 블로그 지수 확인 ({step3Blogs.length}개 확인됨)
+                4단계: 블로그 지수 확인 ({step4Blogs.length}개 확인됨)
               </CardTitle>
               <CardDescription>
-                키워드의 실제 노출 순위를 확인합니다
+                3단계 키워드의 실제 노출 순위를 확인합니다
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {step3Blogs.length > 0 ? (
+              {step4Blogs.length > 0 ? (
                 <div className="space-y-4">
-                  {step3Blogs.map((blogId) => {
+                  {step4Blogs.map((blogId) => {
                     const blog = step1Blogs.find(b => b.id === blogId);
-                    const result = step3Results.find(r => r.blogId === blogId);
+                    const result = step4Results.find(r => r.blogId === blogId);
                     return (
                       <div key={blogId} className="border rounded-lg p-4" data-testid={`blog-step3-${blogId}`}>
                         <div className="space-y-2">

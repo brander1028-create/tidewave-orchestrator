@@ -299,60 +299,62 @@ export class MobileNaverScraperService {
   }
   
   /**
-   * 컨텍스트에서 닉네임 추출
+   * 컨텍스트에서 닉네임 추출 (완화된 버전)
    */
   private extractNickname(context: string, blogId: string): string | undefined {
-    // ❌ 제외할 시간/날짜 표현 패턴 (핵심 버그 수정)
+    // 🔥 완화된 시간 표현 패턴 (핵심 개선)
     const timeExpressions = [
-      /\d+\s*일\s*전/g,        // "1일 전", "2일전" 등
-      /\d+\s*시간\s*전/g,      // "3시간 전", "24시간전" 등  
-      /\d+\s*분\s*전/g,        // "30분 전", "5분전" 등
-      /\d+\s*초\s*전/g,        // "10초 전", "20초전" 등
-      /\d+\s*개월\s*전/g,      // "3개월 전" 등
-      /\d+\s*년\s*전/g,        // "1년 전" 등
-      /일\s*전$/g,             // 단순 "일 전"
-      /시간\s*전$/g,           // 단순 "시간 전"  
-      /분\s*전$/g,             // 단순 "분 전"
-      /어제|오늘|내일/g,       // 날짜 표현
-      /월|화|수|목|금|토|일요일/g, // 요일 표현
+      /^\d+\s*일\s*전$/g,      // 정확히 "1일 전" 형태만 제외
+      /^\d+\s*시간\s*전$/g,    // 정확히 "3시간 전" 형태만 제외
+      /^\d+\s*분\s*전$/g,      // 정확히 "30분 전" 형태만 제외
     ];
     
-    // 한글 닉네임 패턴 (가장 일반적)
-    const koreanNicknamePatterns = [
-      /[\uAC00-\uD7AF\s,]{2,20}/g, // 한글 + 공백 + 쉼표
-      /[\uAC00-\uD7AF]{2,10}/g,    // 순수 한글만
+    // 🌟 다양한 닉네임 패턴 (한글+영문+특수문자)
+    const nicknamePatterns = [
+      /[\uAC00-\uD7AF\s,]{2,20}/g,           // 한글 + 공백 + 쉼표
+      /[\uAC00-\uD7AF]{2,15}/g,              // 순수 한글만
+      /[a-zA-Z가-힣0-9_\s]{2,20}/g,          // 영문+한글+숫자+언더스코어
+      /[a-zA-Z][a-zA-Z0-9_]{1,19}/g,         // 영문으로 시작하는 ID
+      /[\uAC00-\uD7AF][a-zA-Z0-9_\s]{1,19}/g, // 한글로 시작하는 혼합
     ];
     
-    for (const pattern of koreanNicknamePatterns) {
+    // 🎯 1순위: 일반적인 패턴으로 닉네임 추출
+    for (const pattern of nicknamePatterns) {
       const matches = context.match(pattern);
       if (matches) {
         for (const match of matches) {
           const cleaned = match.trim();
           
-          // ✅ 시간 표현 제외 검사 (핵심 수정)
+          // ✅ 완화된 시간 표현 검사
           const isTimeExpression = timeExpressions.some(timePattern => {
-            timePattern.lastIndex = 0; // 정규식 상태 초기화
+            timePattern.lastIndex = 0;
             return timePattern.test(cleaned);
           });
           
-          // 유효한 닉네임인지 검증 (시간 표현 제외)
+          // 🔥 완화된 유효성 검증 (blogId 포함 허용)
           if (cleaned.length >= 2 && cleaned.length <= 20 && 
               !/^\d+$/.test(cleaned) && 
-              !cleaned.includes(blogId) && 
-              !isTimeExpression) { // 🔥 시간 표현 제외
-            console.log(`✅ [Nickname] "${cleaned}" 선정 (blogId: ${blogId})`);
+              !isTimeExpression &&
+              !/^(어제|오늘|내일)$/.test(cleaned)) { // 단순 날짜 표현만 제외
+            console.log(`✅ [Nickname] "${cleaned}" 선정 (pattern) (blogId: ${blogId})`);
             return cleaned;
-          } else if (isTimeExpression) {
-            console.log(`❌ [Nickname] "${cleaned}" 제외 - 시간 표현`);
           }
         }
       }
     }
     
-    // 📋 fallback: URL에서 blogId를 사용 (영어 포함)
+    // 🔄 2순위: blogId 기반 fallback (영어 포함)
     if (blogId && blogId.length >= 2 && blogId !== 'unknown') {
       console.log(`🔄 [Nickname] fallback: "${blogId}" 사용`);
       return blogId;
+    }
+    
+    // 🌟 3순위: 컨텍스트에서 임의의 의미있는 텍스트 추출
+    const anyTextMatch = context.match(/[\uAC00-\uD7AFa-zA-Z][^\s<>"']{1,15}/);
+    if (anyTextMatch && anyTextMatch[0].length >= 2) {
+      const fallbackText = anyTextMatch[0].trim();
+      console.log(`🚨 [Nickname] 긴급 fallback: "${fallbackText}" 사용 (blogId: ${blogId})`);
+      return fallbackText;
     }
     
     console.log(`⚠️ [Nickname] 추출 실패 (blogId: ${blogId})`);
