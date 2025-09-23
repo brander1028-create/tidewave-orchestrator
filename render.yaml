@@ -1,35 +1,28 @@
 services:
   - type: web
-    name: outreach-api
-    env: python
-    plan: starter
-    buildCommand: pip install -r requirements.txt
-    # Use uvicorn to serve the FastAPI app defined in current_app.py
-     startCommand: uvicorn main_langgraph:app --host 0.0.0.0 --port $PORT
-    # Ensure Render can determine service health by probing this path.  Without this,
-    # Render may mark the service as unhealthy and refuse traffic.  The
-    # `current_app.py` defines a /health endpoint that returns JSON when the
-    # service is ready.
-    healthCheckPath: /health
+    name: mcp-server
+    env: docker
+    region: oregon
+    plan: free
     autoDeploy: true
-    # Environment variables.  These mirror the values expected by the application.
-    # Set these in your Render dashboard or provide values here.  Do NOT commit
-    # sensitive keys to a public repository.  Replace the example values with
-    # your actual secrets or configure them via the dashboard.
+    healthCheckPath: /
+    dockerfilePath: ./Dockerfile
     envVars:
+      - key: GH_TOKEN
+        sync: false
+      - key: GH_OWNER
+        value: brander1028-create
+      - key: GH_REPO
+        value: tidewave-orchestrator
+      - key: VERCEL_DEPLOY_HOOK_OPS_MAIN
+        sync: false
+      - key: VERCEL_DEPLOY_HOOK_PROD_MANUAL
+        sync: false
       - key: SUPABASE_URL
-        value: ${SUPABASE_URL}
+        sync: false
       - key: SUPABASE_KEY
-        value: ${SUPABASE_KEY}
+        sync: false
       - key: ANTHROPIC_API_KEY
-        value: ${ANTHROPIC_API_KEY}
-      - key: ANTHROPIC_API_URL
-        value: ${ANTHROPIC_API_URL}
-      - key: ANTHROPIC_API_VERSION
-        value: ${ANTHROPIC_API_VERSION}
-      - key: API_HEALTH
-        value: ${API_HEALTH}
-      - key: LLM_PROMOTION_THRESHOLD
-        value: "120"
-      - key: LLM_MAX_TOKENS
-        value: "512"
+        sync: false
+      - key: N8N_URL
+        sync: false
