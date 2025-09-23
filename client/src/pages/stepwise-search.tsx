@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Label } from "@/components/ui/label";
 import { 
   Search, 
   Database, 
@@ -15,7 +16,8 @@ import {
   FileText,
   BarChart3,
   Square,
-  ExternalLink
+  ExternalLink,
+  Settings
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -36,6 +38,7 @@ export default function StepwiseSearchPage() {
   const [step3Blogs, setStep3Blogs] = useState<any[]>([]);
   const [step3Results, setStep3Results] = useState<any[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [postsPerBlog, setPostsPerBlog] = useState(5); // 🔥 블로그당 포스트 개수 설정 (기본 5개)
 
   // 작업 취소 함수
   const handleCancelJob = async () => {
@@ -149,7 +152,8 @@ export default function StepwiseSearchPage() {
           const res = await apiRequest('POST', '/api/stepwise-search/step2', {
             jobId: jobId,
             blogIds: [blog.id],
-            keywordSettings: keywordSettings
+            keywordSettings: keywordSettings,
+            postsPerBlog: postsPerBlog // 🔥 블로그당 포스트 개수 전송
           });
           
           if (!res.ok) {
@@ -376,7 +380,8 @@ export default function StepwiseSearchPage() {
       const res = await apiRequest('POST', '/api/stepwise-search/step2', {
         jobId: jobId,
         blogIds: [blogId], // 단일 블로그를 배열로 전달
-        keywordSettings: keywordSettings // 사용자 설정값 전달
+        keywordSettings: keywordSettings, // 사용자 설정값 전달
+        postsPerBlog: postsPerBlog // 🔥 블로그당 포스트 개수 전송
       });
       
       console.log(`🔍 [Debug Individual] Response status: ${res.status}`);
@@ -525,32 +530,63 @@ export default function StepwiseSearchPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex gap-4">
-            <Input
-              placeholder="검색할 키워드를 입력하세요"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleStep1Search()}
-              data-testid="input-keyword"
-            />
-            <Button 
-              onClick={step1Loading ? handleCancelJob : handleStep1Search}
-              disabled={!step1Loading && !keyword.trim()}
-              data-testid={step1Loading ? "button-cancel-analysis" : "button-step1-search"}
-              variant={step1Loading ? "destructive" : "default"}
-            >
-              {step1Loading ? (
-                <>
-                  <Square className="h-4 w-4 mr-2" />
-                  분석 중단
-                </>
-              ) : (
-                <>
-                  <Play className="h-4 w-4 mr-2" />
-                  1단계 시작
-                </>
-              )}
-            </Button>
+          <div className="space-y-4">
+            {/* 키워드 입력 */}
+            <div className="flex gap-4">
+              <Input
+                placeholder="검색할 키워드를 입력하세요"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleStep1Search()}
+                data-testid="input-keyword"
+              />
+              <Button 
+                onClick={step1Loading ? handleCancelJob : handleStep1Search}
+                disabled={!step1Loading && !keyword.trim()}
+                data-testid={step1Loading ? "button-cancel-analysis" : "button-step1-search"}
+                variant={step1Loading ? "destructive" : "default"}
+              >
+                {step1Loading ? (
+                  <>
+                    <Square className="h-4 w-4 mr-2" />
+                    분석 중단
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 mr-2" />
+                    1단계 시작
+                  </>
+                )}
+              </Button>
+            </div>
+            
+            {/* 포스트 개수 설정 */}
+            <div className="bg-gray-50 rounded-lg p-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Settings className="h-4 w-4 text-gray-600" />
+                  <Label htmlFor="posts-per-blog" className="text-sm font-medium">
+                    블로그당 분석할 포스트 개수:
+                  </Label>
+                </div>
+                <Input
+                  id="posts-per-blog"
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={postsPerBlog}
+                  onChange={(e) => setPostsPerBlog(parseInt(e.target.value) || 5)}
+                  className="w-20"
+                  data-testid="input-posts-per-blog"
+                />
+                <span className="text-sm text-gray-600">
+                  (기본 5개, 최대 10개) → 총 {postsPerBlog * 4}개 키워드 추출
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                💡 각 포스트에서 4개 키워드를 추출하므로, 5개 포스트 × 4개 = 총 20개 키워드가 분석됩니다
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -10,9 +10,9 @@ export interface KeywordSelectionSettings {
   enableTrigrams: boolean;
 }
 
-// 기본 설정값
+// 기본 설정값 (키워드 추출 최적화)
 export const defaultKeywordSelectionSettings: KeywordSelectionSettings = {
-  minCPC: 300,
+  minCPC: 50,               // 🔥 300 → 50으로 조정하여 더 많은 키워드 허용
   minScore: 1,
   maxKeywords: 4,
   volumeWeight: 1.0,
