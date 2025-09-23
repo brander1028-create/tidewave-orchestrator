@@ -805,69 +805,76 @@ export default function StepwiseSearchPage() {
 
                         {result && result.topKeywords && result.topKeywords.length > 0 ? (
                           <div className="space-y-4">
-                            {/* 블로그 총 Top 키워드 (통합) */}
-                            <div className="bg-gray-50 rounded-lg p-4">
-                              <h4 className="font-medium text-lg mb-3">블로그 총 Top 키워드(통합)</h4>
-                              <div className="space-y-2" data-testid={`list-agg-${blogId}`}>
-                                {result.topKeywords.slice(0, 4).map((kw: any, idx: number) => (
-                                  <div key={idx} className="flex items-center justify-between py-2 border-b last:border-b-0">
-                                    <div className="flex items-center gap-3">
-                                      <Badge variant="outline" className="bg-blue-50 font-medium">
-                                        {idx + 1}티어:
-                                      </Badge>
-                                      <span className="font-semibold">{kw.text || kw.keyword}</span>
-                                      {kw.isCombo && <Badge variant="secondary" className="text-xs">조합</Badge>}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <Badge className={getVolumeColor(kw.volume)}>
-                                        조회량 {fmtVol(kw.volume)}
-                                      </Badge>
-                                      <Badge className={getScoreColor(kw.score || kw.cpc || 0)}>
-                                        점수 {kw.score || kw.cpc || 0}pts
-                                      </Badge>
-                                      <Badge variant="outline" className="bg-gray-50">
-                                        순위 미확인
-                                      </Badge>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* 포스트별 1~4티어 (전수조사 기능 준비) */}
+                            {/* 포스트별 1~4티어 (전수검사) */}
                             <div className="bg-white border rounded-lg p-4">
-                              <h4 className="font-medium text-lg mb-3">포스트별 1~4티어 (전수조사)</h4>
-                              <div className="text-sm text-gray-600 mb-3">
-                                각 포스트에서 상위 4개 키워드를 티어별로 분석 (구현 예정)
-                              </div>
+                              <h4 className="font-medium text-lg mb-4">포스트별 1-4티어(전수검사)</h4>
                               
-                              {/* 포스트 샘플 (실제 구현시 posts 데이터 활용) */}
-                              {Array.from({length: Math.min(result.postsAnalyzed, 5)}, (_, postIdx) => (
-                                <div key={postIdx} className="border rounded p-3 mb-3 last:mb-0">
-                                  <div className="font-medium text-sm mb-2">
-                                    포스트 {postIdx + 1} (전수조사)
-                                  </div>
-                                  <div className="grid grid-cols-4 gap-2">
-                                    {[1, 2, 3, 4].map((tier) => {
-                                      const kw = result.topKeywords[postIdx * 4 + tier - 1];
-                                      return (
-                                        <div key={tier} className="text-xs" data-testid={`row-tier-${blogId}-${postIdx}-${tier}`}>
-                                          <div className="font-medium">{tier}티어:</div>
-                                          <div className="text-blue-600">
-                                            {kw ? (kw.text || kw.keyword) : '비어있음'}
+                              {/* 포스트별로 키워드 그룹핑 */}
+                              {(() => {
+                                // 포스트별로 키워드 그룹핑
+                                const postGroups: { [key: string]: any[] } = {};
+                                
+                                // topKeywords를 포스트별로 분리 (실제 구현시에는 서버에서 포스트별 데이터를 받아야 함)
+                                result.topKeywords.forEach((kw: any, index: number) => {
+                                  const postIndex = Math.floor(index / 4) + 1; // 4개씩 그룹핑
+                                  const postKey = `post${postIndex}`;
+                                  
+                                  if (!postGroups[postKey]) {
+                                    postGroups[postKey] = [];
+                                  }
+                                  
+                                  postGroups[postKey].push({
+                                    ...kw,
+                                    tier: (index % 4) + 1
+                                  });
+                                });
+
+                                return Object.entries(postGroups).map(([postKey, keywords], postIdx) => (
+                                  <div key={postKey} className="mb-6 last:mb-0">
+                                    {/* 포스트 제목 */}
+                                    <div className="text-base font-medium text-gray-800 mb-3">
+                                      [{blog?.blogName || '블로그'} 포스트 {postIdx + 1}] 키워드 분석 결과
+                                    </div>
+                                    
+                                    {/* 티어별 키워드 */}
+                                    <div className="space-y-2">
+                                      {keywords.map((kw: any, kwIdx: number) => {
+                                        // 티어별 색상
+                                        const getTierColor = (tier: number) => {
+                                          switch (tier) {
+                                            case 1: return "text-green-700 bg-green-50 border-green-200";
+                                            case 2: return "text-green-600 bg-green-50 border-green-200";
+                                            case 3: return "text-blue-600 bg-blue-50 border-blue-200";
+                                            case 4: return "text-yellow-700 bg-yellow-50 border-yellow-200";
+                                            default: return "text-gray-600 bg-gray-50 border-gray-200";
+                                          }
+                                        };
+                                        
+                                        return (
+                                          <div key={kwIdx} className="flex items-center gap-4 py-2">
+                                            <div className="flex items-center gap-2 min-w-20">
+                                              <span className="text-sm font-medium">{kw.tier}티어:</span>
+                                            </div>
+                                            <div className="flex items-center gap-2 flex-1">
+                                              <span className="font-semibold">{kw.text || kw.keyword}</span>
+                                              {kw.isCombo && <Badge variant="secondary" className="text-xs">조합</Badge>}
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                              <Badge className={`${getTierColor(kw.tier)} text-sm`}>
+                                                조회량 {fmtVol(kw.volume)}
+                                              </Badge>
+                                              <Badge className={`${getTierColor(kw.tier)} text-sm`}>
+                                                점수 {kw.score || kw.cpc || 0}pts
+                                              </Badge>
+                                              <span className="text-xs text-gray-500">순위 미확인</span>
+                                            </div>
                                           </div>
-                                          {kw && (
-                                            <>
-                                              <div className="text-gray-500">조회량 {fmtVol(kw.volume)}</div>
-                                              <div className="text-gray-500">점수 {kw.score || kw.cpc || 0}pts</div>
-                                            </>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
+                                        );
+                                      })}
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                ));
+                              })()}
                             </div>
                           </div>
                         ) : (
