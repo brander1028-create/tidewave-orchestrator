@@ -176,7 +176,8 @@ export class MobileNaverScraperService {
           if (influencerMatch) {
             blogId = influencerMatch[1];
             isInfluencer = true;
-            actualUrl = `https://in.naver.com/${blogId}`;
+            // 🔥 인플루언서는 실제 포스트 URL 보존 (정규화 안함)
+            actualUrl = url; // 원본 URL 그대로 사용
           }
         } else if (url.includes('blog.naver.com')) {
           // 일반 블로그 처리: blog.naver.com/blogId/postId
