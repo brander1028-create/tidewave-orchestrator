@@ -386,25 +386,7 @@ export default function StepwiseSearchPage() {
     try {
       console.log(`🔍 [Frontend] 2단계 시작: "${blogId}"`);
       
-      // 먼저 제목 수집 여부 확인
-      const titleCheckRes = await apiRequest('GET', `/api/stepwise-db?jobId=${jobId}&blogId=${blogId}`);
-      let hasTitles = false;
-      
-      if (titleCheckRes.ok) {
-        const titleData = await titleCheckRes.json();
-        hasTitles = titleData.data && titleData.data.length > 0;
-      }
-      
-      if (!hasTitles) {
-        const blog = step1Blogs.find(b => b.id === blogId);
-        toast({
-          title: `${blog?.blogName || blogId} 키워드 분석 불가`,
-          description: "먼저 '제목 긁어오기' 버튼을 눌러 블로그 포스트를 수집해주세요",
-          variant: "default"
-        });
-        setStep2Loading(false);
-        return;
-      }
+      // 키워드 관리 시스템을 활용하여 자동으로 처리됩니다.
       
       // localStorage에서 키워드 선정 설정값 읽어오기
       const savedSettings = localStorage.getItem('keywordSelectionSettings');
