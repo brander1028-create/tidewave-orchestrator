@@ -672,7 +672,7 @@ export default function StepwiseSearchPage() {
           </Card>
         </TabsContent>
 
-        {/* 2단계 결과 */}
+        {/* 2단계 결과 - SERP 스타일 티어별 키워드 표시 */}
         <TabsContent value="step2" className="space-y-4">
           <Card>
             <CardHeader>
@@ -705,47 +705,39 @@ export default function StepwiseSearchPage() {
             </CardHeader>
             <CardContent>
               {step2Blogs.length > 0 ? (
-                <div className="space-y-4">
+                <div className="space-y-6">
                   {step2Blogs.map((blogId) => {
                     const blog = step1Blogs.find(b => b.id === blogId);
                     const result = step2Results.find(r => r.blogId === blogId);
+                    
+                    // SERP UI 스타일 헬퍼 함수
+                    const fmtVol = (v: number | null) => v === null ? "–" : v.toLocaleString();
+                    const getVolumeColor = (volume: number | null) => {
+                      if (volume === null) return "bg-gray-100 text-gray-600";
+                      if (volume >= 10000) return "bg-emerald-100 text-emerald-800 font-medium";
+                      if (volume >= 1000) return "bg-blue-100 text-blue-800";
+                      return "bg-yellow-100 text-yellow-800";
+                    };
+                    const getScoreColor = (score: number) => {
+                      if (score >= 80) return "bg-emerald-100 text-emerald-800 font-medium";
+                      if (score >= 60) return "bg-blue-100 text-blue-800";
+                      return "bg-yellow-100 text-yellow-800";
+                    };
+                    
                     return (
-                      <div key={blogId} className="border rounded-lg p-4" data-testid={`blog-step2-${blogId}`}>
-                        <div className="flex items-center justify-between">
-                          <div className="space-y-2 flex-1">
-                            <h4 className="font-medium">{blog?.blogName} - 키워드 추출 완료</h4>
-                            {result && result.topKeywords && result.topKeywords.length > 0 ? (
-                              <div className="space-y-2">
-                                <div className="text-sm text-gray-600">
-                                  선정된 상위 {result.topKeywords.length}개 키워드:
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                  {result.topKeywords.map((kw: any, idx: number) => (
-                                    <div key={idx} className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm">
-                                      <div className="flex items-center gap-1">
-                                        <span className="font-medium">{idx + 1}. {kw.text || kw.keyword}</span>
-                                        {kw.isCombo && <span className="text-blue-600 text-xs">(조합)</span>}
-                                      </div>
-                                      <div className="flex items-center gap-3 text-xs text-gray-600 mt-1">
-                                        <span className="flex items-center gap-1">
-                                          📈 {(kw.volume || 0).toLocaleString()}
-                                        </span>
-                                        <span className="flex items-center gap-1">
-                                          ⭐ {kw.score || kw.cpc || 0}
-                                        </span>
-                                        {kw.position && (
-                                          <span className="text-blue-600">#{kw.position}위</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="text-sm text-gray-600">
-                                제목에서 키워드를 추출하고 조회량 및 경쟁도를 분석했습니다
-                              </div>
-                            )}
+                      <div key={blogId} className="border-2 rounded-lg p-6" data-testid={`blog-step2-${blogId}`}>
+                        {/* 블로그 헤더 */}
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-4">
+                            <h3 className="text-xl font-semibold" data-testid={`text-blogname-${blogId}`}>
+                              {blog?.blogName}
+                            </h3>
+                            <Badge variant="outline" className="bg-blue-50">
+                              분석된 포스트: {result?.postsAnalyzed || 0}개
+                            </Badge>
+                            <Badge variant="outline" className="bg-green-50">
+                              추출된 키워드: {result?.keywordsExtracted || 0}개
+                            </Badge>
                           </div>
                           <Button 
                             onClick={() => handleStep3Check(blogId)}
@@ -762,6 +754,79 @@ export default function StepwiseSearchPage() {
                             )}
                           </Button>
                         </div>
+
+                        {result && result.topKeywords && result.topKeywords.length > 0 ? (
+                          <div className="space-y-4">
+                            {/* 블로그 총 Top 키워드 (통합) */}
+                            <div className="bg-gray-50 rounded-lg p-4">
+                              <h4 className="font-medium text-lg mb-3">블로그 총 Top 키워드(통합)</h4>
+                              <div className="space-y-2" data-testid={`list-agg-${blogId}`}>
+                                {result.topKeywords.slice(0, 4).map((kw: any, idx: number) => (
+                                  <div key={idx} className="flex items-center justify-between py-2 border-b last:border-b-0">
+                                    <div className="flex items-center gap-3">
+                                      <Badge variant="outline" className="bg-blue-50 font-medium">
+                                        {idx + 1}티어:
+                                      </Badge>
+                                      <span className="font-semibold">{kw.text || kw.keyword}</span>
+                                      {kw.isCombo && <Badge variant="secondary" className="text-xs">조합</Badge>}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Badge className={getVolumeColor(kw.volume)}>
+                                        조회량 {fmtVol(kw.volume)}
+                                      </Badge>
+                                      <Badge className={getScoreColor(kw.score || kw.cpc || 0)}>
+                                        점수 {kw.score || kw.cpc || 0}pts
+                                      </Badge>
+                                      <Badge variant="outline" className="bg-gray-50">
+                                        순위 미확인
+                                      </Badge>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* 포스트별 1~4티어 (전수조사 기능 준비) */}
+                            <div className="bg-white border rounded-lg p-4">
+                              <h4 className="font-medium text-lg mb-3">포스트별 1~4티어 (전수조사)</h4>
+                              <div className="text-sm text-gray-600 mb-3">
+                                각 포스트에서 상위 4개 키워드를 티어별로 분석 (구현 예정)
+                              </div>
+                              
+                              {/* 포스트 샘플 (실제 구현시 posts 데이터 활용) */}
+                              {Array.from({length: Math.min(result.postsAnalyzed, 5)}, (_, postIdx) => (
+                                <div key={postIdx} className="border rounded p-3 mb-3 last:mb-0">
+                                  <div className="font-medium text-sm mb-2">
+                                    포스트 {postIdx + 1} (전수조사)
+                                  </div>
+                                  <div className="grid grid-cols-4 gap-2">
+                                    {[1, 2, 3, 4].map((tier) => {
+                                      const kw = result.topKeywords[postIdx * 4 + tier - 1];
+                                      return (
+                                        <div key={tier} className="text-xs" data-testid={`row-tier-${blogId}-${postIdx}-${tier}`}>
+                                          <div className="font-medium">{tier}티어:</div>
+                                          <div className="text-blue-600">
+                                            {kw ? (kw.text || kw.keyword) : '비어있음'}
+                                          </div>
+                                          {kw && (
+                                            <>
+                                              <div className="text-gray-500">조회량 {fmtVol(kw.volume)}</div>
+                                              <div className="text-gray-500">점수 {kw.score || kw.cpc || 0}pts</div>
+                                            </>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 text-gray-500">
+                            키워드 분석 중이거나 결과가 없습니다
+                          </div>
+                        )}
                       </div>
                     );
                   })}

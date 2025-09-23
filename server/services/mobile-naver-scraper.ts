@@ -299,6 +299,21 @@ export class MobileNaverScraperService {
    * 컨텍스트에서 닉네임 추출
    */
   private extractNickname(context: string, blogId: string): string | undefined {
+    // ❌ 제외할 시간/날짜 표현 패턴 (핵심 버그 수정)
+    const timeExpressions = [
+      /\d+\s*일\s*전/g,        // "1일 전", "2일전" 등
+      /\d+\s*시간\s*전/g,      // "3시간 전", "24시간전" 등  
+      /\d+\s*분\s*전/g,        // "30분 전", "5분전" 등
+      /\d+\s*초\s*전/g,        // "10초 전", "20초전" 등
+      /\d+\s*개월\s*전/g,      // "3개월 전" 등
+      /\d+\s*년\s*전/g,        // "1년 전" 등
+      /일\s*전$/g,             // 단순 "일 전"
+      /시간\s*전$/g,           // 단순 "시간 전"  
+      /분\s*전$/g,             // 단순 "분 전"
+      /어제|오늘|내일/g,       // 날짜 표현
+      /월|화|수|목|금|토|일요일/g, // 요일 표현
+    ];
+    
     // 한글 닉네임 패턴 (가장 일반적)
     const koreanNicknamePatterns = [
       /[\uAC00-\uD7AF\s,]{2,20}/g, // 한글 + 공백 + 쉼표
@@ -310,16 +325,34 @@ export class MobileNaverScraperService {
       if (matches) {
         for (const match of matches) {
           const cleaned = match.trim();
-          // 유효한 닉네임인지 검증 (너무 짧거나 숫자만 있으면 제외)
+          
+          // ✅ 시간 표현 제외 검사 (핵심 수정)
+          const isTimeExpression = timeExpressions.some(timePattern => {
+            timePattern.lastIndex = 0; // 정규식 상태 초기화
+            return timePattern.test(cleaned);
+          });
+          
+          // 유효한 닉네임인지 검증 (시간 표현 제외)
           if (cleaned.length >= 2 && cleaned.length <= 20 && 
               !/^\d+$/.test(cleaned) && 
-              !cleaned.includes(blogId)) {
+              !cleaned.includes(blogId) && 
+              !isTimeExpression) { // 🔥 시간 표현 제외
+            console.log(`✅ [Nickname] "${cleaned}" 선정 (blogId: ${blogId})`);
             return cleaned;
+          } else if (isTimeExpression) {
+            console.log(`❌ [Nickname] "${cleaned}" 제외 - 시간 표현`);
           }
         }
       }
     }
     
+    // 📋 fallback: URL에서 blogId를 사용 (영어 포함)
+    if (blogId && blogId.length >= 2 && blogId !== 'unknown') {
+      console.log(`🔄 [Nickname] fallback: "${blogId}" 사용`);
+      return blogId;
+    }
+    
+    console.log(`⚠️ [Nickname] 추출 실패 (blogId: ${blogId})`);
     return undefined;
   }
   
