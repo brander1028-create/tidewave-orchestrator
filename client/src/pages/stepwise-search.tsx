@@ -805,77 +805,90 @@ export default function StepwiseSearchPage() {
 
                         {result && result.topKeywords && result.topKeywords.length > 0 ? (
                           <div className="space-y-4">
-                            {/* 포스트별 1~4티어 (전수검사) */}
-                            <div className="bg-white border rounded-lg p-4">
-                              <h4 className="font-medium text-lg mb-4">포스트별 1-4티어(전수검사)</h4>
+                            {(() => {
+                              // results.tsx의 정확한 헬퍼 함수들 복사
+                              const fmtVol = (v: number | null) => v === null ? "–" : v.toLocaleString();
+                              const fmtRank = (r: number | null) => r === null ? "미확인" : (r <= 10 ? `모바일 1p #${r}` : "미노출");
                               
-                              {/* 포스트별로 키워드 그룹핑 */}
-                              {(() => {
-                                // 포스트별로 키워드 그룹핑
-                                const postGroups: { [key: string]: any[] } = {};
+                              const getVolumeColor = (volume: number | null) => {
+                                if (volume === null) return "bg-gray-100 text-gray-600";
+                                if (volume >= 10000) return "bg-emerald-100 text-emerald-800 font-medium";
+                                if (volume >= 1000) return "bg-blue-100 text-blue-800";
+                                return "bg-yellow-100 text-yellow-800";
+                              };
+                              
+                              const getScoreColor = (score: number) => {
+                                if (score >= 0.8) return "bg-emerald-100 text-emerald-800 font-medium";
+                                if (score >= 0.6) return "bg-blue-100 text-blue-800";
+                                if (score >= 0.4) return "bg-yellow-100 text-yellow-800";
+                                return "bg-red-100 text-red-800";
+                              };
+                              
+                              const getRankColor = (rank: number | null) => {
+                                if (rank === null) return "bg-gray-100 text-gray-600";
+                                if (rank <= 3) return "bg-emerald-100 text-emerald-800 font-medium";
+                                if (rank <= 10) return "bg-blue-100 text-blue-800";
+                                return "bg-red-100 text-red-800";
+                              };
+                              
+                              // result.topKeywords를 blog.posts 구조로 변환
+                              const blogPosts = [];
+                              const keywordsPerPost = 4;
+                              const numPosts = Math.ceil(result.topKeywords.length / keywordsPerPost);
+                              
+                              for (let postIdx = 0; postIdx < numPosts; postIdx++) {
+                                const startIdx = postIdx * keywordsPerPost;
+                                const endIdx = Math.min(startIdx + keywordsPerPost, result.topKeywords.length);
+                                const postKeywords = result.topKeywords.slice(startIdx, endIdx);
                                 
-                                // topKeywords를 포스트별로 분리 (실제 구현시에는 서버에서 포스트별 데이터를 받아야 함)
-                                result.topKeywords.forEach((kw: any, index: number) => {
-                                  const postIndex = Math.floor(index / 4) + 1; // 4개씩 그룹핑
-                                  const postKey = `post${postIndex}`;
-                                  
-                                  if (!postGroups[postKey]) {
-                                    postGroups[postKey] = [];
-                                  }
-                                  
-                                  postGroups[postKey].push({
-                                    ...kw,
-                                    tier: (index % 4) + 1
-                                  });
+                                blogPosts.push({
+                                  title: `${blog?.blogName || '블로그'} 포스트 ${postIdx + 1}`,
+                                  tiers: postKeywords.map((kw: any, tierIdx: number) => ({
+                                    tier: tierIdx + 1,
+                                    text: kw.text || kw.keyword,
+                                    volume: kw.volume,
+                                    score: kw.score || kw.cpc || 0,
+                                    rank: null // 단계별 검색에서는 순위가 아직 확인되지 않음
+                                  }))
                                 });
-
-                                return Object.entries(postGroups).map(([postKey, keywords], postIdx) => (
-                                  <div key={postKey} className="mb-6 last:mb-0">
-                                    {/* 포스트 제목 */}
-                                    <div className="text-base font-medium text-gray-800 mb-3">
-                                      [{blog?.blogName || '블로그'} 포스트 {postIdx + 1}] 키워드 분석 결과
-                                    </div>
-                                    
-                                    {/* 티어별 키워드 */}
-                                    <div className="space-y-2">
-                                      {keywords.map((kw: any, kwIdx: number) => {
-                                        // 티어별 색상
-                                        const getTierColor = (tier: number) => {
-                                          switch (tier) {
-                                            case 1: return "text-green-700 bg-green-50 border-green-200";
-                                            case 2: return "text-green-600 bg-green-50 border-green-200";
-                                            case 3: return "text-blue-600 bg-blue-50 border-blue-200";
-                                            case 4: return "text-yellow-700 bg-yellow-50 border-yellow-200";
-                                            default: return "text-gray-600 bg-gray-50 border-gray-200";
-                                          }
-                                        };
-                                        
-                                        return (
-                                          <div key={kwIdx} className="flex items-center gap-4 py-2">
-                                            <div className="flex items-center gap-2 min-w-20">
-                                              <span className="text-sm font-medium">{kw.tier}티어:</span>
+                              }
+                              
+                              // results.tsx와 정확히 동일한 JSX 구조
+                              return (
+                                <div>
+                                  <h5 className="font-medium mb-2">포스트별 1~4티어 (전수검사)</h5>
+                                  <div className="space-y-2">
+                                    {blogPosts.map((post, pidx) => (
+                                      <Card key={`${blogId}-post-${pidx}`} className="p-3">
+                                        <h6 className="font-medium text-sm mb-2" data-testid={`post-title-${pidx}`}>{post.title}</h6>
+                                        <div className="text-xs space-y-1">
+                                          {post.tiers.map((tierData: any, tierIdx: number) => (
+                                            <div key={`${blogId}-post-${pidx}-tier-${tierData.tier}-${tierIdx}`} className="flex items-center gap-2 flex-wrap">
+                                              <span className="font-medium min-w-12">{tierData.tier}티어:</span>
+                                              <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="text-gray-700 font-medium" data-testid={`tier-text-${tierData.tier}`}>
+                                                  {tierData.text || "비어있음"}
+                                                </span>
+                                                {/* 조회량·점수·순위 항상 표시 */}
+                                                <Badge className={getVolumeColor(tierData.volume)} data-testid={`tier-volume-${tierData.tier}`}>
+                                                  조회량 {fmtVol(tierData.volume)}
+                                                </Badge>
+                                                <Badge className={getScoreColor(tierData.score || 0)} data-testid={`tier-score-${tierData.tier}`}>
+                                                  점수 {tierData.score || 0}pts
+                                                </Badge>
+                                                <Badge className={getRankColor(tierData.rank)} data-testid={`tier-rank-${tierData.tier}`}>
+                                                  순위 {fmtRank(tierData.rank)}
+                                                </Badge>
+                                              </div>
                                             </div>
-                                            <div className="flex items-center gap-2 flex-1">
-                                              <span className="font-semibold">{kw.text || kw.keyword}</span>
-                                              {kw.isCombo && <Badge variant="secondary" className="text-xs">조합</Badge>}
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                              <Badge className={`${getTierColor(kw.tier)} text-sm`}>
-                                                조회량 {fmtVol(kw.volume)}
-                                              </Badge>
-                                              <Badge className={`${getTierColor(kw.tier)} text-sm`}>
-                                                점수 {kw.score || kw.cpc || 0}pts
-                                              </Badge>
-                                              <span className="text-xs text-gray-500">순위 미확인</span>
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
+                                          ))}
+                                        </div>
+                                      </Card>
+                                    ))}
                                   </div>
-                                ));
-                              })()}
-                            </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         ) : (
                           <div className="text-center py-8 text-gray-500">
