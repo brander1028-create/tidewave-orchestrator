@@ -33,11 +33,18 @@ export class BlogScraper {
   // REMOVED: No more seed blogs - only real search results
 
   /**
-   * Extract blog ID from blog URL
+   * Extract blog ID from blog URL (including influencer URLs)
    */
   private extractBlogId(blogUrl: string): string | null {
-    const match = blogUrl.match(/blog\.naver\.com\/([^/]+)/);
-    return match ? match[1] : null;
+    // Handle regular blog URLs: https://blog.naver.com/blogId
+    const blogMatch = blogUrl.match(/blog\.naver\.com\/([^/]+)/);
+    if (blogMatch) return blogMatch[1];
+    
+    // Handle influencer URLs: https://in.naver.com/blogId
+    const influencerMatch = blogUrl.match(/in\.naver\.com\/([^/]+)/);
+    if (influencerMatch) return influencerMatch[1];
+    
+    return null;
   }
 
   /**
