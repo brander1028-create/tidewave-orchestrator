@@ -220,26 +220,7 @@ export default function StepwiseSearchPage() {
       
       for (const blog of blogsToProcess) {
         try {
-          console.log(`🔄 [Frontend] 블로그 "${blog.blogName}" 활성화 중...`);
-          
-          // 먼저 제목 수집 여부 확인
-          const titleCheckRes = await apiRequest('GET', `/api/stepwise-db?jobId=${jobId}&blogId=${blog.id}`);
-          let hasTitles = false;
-          
-          if (titleCheckRes.ok) {
-            const titleData = await titleCheckRes.json();
-            hasTitles = titleData.data && titleData.data.length > 0;
-          }
-          
-          if (!hasTitles) {
-            console.log(`⚠️ [Frontend] 블로그 "${blog.blogName}" 제목이 없어 스킵`);
-            toast({
-              title: `${blog.blogName} 키워드 분석 건너뜀`,
-              description: "먼저 '제목 긁어오기' 버튼을 눌러 블로그 포스트를 수집해주세요",
-              variant: "default"
-            });
-            continue;
-          }
+          console.log(`🔄 [Frontend] 블로그 "${blog.blogName}" 키워드 활성화 시작...`);
           
           const res = await apiRequest('POST', `/api/stepwise-search/step2`, {
             jobId,
