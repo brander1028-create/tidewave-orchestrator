@@ -4,6 +4,8 @@ const { Octokit } = require('@octokit/rest');
 const axios = require('axios');
 
 const app = express();
+try { require("./sse-compat")(app); } catch (e) { console.error("sse-compat load failed", e); }
+
 const port = process.env.PORT || 3000;
 
 app.use(bodyParser.json({ limit: '10mb' }));
