@@ -217,7 +217,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           volume: Math.floor(Math.random() * 50000) + 5000, // 임시 데이터
           score: Math.floor(Math.random() * 40) + 60, // 60-100점
           searchDate: blog.createdAt,
-          status: "수집됨"
+          status: "수집됨",
+          isInfluencer: mobileResult.isInfluencer || false // 🔥 인플루언서 정보 추가
         });
       }
 
