@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { XMLParser } from 'fast-xml-parser';
+import { InfluencerScraper } from './influencer-scraper.js';
 
 export interface ScrapedPost {
   title: string;
@@ -29,6 +30,7 @@ export class BlogScraper {
     parseAttributeValue: true,
     trimValues: true
   });
+  private influencerScraper = new InfluencerScraper();
 
   // REMOVED: No more seed blogs - only real search results
 
@@ -60,6 +62,29 @@ export class BlogScraper {
   async scrapeBlogPosts(blogUrl: string, limit = 10): Promise<ScrapedPost[]> {
     console.log(`🔍 Starting blog post collection from: ${blogUrl}`);
     
+    // Check if this is an influencer URL and route to InfluencerScraper
+    if (blogUrl.includes('in.naver.com')) {
+      const blogId = this.extractBlogId(blogUrl);
+      if (!blogId) {
+        console.log(`❌ Could not extract influencer ID from ${blogUrl}`);
+        return [];
+      }
+      
+      console.log(`🌟 [BlogScraper] 인플루언서 URL 감지, InfluencerScraper로 위임: ${blogId}`);
+      const influencerPosts = await this.influencerScraper.collectPosts(blogId, limit);
+      
+      // Convert InfluencerPost[] to ScrapedPost[]
+      const scrapedPosts: ScrapedPost[] = influencerPosts.map(post => ({
+        title: post.title,
+        url: post.url,
+        publishedAt: new Date() // InfluencerScraper doesn't provide dates
+      }));
+      
+      console.log(`📊 [BlogScraper] 인플루언서 수집 완료: ${scrapedPosts.length}개 포스트`);
+      return scrapedPosts;
+    }
+    
+    // Regular blog processing
     const blogId = this.extractBlogId(blogUrl);
     if (!blogId) {
       console.log(`❌ Could not extract blog ID from ${blogUrl}`);

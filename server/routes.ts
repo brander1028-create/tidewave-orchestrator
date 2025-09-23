@@ -348,29 +348,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`📝 [Step2] 포스트 수집 중: ${blog.blogName} (${i + 1}/${selectedBlogs.length})`);
 
         try {
-          // 4. 인플루언서와 일반 블로그 구분 처리
-          let scrapedPosts: any[] = [];
-          const isInfluencer = blog.blogUrl.includes('in.naver.com');
+          // 4. BlogScraper로 포스트 수집 (인플루언서 자동 감지하여 InfluencerScraper로 위임)
+          let scrapedPosts: any[] = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
           
-          if (isInfluencer) {
-            console.log(`🔍 [Step2] 인플루언서 포스트 수집 시도: ${blog.blogName}`);
-            // 인플루언서의 경우 다른 방법으로 포스트 수집 시도
-            try {
-              // 우선 BlogScraper로 시도 (실패할 수 있음)
-              scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
-              if (scrapedPosts.length === 0) {
-                // BlogScraper 실패시 임시로 1단계 제목을 사용
-                console.log(`⚠️ [Step2] 인플루언서 포스트 수집 실패, 1단계 제목 사용: ${blog.blogName}`);
-                if (blog.firstPostTitle && blog.firstPostTitle !== `네이버 인플루언서: ${blog.blogName}의 홈`) {
-                  scrapedPosts = [{ title: blog.firstPostTitle, url: blog.blogUrl }];
-                }
-              }
-            } catch (error) {
-              console.log(`❌ [Step2] 인플루언서 ${blog.blogName} 수집 중 오류:`, error);
+          // 5. 인플루언서에서 0개 수집된 경우 1단계 제목 사용
+          const isInfluencer = blog.blogUrl.includes('in.naver.com');
+          if (isInfluencer && scrapedPosts.length === 0) {
+            console.log(`⚠️ [Step2] 인플루언서 포스트 수집 실패, 1단계 제목 사용: ${blog.blogName}`);
+            if (blog.firstPostTitle && blog.firstPostTitle !== `네이버 인플루언서: ${blog.blogName}의 홈`) {
+              scrapedPosts = [{ title: blog.firstPostTitle, url: blog.blogUrl }];
+              console.log(`✅ [Step2] 인플루언서 대안 제목 사용: "${blog.firstPostTitle}"`);
             }
-          } else {
-            // 일반 블로그는 기존 방식
-            scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
           }
           
           if (scrapedPosts.length === 0) {
@@ -384,7 +372,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
 
-          // 5. 수집된 포스트에서 1단계 제목 제외 (강건한 비교)
+          // 6. 수집된 포스트에서 1단계 제목 제외 (인플루언서 대안 제목은 제외하지 않음)
           let postTitles = scrapedPosts.map(post => post.title);
           let filteredCount = 0;
           
@@ -399,8 +387,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
               .replace(/…/g, '...'); // 말줄임표 정규화
           };
           
-          // 1단계에서 이미 수집한 firstPostTitle 제외
-          if (blog.firstPostTitle) {
+          // 인플루언서 대안 사용 여부 확인
+          const usedInfluencerFallback = isInfluencer && scrapedPosts.length === 1 && 
+                                       scrapedPosts[0].title === blog.firstPostTitle;
+          
+          // 1단계에서 이미 수집한 firstPostTitle 제외 (단, 인플루언서 대안은 제외하지 않음)
+          if (blog.firstPostTitle && !usedInfluencerFallback) {
             const normalizedFirstTitle = normalizeTitle(blog.firstPostTitle);
             const originalLength = postTitles.length;
             
@@ -413,6 +405,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (filteredCount > 0) {
               console.log(`🔄 [Step2] 1단계 제목 ${filteredCount}개 제외됨: "${blog.firstPostTitle}"`);
             }
+          } else if (usedInfluencerFallback) {
+            console.log(`✅ [Step2] 인플루언서 대안 제목 보존: "${blog.firstPostTitle}"`);
           }
           
           // discoveredBlogs 테이블의 postsAnalyzed 업데이트 (필터링 후 개수)
