@@ -10,6 +10,7 @@ export interface NaverBlogSearchResult {
   bloggername: string;
   bloggerlink: string;
   postdate: string;
+  isInfluencer?: boolean; // 인플루언서 여부 추가
 }
 
 export class NaverApiService {
@@ -49,7 +50,13 @@ export class NaverApiService {
       }
 
       const data = await response.json() as any;
-      return data.items || [];
+      const items: NaverBlogSearchResult[] = data.items || [];
+      
+      // 각 결과에 인플루언서 여부 추가
+      return items.map(item => ({
+        ...item,
+        isInfluencer: this.isInfluencerUrl(item.link || item.bloggerlink)
+      }));
     } catch (error) {
       console.error('Error searching blogs:', error);
       throw error;
@@ -215,6 +222,28 @@ export class NaverApiService {
       return null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * 인플루언서 URL인지 판단
+   */
+  private isInfluencerUrl(url: string): boolean {
+    try {
+      if (!url) return false;
+      
+      const urlObj = new URL(url);
+      // in.naver.com 도메인이면 인플루언서
+      if (urlObj.hostname === 'in.naver.com' || urlObj.hostname === 'm.in.naver.com') {
+        return true;
+      }
+      // /influencer/ 경로 포함
+      if (urlObj.pathname.includes('/influencer/')) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
     }
   }
 }

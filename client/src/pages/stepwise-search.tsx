@@ -658,7 +658,14 @@ export default function StepwiseSearchPage() {
                       <div className="flex items-center justify-between">
                         <div className="space-y-2">
                           <div className="flex items-center gap-2">
-                            <h4 className="font-medium">{blog.blogName}</h4>
+                            <h4 className="font-medium flex items-center gap-2">
+                              {blog.isInfluencer && (
+                                <div className="flex items-center justify-center w-5 h-5 bg-green-100 rounded-full" title="네이버 인플루언서">
+                                  <div className="w-2.5 h-2.5 bg-green-600 rounded-full"></div>
+                                </div>
+                              )}
+                              {blog.blogName}
+                            </h4>
                             <span className="text-gray-400">/</span>
                             <button
                               onClick={() => window.open(blog.blogUrl, '_blank', 'noopener,noreferrer')}
@@ -765,7 +772,12 @@ export default function StepwiseSearchPage() {
                         {/* 블로그 헤더 */}
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-4">
-                            <h3 className="text-xl font-semibold" data-testid={`text-blogname-${blogId}`}>
+                            <h3 className="text-xl font-semibold flex items-center gap-2" data-testid={`text-blogname-${blogId}`}>
+                              {blog?.isInfluencer && (
+                                <div className="flex items-center justify-center w-6 h-6 bg-green-100 rounded-full" title="네이버 인플루언서">
+                                  <div className="w-3 h-3 bg-green-600 rounded-full"></div>
+                                </div>
+                              )}
                               {blog?.blogName}
                             </h3>
                             <Badge variant="outline" className="bg-blue-50">
@@ -897,7 +909,12 @@ export default function StepwiseSearchPage() {
                     return (
                       <div key={blogId} className="border rounded-lg p-4" data-testid={`blog-step3-${blogId}`}>
                         <div className="space-y-2">
-                          <h4 className="font-medium" data-testid={`text-blog-name-${blogId}`}>
+                          <h4 className="font-medium flex items-center gap-2" data-testid={`text-blog-name-${blogId}`}>
+                            {blog?.isInfluencer && (
+                              <div className="flex items-center justify-center w-5 h-5 bg-green-100 rounded-full" title="네이버 인플루언서">
+                                <div className="w-2.5 h-2.5 bg-green-600 rounded-full"></div>
+                              </div>
+                            )}
                             {blog?.blogName} - 지수 확인 완료
                           </h4>
                           <div className="text-sm text-gray-600" data-testid={`text-description-${blogId}`}>
