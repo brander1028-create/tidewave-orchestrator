@@ -246,11 +246,22 @@ export default function StepwiseSearchPage() {
             blogIds: [blog.id]
           });
           
-          if (!res.ok) {
-            throw new Error(`API 요청 실패: ${res.status}`);
-          }
+          console.log(`🔍 [Debug] Response status: ${res.status}`);
+          console.log(`🔍 [Debug] Response headers:`, res.headers.get('content-type'));
           
-          const response = await res.json();
+          // 응답 텍스트를 먼저 읽어서 확인
+          const responseText = await res.text();
+          console.log(`🔍 [Debug] Response body (first 200 chars):`, responseText.substring(0, 200));
+          
+          let response;
+          try {
+            response = JSON.parse(responseText);
+            console.log(`🔍 [Debug] JSON 파싱 성공:`, response);
+          } catch (parseError) {
+            console.error(`❌ [Debug] JSON 파싱 실패:`, parseError);
+            console.error(`❌ [Debug] 전체 응답:`, responseText);
+            throw new Error(`서버 응답이 JSON 형식이 아닙니다: ${responseText.substring(0, 100)}`);
+          }
           
           // 성공 시 step2Blogs와 step2Results에 추가
           setStep2Blogs(prev => [...prev, blog.id]);
@@ -376,7 +387,7 @@ export default function StepwiseSearchPage() {
       console.log(`🔍 [Frontend] 2단계 시작: "${blogId}"`);
       
       // 먼저 제목 수집 여부 확인
-      const titleCheckRes = await apiRequest('GET', `/api/stepwise-db/step2?jobId=${jobId}&blogId=${blogId}`);
+      const titleCheckRes = await apiRequest('GET', `/api/stepwise-db?jobId=${jobId}&blogId=${blogId}`);
       let hasTitles = false;
       
       if (titleCheckRes.ok) {
@@ -404,7 +415,23 @@ export default function StepwiseSearchPage() {
         blogIds: [blogId], // 단일 블로그를 배열로 전달
         keywordSettings: keywordSettings // 사용자 설정값 전달
       });
-      const response = await res.json();
+      
+      console.log(`🔍 [Debug Individual] Response status: ${res.status}`);
+      console.log(`🔍 [Debug Individual] Response headers:`, res.headers.get('content-type'));
+      
+      // 응답 텍스트를 먼저 읽어서 확인
+      const responseText = await res.text();
+      console.log(`🔍 [Debug Individual] Response body (first 200 chars):`, responseText.substring(0, 200));
+      
+      let response;
+      try {
+        response = JSON.parse(responseText);
+        console.log(`🔍 [Debug Individual] JSON 파싱 성공:`, response);
+      } catch (parseError) {
+        console.error(`❌ [Debug Individual] JSON 파싱 실패:`, parseError);
+        console.error(`❌ [Debug Individual] 전체 응답:`, responseText);
+        throw new Error(`서버 응답이 JSON 형식이 아닙니다: ${responseText.substring(0, 100)}`);
+      }
 
       if (response.results && response.results.length > 0) {
         setStep2Blogs(prev => [...prev, blogId]);

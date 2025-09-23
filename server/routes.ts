@@ -113,6 +113,7 @@ async function checkAndAugmentTierDistribution(jobId: string, inputKeywords: str
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  console.log(`🚀 [Routes] 라우트 등록 시작...`);
   
   // === Health TTL cache & shallow mode ===
   const HEALTH_TTL_MS = 60_000; // 60s
@@ -250,11 +251,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // 2단계: 키워드 API 활성화
+  console.log(`🚀 [Routes] Step2 라우트 등록: POST /api/stepwise-search/step2`);
   app.post("/api/stepwise-search/step2", async (req, res) => {
+    console.log(`🔥🔥🔥 [Step2 API] 요청 시작!!! - URL: ${req.url}`);
+    console.log(`🔥🔥🔥 [Step2 API] Method: ${req.method}`);
+    console.log(`🔥🔥🔥 [Step2 API] Body:`, req.body);
+    console.log(`🔥🔥🔥 [Step2 API] Headers:`, req.headers['content-type']);
+    
     try {
       // Validate request body with Zod
       const result = step2Schema.safeParse(req.body);
       if (!result.success) {
+        console.log(`❌ [Step2 API] 입력값 검증 실패:`, result.error.errors);
         return res.status(400).json({
           error: "입력값이 올바르지 않습니다",
           details: result.error.errors.map(e => e.message)
@@ -491,6 +499,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/stepwise-db", async (req, res) => {
     try {
       console.log('📊 [Stepwise DB] 단계별 DB 현황 조회 시작');
+      
+      // Query parameters for specific blog analysis
+      const { jobId, blogId } = req.query;
+      
+      // Special endpoint for checking specific blog's step2 data
+      if (jobId && blogId) {
+        console.log(`📊 [Stepwise DB] 특정 블로그 2단계 데이터 조회: jobId=${jobId}, blogId=${blogId}`);
+        
+        try {
+          // Find the discovered blog
+          console.log(`📊 [Stepwise DB] discoveredBlogs 테이블에서 블로그 검색 중...`);
+          const blog = await db.select()
+            .from(discoveredBlogs)
+            .where(and(
+              eq(discoveredBlogs.jobId, String(jobId)),
+              eq(discoveredBlogs.id, String(blogId))
+            ))
+            .limit(1);
+            
+          console.log(`📊 [Stepwise DB] 검색된 블로그 수: ${blog.length}`);
+            
+          if (blog.length === 0) {
+            console.log(`📊 [Stepwise DB] 블로그를 찾을 수 없음`);
+            return res.status(404).json({
+              error: "블로그를 찾을 수 없습니다",
+              data: []
+            });
+          }
+          
+          // Check if there are analyzed posts for this blog
+          console.log(`📊 [Stepwise DB] analyzedPosts 테이블에서 포스트 검색 중...`);
+          const posts = await db.select({
+            id: analyzedPosts.id,
+            title: analyzedPosts.title,
+            url: analyzedPosts.url,
+            createdAt: analyzedPosts.createdAt
+          })
+          .from(analyzedPosts)
+          .where(eq(analyzedPosts.blogId, String(blogId)))
+          .limit(50); // Reasonable limit
+          
+          console.log(`📊 [Stepwise DB] 발견된 포스트 수: ${posts.length}`);
+          
+          return res.json({
+            success: true,
+            blogInfo: blog[0],
+            data: posts,
+            count: posts.length
+          });
+        } catch (error) {
+          console.error(`❌ [Stepwise DB] 특정 블로그 조회 실패:`, error);
+          return res.status(500).json({
+            error: "블로그 데이터 조회 중 오류가 발생했습니다",
+            details: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
 
       // 1. 모든 discoveredBlogs 조회 (1단계 완료)
       const allDiscoveredBlogs = await db.select({
