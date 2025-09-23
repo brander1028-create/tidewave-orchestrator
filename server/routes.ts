@@ -1057,6 +1057,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       console.log(`🎯 [Step2] 키워드 선정 알고리즘 시작: ${posts.length}개 포스트`);
       
+      // 🔥 fallback/인플루언서 감지 (더 관대한 기준 적용)
+      const isFallbackContent = posts.some(post => 
+        post.id?.includes('fallback') || post.id?.includes('error_fallback') || 
+        post.url?.includes('fallback') || post.url?.includes('error')
+      );
+      
+      if (isFallbackContent) {
+        console.log(`🌟 [Step2] fallback/인플루언서 콘텐츠 감지: 완화된 키워드 선정 기준 적용`);
+      }
+      
       // 1. 실제 포스트 내용 스크래핑 (SERP 분석을 위해)
       const mobileScraperService = new MobileNaverScraperService();
       const postContents: string[] = [];
@@ -1101,12 +1111,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`✅ [Step2] 실제 포스트 수집 성공: ${postContents.length}개`);
       
-      // 2. 사용자 설정값 또는 기본값 사용
-      const settings = userSettings && validateKeywordSelectionSettings(userSettings) 
+      // 2. 사용자 설정값 또는 기본값 사용 (fallback일 때 완화)
+      let settings = userSettings && validateKeywordSelectionSettings(userSettings) 
         ? userSettings 
         : defaultKeywordSelectionSettings;
       
-      console.log(`⚙️ [Step2] 사용 중인 설정: CPC최소=${settings.minCPC}, 점수가중치=${settings.scoreWeight}`);
+      // 🔥 fallback/인플루언서 콘텐츠일 때 완화된 기준 적용
+      if (isFallbackContent) {
+        settings = {
+          ...settings,
+          minCPC: 0,      // CPC 제한 없음
+          minScore: 0     // 점수 제한 없음
+        };
+        console.log(`🌟 [Step2] 완화된 설정 적용: CPC최소=${settings.minCPC}, 점수최소=${settings.minScore}`);
+      } else {
+        console.log(`⚙️ [Step2] 일반 설정: CPC최소=${settings.minCPC}, 점수최소=${settings.minScore}`);
+      }
       
       // 3. 기존 SERP 키워드 분석 알고리즘 사용 (NLP 서비스)
       console.log(`🎯 [Advanced Selector] 키워드 선정 시작: ${postContents.length}개 제목, 설정: ${JSON.stringify(settings)}`);
@@ -1153,6 +1173,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
             } else {
               console.log(`❌ [Validation] "${nlpKeyword.keyword}" 제외: CPC=${cpc}(min ${settings.minCPC}), 점수=${score}(min ${settings.minScore})`);
             }
+          } else if (isFallbackContent) {
+            // 🔥 fallback 콘텐츠일 때는 DB에 없는 키워드도 기본값으로 허용
+            const defaultVolume = 1000;
+            const defaultScore = 50;
+            const defaultCpc = 100;
+            const combinedScore = (defaultVolume * settings.volumeWeight) + (defaultScore * settings.scoreWeight);
+            
+            validKeywords.push({
+              keyword: nlpKeyword.keyword,
+              volume: defaultVolume,
+              score: defaultScore,
+              cpc: defaultCpc,
+              combinedScore,
+              position: validKeywords.length + 1,
+              isCombo: nlpKeyword.keyword.includes(' '),
+              hasApiData: false  // DB에 없는 키워드임을 표시
+            });
+            
+            console.log(`🌟 [Fallback] "${nlpKeyword.keyword}" 기본값으로 선정: volume=${defaultVolume}, score=${defaultScore}, CPC=${defaultCpc}`);
+          } else {
+            console.log(`❌ [DB Missing] "${nlpKeyword.keyword}" DB에 없음, 일반 콘텐츠에서는 제외`);
           }
         } catch (error) {
           console.error(`❌ [DB Query] "${nlpKeyword.keyword}" 조회 실패:`, error);
