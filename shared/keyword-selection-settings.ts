@@ -17,8 +17,8 @@ export const defaultKeywordSelectionSettings: KeywordSelectionSettings = {
   maxKeywords: 4,
   volumeWeight: 1.0,
   scoreWeight: 1.0,
-  combineWithSpace: false,
-  enableTrigrams: false,
+  combineWithSpace: true,   // ✅ 키워드 조합 활성화 (2개 조합)
+  enableTrigrams: true,     // ✅ 3개 조합 활성화
 };
 
 // 설정 검증 함수
