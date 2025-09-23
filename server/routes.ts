@@ -249,6 +249,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           blogName: mobileResult.nickname || mobileResult.blogName || '알 수 없음',
           blogUrl: mobileResult.url,
           blogType: blogType,
+          firstPostTitle: mobileResult.postTitle, // 🔥 1단계에서 발견한 첫 번째 포스트 제목 저장
           postsAnalyzed: 0
         });
 
@@ -348,7 +349,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         try {
           // 4. 실제 블로그 포스트 제목 수집 
-          const posts = await collectRealPosts(blog.blogUrl, blog.blogId, postsPerBlog);
+          const posts = await collectRealPosts(blog.blogUrl, blog.blogId, postsPerBlog, jobId);
           
           // 5. 기존 키워드 추출 로직으로 키워드 생성
           const extractedKeywords = await selectTop4KeywordsFromPosts(posts, jobId, blog.id, keywordSettings, postsPerBlog);
@@ -868,9 +869,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   // 실제 블로그 포스트 제목 수집 (RSS 피드 + 스크래핑)
-  async function collectRealPosts(blogUrl: string, blogId: string, postsPerBlog: number = 5): Promise<any[]> {
+  async function collectRealPosts(blogUrl: string, blogId: string, postsPerBlog: number = 5, jobId?: string): Promise<any[]> {
     try {
       console.log(`📡 [Step2] 실제 포스트 수집 시작: ${blogUrl}`);
+      
+      // 🔥 1단계에서 수집한 포스트 제목 조회 (더 안정적인 방식: blogId + jobId)
+      let excludedTitle: string | null = null;
+      try {
+        const whereConditions = jobId 
+          ? and(eq(discoveredBlogs.blogId, blogId), eq(discoveredBlogs.jobId, jobId))
+          : eq(discoveredBlogs.blogId, blogId);
+          
+        const discoveredBlog = await db.select({
+          firstPostTitle: discoveredBlogs.firstPostTitle
+        })
+        .from(discoveredBlogs)
+        .where(whereConditions)
+        .limit(1);
+        
+        if (discoveredBlog.length > 0 && discoveredBlog[0].firstPostTitle) {
+          excludedTitle = discoveredBlog[0].firstPostTitle.trim(); // 정규화
+          console.log(`🚫 [Step2] 1단계 포스트 제외 대상: "${excludedTitle}"`);
+        }
+      } catch (error) {
+        console.warn(`⚠️ [Step2] 1단계 포스트 제목 조회 실패:`, error);
+      }
       
       // 인플루언서 감지
       const isInfluencer = blogUrl.includes('in.naver.com') || blogUrl.includes('m.in.naver.com') || blogUrl.includes('/influencer/');
@@ -883,7 +906,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         if (posts.length > 0) {
           console.log(`✅ [Step2] 인플루언서 포스트 수집 성공: ${posts.length}개`);
-          return posts;
+          
+          // 🔥 1단계 포스트 제목 제외 필터링 (정규화된 매칭)
+          const filteredPosts = excludedTitle 
+            ? posts.filter(post => {
+                const normalizedPostTitle = post.title?.trim().replace(/\s+/g, ' ') || '';
+                const normalizedExcludedTitle = excludedTitle.replace(/\s+/g, ' ');
+                return normalizedPostTitle !== normalizedExcludedTitle;
+              })
+            : posts;
+          
+          if (filteredPosts.length !== posts.length) {
+            console.log(`🚫 [Step2] 1단계 중복 포스트 제외: ${posts.length - filteredPosts.length}개 제거`);
+          }
+          
+          return filteredPosts;
         } else {
           console.log(`⚠️ [Step2] 인플루언서 포스트 수집 실패, fallback 사용`);
         }
@@ -894,7 +931,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         if (posts.length > 0) {
           console.log(`✅ [Step2] 일반 블로그 포스트 수집 성공: ${posts.length}개`);
-          return posts;
+          
+          // 🔥 1단계 포스트 제목 제외 필터링 (정규화된 매칭)
+          const filteredPosts = excludedTitle 
+            ? posts.filter(post => {
+                const normalizedPostTitle = post.title?.trim().replace(/\s+/g, ' ') || '';
+                const normalizedExcludedTitle = excludedTitle.replace(/\s+/g, ' ');
+                return normalizedPostTitle !== normalizedExcludedTitle;
+              })
+            : posts;
+          
+          if (filteredPosts.length !== posts.length) {
+            console.log(`🚫 [Step2] 1단계 중복 포스트 제외: ${posts.length - filteredPosts.length}개 제거`);
+          }
+          
+          return filteredPosts;
         }
       }
       

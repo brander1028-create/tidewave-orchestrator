@@ -32,6 +32,7 @@ export const discoveredBlogs = pgTable("discovered_blogs", {
   blogName: text("blog_name").notNull(),
   blogUrl: text("blog_url").notNull(),
   blogType: text("blog_type").notNull().default("search_feed"), // "top_exposure" | "search_feed"
+  firstPostTitle: text("first_post_title"), // Title of the first post found in step 1 (to exclude in step 2)
   baseRank: integer("base_rank"), // Rank for the main target keyword (1-10 for hit blogs)
   postsAnalyzed: integer("posts_analyzed").default(0),
   ranking: integer("ranking"), // Ranking check result (1-50 or 0 for not found)
