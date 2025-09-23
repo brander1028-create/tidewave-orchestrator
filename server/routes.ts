@@ -48,6 +48,48 @@ import { advancedKeywordSelector } from './services/advanced-keyword-selector';
 import { defaultKeywordSelectionSettings, validateKeywordSelectionSettings } from '../shared/keyword-selection-settings';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 
+// 🔥 단계별 검색: 인플루언서 URL 보존 함수
+async function fixInfluencerUrls(mobileResults: any[], keyword: string): Promise<void> {
+  try {
+    // 한번만 재검색해서 모든 인플루언서 URL 보존
+    console.log(`🔍 [Fix URL] 인플루언서 실제 포스트 URL 재검색 시작`);
+    
+    // 원본 HTML을 다시 받아와서 parseBlogs 직접 호출 (URL 정규화 전 상태)
+    const response = await fetch(`https://m.search.naver.com/search.naver?where=m&query=${encodeURIComponent(keyword)}&sm=mtp_hty.top&ackey=q6fujsfr`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1'
+      }
+    });
+    const html = await response.text();
+    
+    // URL 정규화 전 원본 URL들 추출
+    const urlPattern = /https:\/\/[^"'\s]+(?:blog\.naver\.com|in\.naver\.com)[^"'\s]*/g;
+    const originalUrls = html.match(urlPattern) || [];
+    
+    console.log(`🔍 [Fix URL] 원본 HTML에서 발견된 URL 수: ${originalUrls.length}`);
+    
+    // 인플루언서 결과에 대해 원본 URL 매칭
+    for (const result of mobileResults) {
+      if (result.isInfluencer && result.blogId) {
+        const matchingUrls = originalUrls.filter(url => 
+          url.includes(`in.naver.com/${result.blogId}`) && 
+          url.includes('/contents/internal/')
+        );
+        
+        if (matchingUrls.length > 0) {
+          const originalUrl = matchingUrls[0];
+          console.log(`✅ [Fix URL] 인플루언서 "${result.blogId}" URL 보존: ${originalUrl}`);
+          result.url = originalUrl; // 실제 포스트 URL로 교체
+        } else {
+          console.log(`⚠️ [Fix URL] 인플루언서 "${result.blogId}" 원본 URL 못찾음`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`❌ [Fix URL] 인플루언서 URL 보존 실패:`, error);
+  }
+}
+
 // Helper function for tier distribution analysis and augmentation
 async function checkAndAugmentTierDistribution(jobId: string, inputKeywords: string[]): Promise<void> {
   try {
@@ -158,6 +200,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // 2. 실제 M.NAVER.COM 모바일 스크래핑으로 블로그 검색 (첫 페이지, 10개)
       const mobileResults = await mobileNaverScraper.searchBlogs(keyword, 10);
+      
+      // 🔥 단계별 검색: 인플루언서 URL 보존 후처리
+      await fixInfluencerUrls(mobileResults, keyword);
       
       // 기존 API 형태로 변환 (nickname과 postTitle 보존)
       const searchResults = mobileResults.map(result => ({
