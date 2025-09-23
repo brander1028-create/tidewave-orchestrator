@@ -348,24 +348,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`📝 [Step2] 포스트 수집 중: ${blog.blogName} (${i + 1}/${selectedBlogs.length})`);
 
         try {
-          // 4. 인플루언서 블로그는 현재 스킵 (향후 개선 예정)
-          if (blog.blogType === 'influencer' || blog.blogUrl.includes('in.naver.com')) {
-            console.log(`⚠️ [Step2] 인플루언서 블로그 스킵: ${blog.blogName} (향후 지원 예정)`);
-            postCollectionResults.push({
-              blogId: blog.id,
-              blogName: blog.blogName,
-              postsScraped: 0,
-              postsFiltered: 0,
-              titlesFiltered: 0,
-              titles: [],
-              isInfluencer: true,
-              skipReason: "인플루언서 포스트 수집 기능 개발 중"
-            });
-            continue;
-          }
+          // 4. 인플루언서와 일반 블로그 구분 처리
+          let scrapedPosts: any[] = [];
+          const isInfluencer = blog.blogUrl.includes('in.naver.com');
           
-          // 5. 기존 BlogScraper.scrapeBlogPosts() 활용하여 포스트 수집
-          const scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
+          if (isInfluencer) {
+            console.log(`🔍 [Step2] 인플루언서 포스트 수집 시도: ${blog.blogName}`);
+            // 인플루언서의 경우 다른 방법으로 포스트 수집 시도
+            try {
+              // 우선 BlogScraper로 시도 (실패할 수 있음)
+              scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
+              if (scrapedPosts.length === 0) {
+                // BlogScraper 실패시 임시로 1단계 제목을 사용
+                console.log(`⚠️ [Step2] 인플루언서 포스트 수집 실패, 1단계 제목 사용: ${blog.blogName}`);
+                if (blog.firstPostTitle && blog.firstPostTitle !== `네이버 인플루언서: ${blog.blogName}의 홈`) {
+                  scrapedPosts = [{ title: blog.firstPostTitle, url: blog.blogUrl }];
+                }
+              }
+            } catch (error) {
+              console.log(`❌ [Step2] 인플루언서 ${blog.blogName} 수집 중 오류:`, error);
+            }
+          } else {
+            // 일반 블로그는 기존 방식
+            scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
+          }
           
           if (scrapedPosts.length === 0) {
             console.log(`⚠️ [Step2] 포스트 수집 실패: ${blog.blogName}`);
