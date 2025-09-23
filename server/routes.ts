@@ -362,21 +362,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
 
-          // 5. 수집된 포스트를 DB에 저장
-          const postTitles = scrapedPosts.map(post => post.title);
+          // 5. 수집된 포스트에서 1단계 제목 제외 (강건한 비교)
+          let postTitles = scrapedPosts.map(post => post.title);
+          let filteredCount = 0;
           
-          // discoveredBlogs 테이블의 postsAnalyzed 업데이트
+          // 제목 정규화 함수 (대소문자, 공백, 특수문자 정규화)
+          const normalizeTitle = (title: string) => {
+            return title
+              .toLowerCase()
+              .trim()
+              .replace(/\s+/g, ' ')  // 여러 공백을 하나로
+              .replace(/[【】\[\]「」『』]/g, '') // 괄호 제거
+              .replace(/[#\u2019\u201C\u201D]/g, '') // 해시태그, 따옴표 제거
+              .replace(/…/g, '...'); // 말줄임표 정규화
+          };
+          
+          // 1단계에서 이미 수집한 firstPostTitle 제외
+          if (blog.firstPostTitle) {
+            const normalizedFirstTitle = normalizeTitle(blog.firstPostTitle);
+            const originalLength = postTitles.length;
+            
+            postTitles = postTitles.filter(title => {
+              const normalizedTitle = normalizeTitle(title);
+              return normalizedTitle !== normalizedFirstTitle;
+            });
+            
+            filteredCount = originalLength - postTitles.length;
+            if (filteredCount > 0) {
+              console.log(`🔄 [Step2] 1단계 제목 ${filteredCount}개 제외됨: "${blog.firstPostTitle}"`);
+            }
+          }
+          
+          // discoveredBlogs 테이블의 postsAnalyzed 업데이트 (필터링 후 개수)
           await storage.updateDiscoveredBlog(blog.id, {
-            postsAnalyzed: scrapedPosts.length
+            postsAnalyzed: postTitles.length
           });
 
-          console.log(`✅ [Step2] 포스트 수집 완료: ${blog.blogName} - ${scrapedPosts.length}개 포스트`);
+          console.log(`✅ [Step2] 포스트 수집 완료: ${blog.blogName} - ${scrapedPosts.length}개 수집, ${postTitles.length}개 최종`);
           
           postCollectionResults.push({
             blogId: blog.id,
             blogName: blog.blogName,
-            postsScraped: scrapedPosts.length,
-            titles: postTitles.slice(0, 10) // 최대 10개 제목만 반환
+            postsScraped: scrapedPosts.length,      // 원본 수집 개수
+            postsFiltered: postTitles.length,       // 필터링 후 개수
+            titlesFiltered: filteredCount,          // 제외된 개수
+            titles: postTitles.slice(0, 10)         // 최대 10개 제목만 반환
           });
           
         } catch (error) {
