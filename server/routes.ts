@@ -827,34 +827,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       console.log(`📡 [Step2] 실제 포스트 수집 시작: ${blogUrl}`);
       
-      // scraper 서비스를 사용해서 실제 포스트 수집 (동적 개수 설정)
-      const posts = await scraper.scrapeBlogPosts(blogUrl, postsPerBlog);
+      // 인플루언서 감지
+      const isInfluencer = blogUrl.includes('in.naver.com') || blogUrl.includes('m.in.naver.com') || blogUrl.includes('/influencer/');
       
-      if (posts.length > 0) {
-        console.log(`✅ [Step2] 실제 포스트 수집 성공: ${posts.length}개`);
-        return posts;
-      } else {
-        console.log(`⚠️ [Step2] 실제 포스트 없음, fallback 데이터 사용 (${postsPerBlog}개 생성)`);
-        // Fallback: postsPerBlog 개수만큼 키워드 추출 최적화된 포스트 생성
-        const fallbackPosts = [];
-        for (let i = 1; i <= postsPerBlog; i++) {
-          // 🔥 키워드 추출이 용이한 실제 블로그 형태의 콘텐츠 생성
-          const sampleContent = [
-            `서울 맛집 카페 추천 베스트 10곳을 소개합니다. 홍대 카페, 강남 맛집, 이태원 분위기 좋은 곳들을 모아봤어요. 디저트 맛있는 브런치 카페에서 데이트하기 좋은 장소까지!`,
-            `부산 여행 필수 코스 해운대 광안리 감천문화마을 추천합니다. 부산 맛집 돼지국밥 밀면 씨앗호떡 꼭 드세요. 부산 카페 오션뷰 예쁜 곳도 많아요.`,
-            `제주도 여행 성산일출봉 우도 한라산 섭지코지 가볼만한곳 추천해요. 제주 맛집 흑돼지 해산물 감귤 체험도 놓치지 마세요. 제주 카페 바다뷰 일몰 명소까지!`
-          ];
-          
-          fallbackPosts.push({
-            id: `${blogId}_fallback${i}`,
-            title: `${blogId} 블로그 추천 포스트 ${i}`,
-            content: sampleContent[i % 3], // 순환적으로 다양한 내용 사용
-            url: `${blogUrl}/fallback${i}`,
-            publishedAt: new Date()
-          });
+      if (isInfluencer) {
+        console.log(`🌟 [Step2] 인플루언서 감지: 특별 처리 ${blogUrl}`);
+        // 인플루언서용 포스트 수집 (향후 구현)
+        // 현재는 일반 방식과 동일하게 처리하지만, 필요시 다른 로직 추가 가능
+        const posts = await scraper.scrapeBlogPosts(blogUrl, postsPerBlog);
+        
+        if (posts.length > 0) {
+          console.log(`✅ [Step2] 인플루언서 포스트 수집 성공: ${posts.length}개`);
+          return posts;
+        } else {
+          console.log(`⚠️ [Step2] 인플루언서 포스트 수집 실패, fallback 사용`);
         }
-        return fallbackPosts;
+      } else {
+        console.log(`📝 [Step2] 일반 블로그: RSS 방식 사용 ${blogUrl}`);
+        // 일반 블로그: 기존 RSS 방식 그대로
+        const posts = await scraper.scrapeBlogPosts(blogUrl, postsPerBlog);
+        
+        if (posts.length > 0) {
+          console.log(`✅ [Step2] 일반 블로그 포스트 수집 성공: ${posts.length}개`);
+          return posts;
+        }
       }
+      
+      // 두 경우 모두 포스트 수집 실패시 fallback
+      console.log(`⚠️ [Step2] 실제 포스트 없음, fallback 데이터 사용 (${postsPerBlog}개 생성)`);
+      // Fallback: postsPerBlog 개수만큼 키워드 추출 최적화된 포스트 생성
+      const fallbackPosts = [];
+      for (let i = 1; i <= postsPerBlog; i++) {
+        // 🔥 키워드 추출이 용이한 실제 블로그 형태의 콘텐츠 생성
+        const sampleContent = [
+          `서울 맛집 카페 추천 베스트 10곳을 소개합니다. 홍대 카페, 강남 맛집, 이태원 분위기 좋은 곳들을 모아봤어요. 디저트 맛있는 브런치 카페에서 데이트하기 좋은 장소까지!`,
+          `부산 여행 필수 코스 해운대 광안리 감천문화마을 추천합니다. 부산 맛집 돼지국밥 밀면 씨앗호떡 꼭 드세요. 부산 카페 오션뷰 예쁜 곳도 많아요.`,
+          `제주도 여행 성산일출봉 우도 한라산 섭지코지 가볼만한곳 추천해요. 제주 맛집 흑돼지 해산물 감귤 체험도 놓치지 마세요. 제주 카페 바다뷰 일몰 명소까지!`
+        ];
+        
+        fallbackPosts.push({
+          id: `${blogId}_fallback${i}`,
+          title: `${blogId} 블로그 추천 포스트 ${i}`,
+          content: sampleContent[i % 3], // 순환적으로 다양한 내용 사용
+          url: `${blogUrl}/fallback${i}`,
+          publishedAt: new Date()
+        });
+      }
+      return fallbackPosts;
     } catch (error) {
       console.error(`❌ [Step2] 포스트 수집 실패:`, error);
       // 에러 시에도 postsPerBlog 개수만큼 키워드 추출 최적화된 fallback 데이터 반환
