@@ -1,5 +1,4 @@
 // Node.js 18+ provides global fetch - no import needed
-import { titleExtractor } from './title-extractor';
 
 export interface MobileNaverBlogResult {
   title: string;
@@ -782,33 +781,72 @@ export class MobileNaverScraperService {
   }
 
   // 개별 블로그 URL에서 제목만 스크래핑하는 함수 (기존 호환성 유지)
-  /**
-   * 향상된 제목 스크래핑 - title-extractor 서비스 사용
-   * 리다이렉트 추적, 인플루언서 감지, OG 메타태그 파싱 포함
-   */
   async scrapeTitleFromUrl(url: string): Promise<{ title?: string, error?: string, isInfluencer?: boolean }> {
     try {
-      console.log(`🔍 [Enhanced Title Scraper] 제목 스크래핑 시작: ${url}`);
+      console.log(`🔍 [Title Scraper] 제목 스크래핑 시작: ${url}`);
       
-      // 새로운 title-extractor 서비스 사용
-      const result = await titleExtractor.extractTitle(url);
+      // 인플루언서 URL 감지
+      const isInfluencer = url.includes('in.naver.com') || url.includes('m.in.naver.com') || url.includes('/influencer/');
       
-      if (result.title) {
-        console.log(`✅ [Enhanced Title Scraper] 제목 추출 완료: "${result.title}" ${result.isInfluencer ? '(인플루언서)' : '(일반 블로그)'}`);
-        return { 
-          title: result.title, 
-          isInfluencer: result.isInfluencer 
-        };
-      } else {
-        console.log(`⚠️ [Enhanced Title Scraper] 제목 추출 실패: HTTP ${result.status}`);
-        return { 
-          error: `제목 추출 실패: HTTP ${result.status}`,
-          isInfluencer: result.isInfluencer
-        };
+      // 모바일 URL로 변환
+      let mobileUrl = url;
+      if (url.includes('blog.naver.com')) {
+        mobileUrl = url.replace('blog.naver.com', 'm.blog.naver.com');
       }
       
+      const response = await fetch(mobileUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const html = await response.text();
+      
+      // 제목 추출 시도 (다양한 패턴)
+      let title = '';
+      
+      // 1. 모바일 페이지 title 태그
+      const mobileTitle = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      if (mobileTitle) {
+        title = mobileTitle[1].replace(/\s*-\s*네이버\s*블로그.*$/, '').trim();
+      }
+      
+      // 2. og:title 메타 태그
+      if (!title) {
+        const ogTitle = html.match(/<meta[^>]+property=["\']og:title["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
+        if (ogTitle) {
+          title = ogTitle[1].trim();
+        }
+      }
+      
+      // 3. 본문에서 제목 추출
+      if (!title) {
+        const contentTitle = html.match(/<h[1-3][^>]*class[^>]*title[^>]*>([^<]+)<\/h[1-3]>/i);
+        if (contentTitle) {
+          title = contentTitle[1].trim();
+        }
+      }
+      
+      console.log(`✅ [Title Scraper] 제목 추출 완료: "${title || '제목 없음'}" ${isInfluencer ? '(인플루언서)' : '(일반 블로그)'}`);
+      
+      return { 
+        title: title || undefined,
+        isInfluencer: isInfluencer 
+      };
+      
     } catch (error) {
-      console.error(`❌ [Enhanced Title Scraper] 스크래핑 실패 ${url}:`, error);
+      console.error(`❌ [Title Scraper] 스크래핑 실패 ${url}:`, error);
       return { error: `스크래핑 실패: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
