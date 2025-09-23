@@ -2,7 +2,8 @@ import { db } from '../db';
 import { managedKeywords } from '../../shared/schema';
 import { eq, and } from 'drizzle-orm';
 import { KeywordSelectionSettings, defaultKeywordSelectionSettings } from '../../shared/keyword-selection-settings';
-import { extractTitleTokens } from './title-keyword-extractor';
+import { MobileNaverScraperService } from './mobile-naver-scraper';
+import { nlpService } from './nlp';
 
 interface KeywordCandidate {
   keyword: string;
@@ -67,16 +68,18 @@ export class AdvancedKeywordSelector {
     const candidateSet = new Set<string>();
     
     for (const title of titles) {
-      const tokens = extractTitleTokens(title);
+      // NLP 서비스를 사용해서 실제 내용에서 키워드 추출
+      // TODO: 이 부분은 실제 포스트 내용으로 교체할 예정
+      const mockTokens = title.split(' ').filter(t => t.length >= 2);
       
       // 단일 토큰 추가
-      tokens.forEach(token => candidateSet.add(token));
+      mockTokens.forEach((token: string) => candidateSet.add(token));
       
       // 빅그램 생성 (모든 조합)
-      for (let i = 0; i < tokens.length - 1; i++) {
-        for (let j = i + 1; j < tokens.length; j++) {
-          const bigram1 = `${tokens[i]}${tokens[j]}`; // 붙여쓰기
-          const bigram2 = `${tokens[i]} ${tokens[j]}`; // 띄어쓰기
+      for (let i = 0; i < mockTokens.length - 1; i++) {
+        for (let j = i + 1; j < mockTokens.length; j++) {
+          const bigram1 = `${mockTokens[i]}${mockTokens[j]}`; // 붙여쓰기
+          const bigram2 = `${mockTokens[i]} ${mockTokens[j]}`; // 띄어쓰기
           candidateSet.add(bigram1);
           candidateSet.add(bigram2);
         }

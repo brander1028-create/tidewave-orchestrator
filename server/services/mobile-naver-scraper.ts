@@ -607,7 +607,144 @@ export class MobileNaverScraperService {
     );
   }
 
-  // 개별 블로그 URL에서 제목만 스크래핑하는 함수
+  // 개별 블로그 URL에서 포스트 내용 스크래핑하는 함수 (SERP 키워드 분석용)
+  async scrapePostContentFromUrl(url: string): Promise<{ content?: string, title?: string, error?: string }> {
+    try {
+      console.log(`🔍 [Content Scraper] 포스트 내용 스크래핑 시작: ${url}`);
+      
+      // 모바일 URL로 변환
+      let mobileUrl = url;
+      if (url.includes('blog.naver.com')) {
+        mobileUrl = url.replace('blog.naver.com', 'm.blog.naver.com');
+      }
+      
+      const response = await fetch(mobileUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const html = await response.text();
+      console.log(`📄 [Content Scraper] HTML 응답 크기: ${html.length} bytes`);
+      
+      // 포스트 내용 추출 (다양한 패턴 시도)
+      const content = this.extractPostContent(html);
+      const title = this.extractPostTitleFromHtml(html);
+      
+      if (!content || content.length < 50) {
+        console.log(`⚠️ [Content Scraper] 내용이 너무 짧음 (${content?.length || 0}자): ${url}`);
+        return { title, content, error: '포스트 내용을 추출할 수 없습니다' };
+      }
+      
+      console.log(`✅ [Content Scraper] 성공: 제목 ${title?.length || 0}자, 내용 ${content.length}자`);
+      return { title, content };
+      
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`❌ [Content Scraper] 실패: ${errorMsg}`);
+      return { error: errorMsg };
+    }
+  }
+
+  /**
+   * HTML에서 포스트 내용 추출
+   */
+  private extractPostContent(html: string): string {
+    // 네이버 블로그 포스트 본문 추출 패턴들
+    const contentPatterns = [
+      // 메인 콘텐츠 영역
+      /<div[^>]*(?:class="[^"]*(?:post-view|se-main-container|content|post_ct)[^"]*")[^>]*>(.*?)<\/div>/gi,
+      // 에디터 콘텐츠
+      /<div[^>]*(?:class="[^"]*(?:se-component|se-text)[^"]*")[^>]*>(.*?)<\/div>/gi,
+      // 일반 텍스트 블록
+      /<p[^>]*>(.*?)<\/p>/gi,
+      // 스마트에디터 콘텐츠
+      /<div[^>]*(?:class="[^"]*(?:smartOutput|tx-content)[^"]*")[^>]*>(.*?)<\/div>/gi,
+    ];
+
+    let extractedText = '';
+    
+    for (const pattern of contentPatterns) {
+      const matches = html.match(pattern);
+      if (matches && matches.length > 0) {
+        for (const match of matches) {
+          const cleanText = this.cleanExtractedText(match);
+          if (cleanText.length > 20) {
+            extractedText += ' ' + cleanText;
+          }
+        }
+      }
+    }
+
+    // 중복 제거 및 정리
+    const finalText = this.cleanAndDeduplicateText(extractedText);
+    return finalText.substring(0, 3000); // 최대 3000자로 제한
+  }
+
+  /**
+   * HTML에서 포스트 제목 추출
+   */
+  private extractPostTitleFromHtml(html: string): string | undefined {
+    const titlePatterns = [
+      /<title[^>]*>([^<]+)<\/title>/i,
+      /<h1[^>]*>([^<]+)<\/h1>/i,
+      /<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i,
+      /<div[^>]*class="[^"]*(?:tit|title|post-title)[^"]*"[^>]*>([^<]+)</i,
+    ];
+
+    for (const pattern of titlePatterns) {
+      const match = html.match(pattern);
+      if (match && match[1]) {
+        const title = this.cleanExtractedText(match[1]);
+        if (title.length > 5 && title.length < 100) {
+          return title;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * 추출된 텍스트 정리
+   */
+  private cleanExtractedText(text: string): string {
+    return text
+      .replace(/<[^>]*>/g, ' ')           // HTML 태그 제거
+      .replace(/&[^;]+;/g, ' ')          // HTML 엔티티 제거
+      .replace(/\s+/g, ' ')              // 연속 공백 정리
+      .replace(/[^\w\s가-힣]/g, ' ')      // 한글, 영문, 숫자, 공백만 유지
+      .trim();
+  }
+
+  /**
+   * 텍스트 정리 및 중복 제거
+   */
+  private cleanAndDeduplicateText(text: string): string {
+    const sentences = text
+      .split(/[.!?。]/)                  // 문장 단위로 분할
+      .map(s => s.trim())
+      .filter(s => s.length > 10)        // 너무 짧은 문장 제거
+      .filter(s => /[가-힣]/.test(s));   // 한글이 포함된 문장만
+
+    // 중복 문장 제거
+    const uniqueSentences = Array.from(new Set(sentences));
+    
+    return uniqueSentences.join(' ').trim();
+  }
+
+  // 개별 블로그 URL에서 제목만 스크래핑하는 함수 (기존 호환성 유지)
   async scrapeTitleFromUrl(url: string): Promise<{ title?: string, error?: string }> {
     try {
       console.log(`🔍 [Title Scraper] 제목 스크래핑 시작: ${url}`);

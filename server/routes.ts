@@ -5,6 +5,7 @@ import { scraper } from "./services/scraper";
 import { nlpService } from "./services/nlp";
 import { extractTop3ByVolume } from "./services/keywords";
 import { extractTitleTokens, titleKeywordExtractor } from "./services/title-keyword-extractor";
+import { MobileNaverScraperService } from "./services/mobile-naver-scraper";
 import { serpScraper } from "./services/serp-scraper";
 import { getScoreConfig, updateScoreConfig, normalizeWeights, resetToDefaults } from "./services/score-config";
 import { z } from "zod";
@@ -916,30 +917,123 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return extractedKeywords;
   }
 
-  // 새로운 키워드 선정 알고리즘 - 포스트에서 상위 4개 키워드 선정
+  // 새로운 키워드 선정 알고리즘 - 포스트에서 상위 4개 키워드 선정 (SERP 알고리즘 사용)
   async function selectTop4KeywordsFromPosts(posts: any[], jobId: string, blogId: string, userSettings?: any): Promise<any[]> {
     try {
       console.log(`🎯 [Step2] 키워드 선정 알고리즘 시작: ${posts.length}개 포스트`);
       
-      // 1. 포스트 제목들 추출
-      const titles = posts.map(post => post.title || '').filter(title => title.trim().length > 0);
+      // 1. 실제 포스트 내용 스크래핑 (SERP 분석을 위해)
+      const mobileScraperService = new MobileNaverScraperService();
+      const postContents: string[] = [];
       
-      if (titles.length === 0) {
-        console.log(`⚠️ [Step2] 유효한 제목이 없음`);
+      console.log(`📡 [Step2] 실제 포스트 수집 시작: ${posts[0]?.url || 'URL 없음'}`);
+      
+      for (const post of posts.slice(0, 10)) { // 최대 10개 포스트 분석
+        try {
+          const postUrl = post.url || post.postUrl;
+          if (!postUrl) {
+            console.log(`⚠️ [Step2] URL이 없는 포스트 스킵: ${post.title}`);
+            continue;
+          }
+          
+          const scraped = await mobileScraperService.scrapePostContentFromUrl(postUrl);
+          if (scraped.content && scraped.content.length > 100) {
+            postContents.push(scraped.content);
+            console.log(`✅ [Step2] 포스트 내용 수집 성공: ${scraped.content.substring(0, 50)}... (${scraped.content.length}자)`);
+          } else {
+            console.log(`⚠️ [Step2] 포스트 내용이 부족: ${postUrl}`);
+            // 내용이 없으면 제목이라도 사용
+            if (post.title && post.title.length > 10) {
+              postContents.push(post.title);
+            }
+          }
+        } catch (error) {
+          console.error(`❌ [Step2] 포스트 스크래핑 실패: ${post.url}`, error);
+          // 실패하면 제목이라도 사용
+          if (post.title && post.title.length > 10) {
+            postContents.push(post.title);
+          }
+        }
+        
+        // 요청 간 딜레이 (과부하 방지)
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      if (postContents.length === 0) {
+        console.log(`⚠️ [Step2] 분석할 내용이 없음`);
         return [];
       }
 
-      console.log(`📝 [Step2] 추출된 제목들: ${titles.slice(0, 3).join(', ')}...`);
+      console.log(`✅ [Step2] 실제 포스트 수집 성공: ${postContents.length}개`);
       
       // 2. 사용자 설정값 또는 기본값 사용
       const settings = userSettings && validateKeywordSelectionSettings(userSettings) 
         ? userSettings 
         : defaultKeywordSelectionSettings;
       
-      console.log(`⚙️ [Step2] 사용 중인 설정: CPC최소=${settings.minCpc}, 점수가중치=${settings.scoreWeight}`);
+      console.log(`⚙️ [Step2] 사용 중인 설정: CPC최소=${settings.minCPC}, 점수가중치=${settings.scoreWeight}`);
       
-      // 3. 새로운 키워드 선정 알고리즘 실행
-      const selectedKeywords = await advancedKeywordSelector.selectTop4Keywords(titles, settings);
+      // 3. 기존 SERP 키워드 분석 알고리즘 사용 (NLP 서비스)
+      console.log(`🎯 [Advanced Selector] 키워드 선정 시작: ${postContents.length}개 제목, 설정: ${JSON.stringify(settings)}`);
+      const nlpKeywords = await nlpService.extractKeywords(postContents);
+      
+      console.log(`📊 [Advanced Selector] 추출된 키워드 후보: ${nlpKeywords.length}개`);
+      
+      // 4. 기존 managedKeywords DB와 연동하여 상위 4개 키워드 선정
+      const validKeywords = [];
+      
+      for (const nlpKeyword of nlpKeywords) {
+        try {
+          // DB에서 키워드 정보 조회
+          const keywordData = await db.select({
+            volume: managedKeywords.volume,
+            score: managedKeywords.score,
+            cpc: managedKeywords.est_cpc_krw
+          }).from(managedKeywords)
+            .where(eq(managedKeywords.text, nlpKeyword.keyword.replace(/\s+/g, '')))
+            .limit(1);
+
+          if (keywordData.length > 0) {
+            const data = keywordData[0];
+            const volume = data.volume || 0;
+            const score = data.score || 0;
+            const cpc = data.cpc || 0;
+            
+            // 유효성 검증
+            if (cpc >= settings.minCPC && score >= settings.minScore) {
+              const combinedScore = (volume * settings.volumeWeight) + (score * settings.scoreWeight);
+              
+              validKeywords.push({
+                keyword: nlpKeyword.keyword,
+                volume,
+                score,
+                cpc,
+                combinedScore,
+                position: validKeywords.length + 1,
+                isCombo: nlpKeyword.keyword.includes(' '), // 공백이 있으면 조합 키워드
+                hasApiData: true
+              });
+              
+              console.log(`✅ [Validation] "${nlpKeyword.keyword}" 선정: volume=${volume}, score=${score}, CPC=${cpc}`);
+            } else {
+              console.log(`❌ [Validation] "${nlpKeyword.keyword}" 제외: CPC=${cpc}(min ${settings.minCPC}), 점수=${score}(min ${settings.minScore})`);
+            }
+          }
+        } catch (error) {
+          console.error(`❌ [DB Query] "${nlpKeyword.keyword}" 조회 실패:`, error);
+        }
+        
+        if (validKeywords.length >= 4) break; // 최대 4개
+      }
+      
+      const selectedKeywords = validKeywords.slice(0, 4);
+      
+      console.log(`✅ [Advanced Selector] 유효한 키워드: ${selectedKeywords.length}개`);
+      selectedKeywords.forEach((k, i) => {
+        console.log(`🥇 [${i+1}번 키워드] "${k.keyword}" (${k.combinedScore}점)${k.isCombo ? ' - 개별' : ''}`);
+      });
+      console.log(`🏆 [Advanced Selector] 최종 선정: ${selectedKeywords.length}개`);
+      selectedKeywords.forEach((k, i) => console.log(`   ${i+1}. ${k.keyword} (${k.combinedScore}점)`));
       
       if (selectedKeywords.length === 0) {
         console.log(`⚠️ [Step2] 선정된 키워드가 없음`);
