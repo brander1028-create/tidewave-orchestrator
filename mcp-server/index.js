@@ -145,3 +145,38 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
   console.log('MCP server listening on port ' + port);
 });
+// CORS & OPTIONS for /sse (브라우저 커넥터용)
+app.use('/sse', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+// SSE 핸들러
+app.get('/sse', (req, res) => {
+  // 일부 클라이언트가 charset을 싫어해서 정확히 지정
+  res.setHeader('Content-Type', 'text/event-stream'); // ← charset 없이
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');           // nginx 등 버퍼링 방지
+  res.flushHeaders?.();
+
+  const hello = {
+    type: 'handshake',
+    protocol: '2024-11-05',
+    protocolVersion: '2024-11-05', // 혹시 모를 호환성 위해 둘 다
+    server: { name: 'tidewave-mcp', version: '0.1.0' },
+    capabilities: { tools: true }
+  };
+
+  // event 라인까지 같이 보내면 클라이언트 호환성↑
+  res.write('event: handshake\n');
+  res.write(`data: ${JSON.stringify(hello)}\n\n`);
+  res.write('retry: 15000\n\n'); // 자동 재연결 힌트
+
+  const keepalive = setInterval(() => res.write(':\n\n'), 15000);
+  req.on('close', () => clearInterval(keepalive));
+});
+
