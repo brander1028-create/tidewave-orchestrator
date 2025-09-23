@@ -1,0 +1,220 @@
+인플루언서라서 제목을 못 가져온다”는 말은 대부분 핑계예요. 클라이언트에서 직접 크롤링(CORS/JS) → 서버에서 요청(정상 UA/Referer, 리다이렉트 추적, OG 메타 파싱) 으로 바꾸면 대부분 해결됩니다.
+아래 한 파일로 Replit에 붙여 넣으면, 네이버 블로그/인플루언서/포스트 URL에서 제목을 뽑는 API가 바로 생깁니다.
+
+개발자에게 이렇게 말하세요 (한 줄 지시서)
+
+“제목 수집은 서버 사이드에서 해주세요. 요청 헤더에 정상 브라우저 UA/Referer를 넣고, 리다이렉트·프레임·메타리프레시를 모두 따라간 뒤, 최종 문서에서 og:title → twitter:title → <title> → (있으면 JSON-LD headline) 순서로 파싱해주세요. blog.naver.com는 모바일 뷰나 프레임 전환이 있으니 **중간 HTML에서 location.replace, <meta refresh>, <frame src>**를 찾아서 다시 따라가주세요. 실패하면 마지막 수단으로만 **헤드리스 브라우저(Playwright)**를 쓰세요.”
+
+바로 되는 서버 코드 (Replit에 index.js로 붙여넣기)
+// index.js
+import express from "express";
+import cheerio from "cheerio";
+import { CookieJar } from "tough-cookie";
+import got from "got";
+import iconv from "iconv-lite";
+
+const app = express();
+const jar = new CookieJar();
+
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+async function fetchBuffer(url) {
+  const res = await got(url, {
+    http2: true,
+    followRedirect: true,
+    throwHttpErrors: false,
+    cookieJar: jar,
+    headers: {
+      "User-Agent": UA,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+      Referer: "https://www.naver.com/",
+    },
+    timeout: { request: 15000 },
+    retry: { limit: 1 },
+    responseType: "buffer",
+  });
+  return res;
+}
+
+function decodeBody(res) {
+  let buf = res.rawBody || res.body;
+  let ct = res.headers["content-type"] || "";
+  // 기본 UTF-8, 필요시 meta charset로 보정
+  let text = iconv.decode(buf, "utf-8");
+  try {
+    const m = text.match(
+      /<meta[^>]+charset=["']?([\w-]+)["']?[^>]*>/i
+    );
+    if (m && m[1] && !/utf-?8/i.test(m[1])) {
+      text = iconv.decode(buf, m[1]);
+    }
+  } catch {}
+  return text;
+}
+
+function extractNextHop(html) {
+  // 1) <meta http-equiv="refresh" content="0;url=...">
+  const meta = html.match(
+    /<meta[^>]+http-equiv=["']?refresh["'][^>]+content=["'][^"']*url=([^"'>]+)["']/i
+  );
+  if (meta && meta[1]) return meta[1];
+
+  // 2) location.replace("...") or location.href='...'
+  const loc = html.match(
+    /location\.(?:replace|href)\(['"]([^'"]+)['"]\)/i
+  );
+  if (loc && loc[1]) return loc[1];
+
+  // 3) <frame src="...">
+  const frame = html.match(/<frame[^>]+src=["']([^"']+)["']/i);
+  if (frame && frame[1]) return frame[1];
+
+  return null;
+}
+
+function extractTitle(html, finalUrl) {
+  const $ = cheerio.load(html);
+
+  // 우선순위: og:title → twitter:title → meta[name=title] → JSON-LD headline → <title>
+  const og = $('meta[property="og:title"]').attr("content");
+  if (og) return og.trim();
+
+  const tw = $('meta[name="twitter:title"]').attr("content");
+  if (tw) return tw.trim();
+
+  const mt = $('meta[name="title"]').attr("content");
+  if (mt) return mt.trim();
+
+  // JSON-LD에서 headline
+  const jsonLdNodes = $('script[type="application/ld+json"]');
+  for (let i = 0; i < jsonLdNodes.length; i++) {
+    try {
+      const data = JSON.parse($(jsonLdNodes[i]).text());
+      const obj = Array.isArray(data) ? data[0] : data;
+      if (obj && (obj.headline || obj.name)) {
+        return (obj.headline || obj.name).trim();
+      }
+    } catch {}
+  }
+
+  const t = $("title").first().text();
+  if (t) return t.trim();
+
+  // 일부 인플루언서 페이지: meta[name=apple-mobile-web-app-title] 등
+  const alt = $('meta[name="apple-mobile-web-app-title"]').attr("content");
+  if (alt) return alt.trim();
+
+  return null;
+}
+
+async function resolveAndGetTitle(startUrl, maxHops = 5) {
+  let url = startUrl;
+  let lastHtml = "";
+  let lastRes = null;
+
+  for (let hop = 0; hop < maxHops; hop++) {
+    const res = await fetchBuffer(url);
+    lastRes = res;
+    const html = decodeBody(res);
+    lastHtml = html;
+
+    // 200이면 제목 시도
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      // blog.naver.com 의 프레임/리다이렉트 처리
+      const next = extractNextHop(html);
+      if (next) {
+        url = new URL(next, url).toString();
+        continue;
+      }
+
+      // 바로 제목 추출
+      const title = extractTitle(html, res.url || url);
+      if (title) {
+        return { title, finalUrl: res.url || url, status: res.statusCode };
+      }
+    }
+
+    // 3xx는 got가 따라가므로 여기 올 일 적음. 403/404도 한 번 더 시도 X
+    break;
+  }
+
+  // 실패 시 null
+  return {
+    title: extractTitle(lastHtml, lastRes?.url || startUrl),
+    finalUrl: lastRes?.url || startUrl,
+    status: lastRes?.statusCode || 0,
+  };
+}
+
+app.get("/api/title", async (req, res) => {
+  try {
+    const url = req.query.url;
+    if (!url) return res.status(400).json({ ok: false, error: "url is required" });
+
+    const { title, finalUrl, status } = await resolveAndGetTitle(String(url));
+
+    if (title) return res.json({ ok: true, title, finalUrl, status });
+    return res.status(502).json({
+      ok: false,
+      error: "FAILED_TO_EXTRACT_TITLE",
+      finalUrl,
+      status,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message || String(e) });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Title API listening on", PORT);
+});
+
+
+설치 & 실행 (Replit 콘솔):
+
+npm init -y
+npm i express cheerio tough-cookie got iconv-lite
+node index.js
+
+
+사용 예:
+
+GET {your-repl-url}/api/title?url=https://in.naver.com/xxx/contents/xxxxxxxx
+GET {your-repl-url}/api/title?url=https://blog.naver.com/someid/223456789012
+GET {your-repl-url}/api/title?url=https://post.naver.com/viewer/postView.naver?volumeNo=xxxx
+
+왜 그동안 실패했나 (원인 4가지)
+
+클라이언트 측 요청 → Naver는 CORS 차단 + JS 렌더 필요.
+
+User-Agent/Referer 부재 → 403/빈 페이지.
+
+리다이렉트/프레임(특히 blog.naver.com) → 겉페이지만 보고 <title>이 비어 보임.
+
+제목 위치 오판 → 인플루언서는 대부분 <meta property="og:title">에 제목이 들어갑니다.
+
+문제가 남으면 (옵션, 마지막 수단)
+
+Playwright로 최후의 1회 렌더링:
+
+npm i playwright
+npx playwright install chromium
+
+
+페이지를 열고 document.title과 meta[property=og:title]를 읽어 fallback으로 사용하세요. (일반적으로 위 코드만으로 필요 없습니다.)
+
+체크리스트 (개발자 커뮤니케이션용)
+
+ 서버사이드 fetch + 정상 브라우저 헤더 적용
+
+ 리다이렉트/프레임/메타리프레시 추적 구현
+
+ 추출 우선순위: og:title → twitter:title → meta[name=title] → JSON-LD headline → <title>
+
+ 403 시 1회 재시도(헤더 동일), 반복 재시도 금지
+
+ 실패 시 원인/최종 URL/HTTP 코드 함께 리턴
