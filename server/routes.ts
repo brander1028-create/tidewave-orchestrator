@@ -836,14 +836,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 4. analyzedPosts 테이블에 포스트들 저장
       for (const post of posts) {
         try {
+          // URL이 없는 경우 기본 URL 생성
+          const postUrl = post.url || post.postUrl || `https://blog.naver.com/${blogId}/${post.id || 'unknown'}`;
+          const postTitle = post.title || post.postTitle || '제목 없음';
+          
           await storage.createAnalyzedPost({
             blogId,
             jobId,
-            postTitle: post.title || '',
-            postUrl: post.url || '',
-            postContent: post.content || '',
+            postTitle,
+            postUrl,
+            postContent: post.content || post.postContent || '',
             publishedAt: post.publishedAt || new Date()
           });
+          
+          console.log(`✅ [Step2] 포스트 저장 성공: ${postTitle}`);
         } catch (error) {
           console.error(`❌ [Step2] 포스트 저장 실패: ${post.title}`, error);
         }

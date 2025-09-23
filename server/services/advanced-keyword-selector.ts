@@ -175,7 +175,7 @@ export class AdvancedKeywordSelector {
     
     console.log(`🥇 [1번 키워드] "${topKeyword.keyword}" (${topKeyword.combinedScore}점)`);
 
-    // 2~4번 키워드: 1번과 조합하여 검증
+    // 2~4번 키워드: 1번과 조합하여 검증, 조합이 없으면 개별 키워드로 채움
     const usedKeywords = new Set([topKeyword.keyword]);
     
     for (let i = 1; i < validCandidates.length && result.length < settings.maxKeywords; i++) {
@@ -186,7 +186,9 @@ export class AdvancedKeywordSelector {
         continue;
       }
       
-      // 1번 키워드와 조합 생성
+      let foundValidCombo = false;
+      
+      // 1번 키워드와 조합 생성 시도
       const combos = this.generateCombinations(topKeyword.keyword, candidate.keyword, settings);
       
       for (const combo of combos) {
@@ -206,8 +208,25 @@ export class AdvancedKeywordSelector {
           
           console.log(`🏅 [${result.length}번 키워드] "${combo}" (${comboData.combinedScore}점) - 조합`);
           usedKeywords.add(candidate.keyword);
-          break; // 하나 찾으면 다음 후보로
+          foundValidCombo = true;
+          break;
         }
+      }
+      
+      // 조합이 없으면 개별 키워드로 추가
+      if (!foundValidCombo) {
+        result.push({
+          keyword: candidate.keyword,
+          volume: candidate.volume,
+          score: candidate.score,
+          cpc: candidate.cpc,
+          combinedScore: candidate.combinedScore,
+          position: result.length + 1,
+          isCombo: false
+        });
+        
+        console.log(`🏅 [${result.length}번 키워드] "${candidate.keyword}" (${candidate.combinedScore}점) - 개별`);
+        usedKeywords.add(candidate.keyword);
       }
     }
     
