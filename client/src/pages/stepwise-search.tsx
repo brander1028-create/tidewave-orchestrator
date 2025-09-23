@@ -223,7 +223,7 @@ export default function StepwiseSearchPage() {
           console.log(`🔄 [Frontend] 블로그 "${blog.blogName}" 활성화 중...`);
           
           // 먼저 제목 수집 여부 확인
-          const titleCheckRes = await apiRequest('GET', `/api/stepwise-db/step2?jobId=${jobId}&blogId=${blog.id}`);
+          const titleCheckRes = await apiRequest('GET', `/api/stepwise-db?jobId=${jobId}&blogId=${blog.id}`);
           let hasTitles = false;
           
           if (titleCheckRes.ok) {
