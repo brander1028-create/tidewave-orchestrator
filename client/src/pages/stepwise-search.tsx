@@ -222,6 +222,25 @@ export default function StepwiseSearchPage() {
         try {
           console.log(`🔄 [Frontend] 블로그 "${blog.blogName}" 활성화 중...`);
           
+          // 먼저 제목 수집 여부 확인
+          const titleCheckRes = await apiRequest('GET', `/api/stepwise-db/step2?jobId=${jobId}&blogId=${blog.id}`);
+          let hasTitles = false;
+          
+          if (titleCheckRes.ok) {
+            const titleData = await titleCheckRes.json();
+            hasTitles = titleData.data && titleData.data.length > 0;
+          }
+          
+          if (!hasTitles) {
+            console.log(`⚠️ [Frontend] 블로그 "${blog.blogName}" 제목이 없어 스킵`);
+            toast({
+              title: `${blog.blogName} 키워드 분석 건너뜀`,
+              description: "먼저 '제목 긁어오기' 버튼을 눌러 블로그 포스트를 수집해주세요",
+              variant: "default"
+            });
+            continue;
+          }
+          
           const res = await apiRequest('POST', `/api/stepwise-search/step2`, {
             jobId,
             blogIds: [blog.id]
@@ -244,13 +263,23 @@ export default function StepwiseSearchPage() {
           // 잠시 대기 (서버 부하 방지)
           await new Promise(resolve => setTimeout(resolve, 500));
           
-        } catch (error) {
+        } catch (error: any) {
           console.error(`❌ [Frontend] 블로그 "${blog.blogName}" 활성화 실패:`, error);
-          toast({
-            title: `${blog.blogName} 활성화 실패`,
-            description: `오류: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
-            variant: "destructive"
-          });
+          
+          // 제목이 없는 경우 친화적인 메시지
+          if (error.message && error.message.includes('제목')) {
+            toast({
+              title: `${blog.blogName} 키워드 분석 불가`,
+              description: "먼저 '제목 긁어오기' 버튼을 눌러 블로그 포스트를 수집해주세요",
+              variant: "default"
+            });
+          } else {
+            toast({
+              title: `${blog.blogName} 활성화 실패`,
+              description: `오류: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+              variant: "destructive"
+            });
+          }
         }
       }
       
@@ -345,6 +374,26 @@ export default function StepwiseSearchPage() {
     setSelectedTab("step2"); // 자동으로 2단계 탭으로 전환
     try {
       console.log(`🔍 [Frontend] 2단계 시작: "${blogId}"`);
+      
+      // 먼저 제목 수집 여부 확인
+      const titleCheckRes = await apiRequest('GET', `/api/stepwise-db/step2?jobId=${jobId}&blogId=${blogId}`);
+      let hasTitles = false;
+      
+      if (titleCheckRes.ok) {
+        const titleData = await titleCheckRes.json();
+        hasTitles = titleData.data && titleData.data.length > 0;
+      }
+      
+      if (!hasTitles) {
+        const blog = step1Blogs.find(b => b.id === blogId);
+        toast({
+          title: `${blog?.blogName || blogId} 키워드 분석 불가`,
+          description: "먼저 '제목 긁어오기' 버튼을 눌러 블로그 포스트를 수집해주세요",
+          variant: "default"
+        });
+        setStep2Loading(false);
+        return;
+      }
       
       // localStorage에서 키워드 선정 설정값 읽어오기
       const savedSettings = localStorage.getItem('keywordSelectionSettings');
