@@ -348,7 +348,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`📝 [Step2] 포스트 수집 중: ${blog.blogName} (${i + 1}/${selectedBlogs.length})`);
 
         try {
-          // 4. 기존 BlogScraper.scrapeBlogPosts() 활용하여 포스트 수집
+          // 4. 인플루언서 블로그는 현재 스킵 (향후 개선 예정)
+          if (blog.blogType === 'influencer' || blog.blogUrl.includes('in.naver.com')) {
+            console.log(`⚠️ [Step2] 인플루언서 블로그 스킵: ${blog.blogName} (향후 지원 예정)`);
+            postCollectionResults.push({
+              blogId: blog.id,
+              blogName: blog.blogName,
+              postsScraped: 0,
+              postsFiltered: 0,
+              titlesFiltered: 0,
+              titles: [],
+              isInfluencer: true,
+              skipReason: "인플루언서 포스트 수집 기능 개발 중"
+            });
+            continue;
+          }
+          
+          // 5. 기존 BlogScraper.scrapeBlogPosts() 활용하여 포스트 수집
           const scrapedPosts = await scraper.scrapeBlogPosts(blog.blogUrl, postsPerBlog);
           
           if (scrapedPosts.length === 0) {
