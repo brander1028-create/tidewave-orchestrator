@@ -1,4 +1,4 @@
-// mcp-server/index.js — FIXED v2.4 (Render-ready, dynamic CORS, healthz, SSE @/ and @/mcp, repo defaults)
+// mcp-server/index.js — FIXED v2.5 (Render-ready, root SSE, healthz, robust handlers)
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -17,7 +17,6 @@ const ALLOW_ORIGINS = (process.env.CORS_ALLOW_ORIGINS || 'https://chatgpt.com,ht
 function chooseOrigin(req) {
   const o = req.headers.origin || '';
   if (ALLOW_ORIGINS.includes(o)) return o;
-  // fall back to first allowed origin for safety
   return ALLOW_ORIGINS[0] || '*';
 }
 
@@ -32,36 +31,6 @@ function lockCors(res, origin) {
       if (!parts.includes('origin')) value = (value ? String(value) + ', Origin' : 'Origin');
     }
     return origSetHeader(name, value);
-  };
-
-  const origWriteHead = res.writeHead?.bind(res);
-  if (origWriteHead) {
-    res.writeHead = function (statusCode, statusMessage, headers) {
-      if (statusMessage && typeof statusMessage === 'object' && !headers) {
-        headers = statusMessage; statusMessage = undefined;
-      }
-      if (headers && typeof headers === 'object') {
-        for (const k of Object.keys(headers)) {
-          const kk = k.toLowerCase();
-          if (kk === 'access-control-allow-origin') headers[k] = origin;
-          if (kk === 'access-control-allow-credentials') headers[k] = 'true';
-          if (kk === 'vary') {
-            const v = String(headers[k] || '');
-            if (!v.toLowerCase().split(',').map(s => s.trim()).includes('origin')) {
-              headers[k] = v ? (v + ', Origin') : 'Origin';
-            }
-          }
-        }
-      }
-      return origWriteHead(statusCode, statusMessage, headers);
-    };
-  }
-
-  const origEnd = res.end.bind(res);
-  res.end = function (chunk, encoding, cb) {
-    origSetHeader('Access-Control-Allow-Origin', origin); // final override
-    origSetHeader('Access-Control-Allow-Credentials', 'true');
-    return origEnd(chunk, encoding, cb);
   };
 }
 
@@ -82,6 +51,36 @@ function externalBaseUrl(req) {
   const proto = (req.headers['x-forwarded-proto'] || '').split(',')[0] || req.protocol;
   const host = req.get('x-forwarded-host') || req.get('host');
   return `${proto}://${host}`;
+}
+
+/* -------------------- SSE helper -------------------- */
+function sseHandshake(req, res) {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, {
+    origin,
+    methods: ['GET','POST','OPTIONS'],
+    allowHeaders: 'accept, content-type, authorization, mcp-protocol-version',
+  });
+  res.type('text/event-stream; charset=utf-8');
+  res.setHeader('Connection', 'keep-alive');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  const postUrl = `${externalBaseUrl(req)}/mcp`;
+  res.write(`event: endpoint
+`);
+  res.write(`data: ${JSON.stringify({ post: postUrl })}
+`);
+  res.write(`retry: 15000
+
+`);
+
+  const ka = setInterval(() => {
+    try { res.write(`:
+
+`); } catch (_) { /* client gone */ }
+  }, 15000);
+  req.on('close', () => clearInterval(ka));
 }
 
 /* -------------------- /mcp (guard + body) -------------------- */
@@ -110,39 +109,10 @@ app.head(['/mcp','/mcp/'], (req, res) => {
   return res.sendStatus(200);
 });
 
-function sseHandshake(req, res) {
-  const origin = chooseOrigin(req);
-  lockCors(res, origin);
-  setCors(res, {
-    origin,
-    methods: ['GET','POST','OPTIONS'],
-    allowHeaders: 'accept, content-type, authorization, mcp-protocol-version',
-  });
-  res.type('text/event-stream; charset=utf-8');
-  res.setHeader('Connection', 'keep-alive');
-  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+// GET /mcp -> SSE
+app.get(['/mcp','/mcp/'], (req, res) => sseHandshake(req, res));
 
-  const postUrl = `${externalBaseUrl(req)}/mcp`;
-  // SSE prelude (actual newlines)
-  res.write(`event: endpoint
-`);
-  res.write(`data: ${JSON.stringify({ post: postUrl })}
-`);
-  res.write(`retry: 15000
-
-`);
-
-  const ka = setInterval(() => res.write(`:
-
-`), 15000);
-  req.on('close', () => clearInterval(ka));
-}
-
-app.get(['/mcp','/mcp/'], async (req, res) => {
-  sseHandshake(req, res);
-});
-
-/* -------------------- Root as SSE alias (for tools that call '/') -------------------- */
+/* -------------------- Root as SSE (dev-mode friendly) -------------------- */
 app.options('/', (req, res) => {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
@@ -154,19 +124,8 @@ app.options('/', (req, res) => {
   return res.sendStatus(204);
 });
 
-app.head('/', (req, res) => {
-  const origin = chooseOrigin(req);
-  lockCors(res, origin);
-  setCors(res, { origin, methods: ['GET','OPTIONS'], allowHeaders: 'accept' });
-  return res.sendStatus(200);
-});
-
-app.get('/', (req, res) => {
-  const accept = String(req.headers.accept || '').toLowerCase();
-  const wantsSSE = accept.includes('text/event-stream') || 'mcp-protocol-version' in req.headers;
-  if (wantsSSE) return sseHandshake(req, res);
-  return res.json({ status: 'ok', message: 'MCP server is running' });
-});
+// Always serve SSE on GET / so tool launchers that call root get an endpoint immediately
+app.get('/', (req, res) => sseHandshake(req, res));
 
 /* -------------------- GitHub helpers -------------------- */
 const ghToken  = process.env.GH_TOKEN;
@@ -330,7 +289,6 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
       console.error('[MCP] tools/call error', e, {
         owner: !!ghOwner, repo: !!ghRepo, token: !!ghToken, branch: ghBranch || '(default)'
       });
-      // bubble up an informative message
       const msgText = e?.response?.data?.message || e?.message || String(e);
       return err(msgText);
     }
@@ -348,9 +306,30 @@ app.get('/healthz', (req, res) => {
   res.json({ status: 'ok', message: 'MCP server is healthy' });
 });
 
+// quiet fav/robots
+app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
+app.get('/robots.txt', (_req, res) => res.type('text/plain').send('User-agent: *
+Disallow:'));
+
+/* -------------------- error & signal handlers -------------------- */
+app.use((err, _req, res, _next) => {
+  try { console.error('[EXPRESS ERROR]', err); } catch (_) {}
+  if (!res.headersSent) res.status(500).json({ error: 'internal' });
+});
+
+process.on('uncaughtException', (e) => {
+  console.error('[uncaughtException]', e);
+  // Let Render restart the process on crash
+  setTimeout(() => process.exit(1), 100);
+});
+process.on('unhandledRejection', (e) => {
+  console.error('[unhandledRejection]', e);
+});
+
 /* -------------------- start -------------------- */
 const server = app.listen(port, () => {
   console.log('MCP server listening on port ' + port);
 });
 server.keepAliveTimeout = 65000;
 server.headersTimeout   = 66000;
+server.requestTimeout   = 0; // never kill long SSE
