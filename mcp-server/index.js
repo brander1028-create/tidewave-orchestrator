@@ -1,4 +1,4 @@
-// mcp-server/index.js — FIXED v2.2 (Render-ready, dynamic CORS, healthz, SSE safe, repo defaults)
+// mcp-server/index.js — FIXED v2.3 (Render-ready, dynamic CORS, healthz, SSE safe, repo defaults)
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -123,16 +123,17 @@ app.get(['/mcp','/mcp/'], async (req, res) => {
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
   const postUrl = `${externalBaseUrl(req)}/mcp`;
-  // Robust SSE prelude in one shot (actual newlines)
+  // Robust SSE prelude in one shot (actual newlines in a template literal)
   res.write(`event: endpoint
 data: ${JSON.stringify({ post: postUrl })}
 retry: 15000
 
 `);
 
-  const ka = setInterval(() => res.write(':
+  // Keep-alive comment line every 15s (template literal with real newlines)
+  const ka = setInterval(() => res.write(`:
 
-'), 15000);
+`), 15000);
   req.on('close', () => clearInterval(ka));
 });
 
