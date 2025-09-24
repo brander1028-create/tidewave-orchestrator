@@ -6,7 +6,7 @@ const axios = require('axios');
 const app = express();
   
 // === SSE-PREFLIGHT-TOP START ===
-function setSseCors(req, res) {
+function setSseCors(req, res) { res.removeHeader("Access-Control-Allow-Origin"); 
   const origin = req.headers.origin || 'https://chat.openai.com';
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
@@ -235,5 +235,6 @@ app.get('/sse__disabled__20250924110013', (req, res) => {
   const keepalive = setInterval(() => res.write(':\n\n'), 15000);
   req.on('close', () => clearInterval(keepalive));
 });
+
 
 
