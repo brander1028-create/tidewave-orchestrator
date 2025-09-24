@@ -308,8 +308,10 @@ app.get('/healthz', (req, res) => {
 
 // quiet fav/robots
 app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
-app.get('/robots.txt', (_req, res) => res.type('text/plain').send('User-agent: *
-Disallow:'));
+app.get('/robots.txt', (_req, res) =>
+  res.type('text/plain').send('User-agent: *\nDisallow:')
+);
+
 
 /* -------------------- error & signal handlers -------------------- */
 app.use((err, _req, res, _next) => {
