@@ -185,36 +185,40 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
   }
 
   // ---- tools/call ----
-  if (msg.method === 'tools/call') {
-    const { name, arguments: args } = msg.params || {};
-    console.log('[MCP] tools/call', { name, args }); // 로그
+if (msg.method === 'tools/call') {
+  const { name, arguments: args } = msg.params || {};
+  console.log('[MCP] tools/call', { name, args });
 
-    try {
-      if (name === 'echo') {
-        return ok({ text: String(args?.text ?? '') });
-      }
-
-      if (name === 'fs_read') {
-        if (!args?.file_path) return err('file_path is required');
-        const content = await readGitHubFile(args.file_path);
-        return ok({ content });
-      }
-
-      if (name === 'fs_write') {
-        if (!args?.file_path || typeof args?.content !== 'string')
-          return err('file_path and content are required');
-        const sha = await writeGitHubFile(
-          args.file_path, args.content, args?.message || 'update via mcp'
-        );
-        return ok({ ok: true, commit_sha: sha });
-      }
-
-      return err(`Unknown tool: ${name}`);
-    } catch (e) {
-      console.error('[MCP] tools/call error', e);    // 로그
-      return err(String(e?.message ?? e));
+  try {
+    if (name === 'echo') {
+      // ← UI가 좋아하는 보수적 결과 래핑
+      return ok({ ok: true, tool: 'echo', data: { type: 'text', text: String(args?.text ?? '') } });
     }
+
+    if (name === 'fs_read') {
+      if (!args?.file_path) return err('file_path is required');
+      const content = await readGitHubFile(args.file_path);
+      // 텍스트를 명시적으로 전달
+      return ok({ ok: true, tool: 'fs_read', data: { type: 'text', text: content } });
+    }
+
+    if (name === 'fs_write') {
+      if (!args?.file_path || typeof args?.content !== 'string')
+        return err('file_path and content are required');
+      const sha = await writeGitHubFile(
+        args.file_path, args.content, args?.message || 'update via mcp'
+      );
+      // 커밋 해시를 텍스트로도 함께 제공
+      return ok({ ok: true, tool: 'fs_write', data: { type: 'text', text: `commit=${sha}` }, commit_sha: sha });
+    }
+
+    return err(`Unknown tool: ${name}`);
+  } catch (e) {
+    console.error('[MCP] tools/call error', e);
+    return err(String(e?.message ?? e));
   }
+}
+
 
   // ---- 기타 ----
   return bad(-32601, `Method not found: ${msg.method}`);
