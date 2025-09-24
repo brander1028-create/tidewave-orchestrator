@@ -139,6 +139,43 @@ app.post(['/mcp','/mcp/'], (req, res) => {
   }
 
   return bad(-32601, `Method not found: ${msg.method}`);
+  // --- add minimal tools ---
+  if (msg.method === 'tools/list') {
+    const result = {
+      tools: [
+        { name: 'echo',        description: 'Echo back input',      inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+        { name: 'fs_read',     description: 'Read file from GitHub', inputSchema: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } },
+        { name: 'fs_write',    description: 'Write file to GitHub',  inputSchema: { type: 'object', properties: { file_path: { type: 'string' }, content: { type: 'string' }, message: { type: 'string' } }, required: ['file_path','content'] } },
+      ]
+    };
+    return res.status(200).json({ jsonrpc: '2.0', id: rid, result });
+  }
+
+  if (msg.method === 'tools/call') {
+    const { name, arguments: args } = msg.params || {};
+    async function ok(result){ return res.status(200).json({ jsonrpc:'2.0', id: rid, result }); }
+    async function err(message){ return res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code:-32001, message } }); }
+
+    try {
+      if (name === 'echo') {
+        return ok({ text: String(args?.text ?? '') });
+      }
+      if (name === 'fs_read') {
+        if (!args?.file_path) return err('file_path is required');
+        const content = await readGitHubFile(args.file_path);
+        return ok({ content });
+      }
+      if (name === 'fs_write') {
+        if (!args?.file_path || typeof args?.content !== 'string') return err('file_path and content are required');
+        const sha = await writeGitHubFile(args.file_path, args.content, args?.message || 'update via mcp');
+        return ok({ ok: true, commit_sha: sha });
+      }
+      return err(`Unknown tool: ${name}`);
+    } catch (e) {
+      return err(String(e.message || e));
+    }
+  }
+
 });
 
 /* -------------------- (선택) /sse 레거시 핸들러 유지 -------------------- */
