@@ -1,19 +1,32 @@
-// mcp-server/index.js — FINAL
+// mcp-server/index.js — FIXED v2 (Render-ready, dynamic CORS, healthz)
 
 const express = require('express');
 const bodyParser = require('body-parser');
 const { Octokit } = require('@octokit/rest');
-const axios = require('axios');
 
 const app = express();
+app.set('trust proxy', true);
 const port = process.env.PORT || 3000;
 
 /* -------------------- CORS helpers -------------------- */
+const ALLOW_ORIGINS = (process.env.CORS_ALLOW_ORIGINS || 'https://chatgpt.com,https://chat.openai.com,https://staging.chatgpt.com')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+function chooseOrigin(req) {
+  const o = req.headers.origin || '';
+  if (ALLOW_ORIGINS.includes(o)) return o;
+  // fall back to first allowed origin for safety
+  return ALLOW_ORIGINS[0] || '*';
+}
+
 function lockCors(res, origin) {
   const origSetHeader = res.setHeader.bind(res);
   res.setHeader = function (name, value) {
     const key = String(name).toLowerCase();
     if (key === 'access-control-allow-origin') value = origin;
+    if (key === 'access-control-allow-credentials') value = 'true';
     if (key === 'vary') {
       const parts = String(value || '').split(',').map(s => s.trim().toLowerCase());
       if (!parts.includes('origin')) value = (value ? String(value) + ', Origin' : 'Origin');
@@ -31,9 +44,10 @@ function lockCors(res, origin) {
         for (const k of Object.keys(headers)) {
           const kk = k.toLowerCase();
           if (kk === 'access-control-allow-origin') headers[k] = origin;
+          if (kk === 'access-control-allow-credentials') headers[k] = 'true';
           if (kk === 'vary') {
             const v = String(headers[k] || '');
-            if (!v.toLowerCase().split(',').map(s=>s.trim()).includes('origin')) {
+            if (!v.toLowerCase().split(',').map(s => s.trim()).includes('origin')) {
               headers[k] = v ? (v + ', Origin') : 'Origin';
             }
           }
@@ -46,27 +60,37 @@ function lockCors(res, origin) {
   const origEnd = res.end.bind(res);
   res.end = function (chunk, encoding, cb) {
     origSetHeader('Access-Control-Allow-Origin', origin); // final override
+    origSetHeader('Access-Control-Allow-Credentials', 'true');
     return origEnd(chunk, encoding, cb);
   };
 }
 
 function setCors(res, { origin, methods, allowHeaders, maxAge = 86400 }) {
   res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', methods.join(','));
   res.setHeader('Access-Control-Allow-Headers', allowHeaders);
   res.setHeader('Access-Control-Max-Age', String(maxAge));
+  // help SSE over proxies
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('Content-Encoding', 'identity');
 }
 
+function externalBaseUrl(req) {
+  const proto = (req.headers['x-forwarded-proto'] || '').split(',')[0] || req.protocol;
+  const host = req.get('x-forwarded-host') || req.get('host');
+  return `${proto}://${host}`;
+}
+
 /* -------------------- /mcp (guard + body) -------------------- */
-app.use(['/mcp','/mcp/'], (req, res, next) => {
-  lockCors(res, 'https://chat.openai.com');
+app.use(['/mcp', '/mcp/'], (req, res, next) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
   setCors(res, {
-    origin: req.headers.origin || 'https://chat.openai.com',
-    methods: ['GET','POST','OPTIONS'],
+    origin,
+    methods: ['GET', 'POST', 'OPTIONS'],
     allowHeaders: req.headers['access-control-request-headers'] || 'accept, content-type, authorization, mcp-protocol-version',
   });
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -75,24 +99,42 @@ app.use(['/mcp','/mcp/'], (req, res, next) => {
 
 app.use(bodyParser.json({ limit: '10mb' }));
 
-app.head(['/mcp','/mcp/'], (_req, res) => res.sendStatus(200));
+app.head(['/mcp','/mcp/'], (req, res) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, {
+    origin,
+    methods: ['GET','POST','OPTIONS'],
+    allowHeaders: 'accept, content-type, authorization, mcp-protocol-version',
+  });
+  return res.sendStatus(200);
+});
 
 app.get(['/mcp','/mcp/'], async (req, res) => {
-  lockCors(res, 'https://chat.openai.com');
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
   setCors(res, {
-    origin: req.headers.origin || 'https://chat.openai.com',
+    origin,
     methods: ['GET','POST','OPTIONS'],
     allowHeaders: 'accept, content-type, authorization, mcp-protocol-version',
   });
   res.type('text/event-stream; charset=utf-8');
+  res.setHeader('Connection', 'keep-alive');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
-  const postUrl = `${req.protocol}://${req.get('host')}/mcp`;
-  res.write('event: endpoint\n');
-  res.write(`data: ${JSON.stringify({ post: postUrl })}\n\n`);
-  res.write('retry: 15000\n\n');
+  const postUrl = `${externalBaseUrl(req)}/mcp`;
+  res.write('event: endpoint
+');
+  res.write(`data: ${JSON.stringify({ post: postUrl })}
 
-  const ka = setInterval(() => res.write(':\n\n'), 15000);
+`);
+  res.write('retry: 15000
+
+');
+
+  const ka = setInterval(() => res.write(':
+
+'), 15000);
   req.on('close', () => clearInterval(ka));
 });
 
@@ -123,9 +165,16 @@ async function writeGitHubFile(path, content, message = 'Update file') {
     if (ghBranch) getParams.ref = ghBranch;
     const { data } = await octokit.repos.getContent(getParams);
     if (!Array.isArray(data)) sha = data.sha;
-  } catch (_) { /* not exists — will create */ }
+  } catch (_) { /* create new file */ }
 
-  const putParams = { owner: ghOwner, repo: ghRepo, path, message, content: encoded, sha };
+  const putParams = {
+    owner: ghOwner,
+    repo: ghRepo,
+    path,
+    message,
+    content: encoded,
+    sha,
+  };
   if (ghBranch) putParams.branch = ghBranch;
 
   const r = await octokit.repos.createOrUpdateFileContents(putParams);
@@ -134,9 +183,10 @@ async function writeGitHubFile(path, content, message = 'Update file') {
 
 /* -------------------- JSON-RPC (initialize / tools/list / tools/call) -------------------- */
 app.post(['/mcp','/mcp/'], async (req, res) => {
-  lockCors(res, 'https://chat.openai.com');
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
   setCors(res, {
-    origin: req.headers.origin || 'https://chat.openai.com',
+    origin,
     methods: ['GET','POST','OPTIONS'],
     allowHeaders: 'accept, content-type, authorization, mcp-protocol-version',
   });
@@ -214,7 +264,7 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
   // ---- tools/call ----
   if (msg.method === 'tools/call') {
     const { name, arguments: args } = msg.params || {};
-    console.log('[MCP] tools/call', { name, args, env: { owner: !!ghOwner, repo: !!ghRepo, token: !!ghToken } });
+    console.log('[MCP] tools/call', { name, args, env: { owner: !!ghOwner, repo: !!ghRepo, token: !!ghToken, branch: !!ghBranch } });
 
     try {
       if (name === 'echo') {
@@ -223,7 +273,10 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
 
       if (name === 'env_check') {
         return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
-          GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
+          GH_OWNER: !!ghOwner,
+          GH_REPO:  !!ghRepo,
+          GH_TOKEN: !!ghToken,
+          GH_BRANCH: !!ghBranch
         }}});
       }
 
@@ -256,6 +309,13 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
 });
 
 /* -------------------- health -------------------- */
+app.get('/healthz', (req, res) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, { origin, methods: ['GET','OPTIONS'], allowHeaders: 'accept' });
+  res.json({ status: 'ok', message: 'MCP server is healthy' });
+});
+
 app.get('/', (_req, res) => res.json({ status: 'ok', message: 'MCP server is running' }));
 
 /* -------------------- start -------------------- */
