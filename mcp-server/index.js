@@ -8,27 +8,41 @@ const axios = require('axios');
 const app = express();
 const port = process.env.PORT || 3000;
 
-/* ---------- /sse: CORS 고정 + 프리플라이트(OPTIONS) 조기 종료 ---------- */
-/* 반드시 다른 미들웨어(cos()/helmet()/static 등)보다 '앞'에 있어야 함 */
 // --- /sse 전용 CORS 가드(최종 오버라이드) ---
 app.use(['/sse','/sse/'], (req, res, next) => {
-  // ↓ 이후 어느 미들웨어가 '*'로 덮어써도 여기서 최종 강제 교체
-  const origSet = res.setHeader.bind(res);
+  // 최종 단계까지 헤더 강제 교체: setHeader + writeHead 둘 다 훅
+  const origSetHeader = res.setHeader.bind(res);
   res.setHeader = function(name, value) {
     const key = String(name).toLowerCase();
-    if (key === 'access-control-allow-origin') {
-      value = 'https://chat.openai.com';
-    }
+    if (key === 'access-control-allow-origin') value = 'https://chat.openai.com';
     if (key === 'vary') {
       const parts = String(value || '').split(',').map(s => s.trim().toLowerCase());
       if (!parts.includes('origin')) value = (value ? String(value)+', Origin' : 'Origin');
     }
-    return origSet(name, value);
+    return origSetHeader(name, value);
+  };
+  const origWriteHead = res.writeHead.bind(res);
+  res.writeHead = function(statusCode, statusMessage, headers) {
+    // headers 인자로 넘어오는 경우까지 최종 보정
+    if (headers && typeof headers === 'object') {
+      const keys = Object.keys(headers);
+      for (const k of keys) {
+        if (k.toLowerCase() === 'access-control-allow-origin') {
+          headers[k] = 'https://chat.openai.com';
+        }
+        if (k.toLowerCase() === 'vary') {
+          const v = String(headers[k] || '');
+          if (!v.toLowerCase().split(',').map(s=>s.trim()).includes('origin')) {
+            headers[k] = v ? (v + ', Origin') : 'Origin';
+          }
+        }
+      }
+    }
+    return origWriteHead(statusCode, statusMessage, headers);
   };
 
-  // 기본 CORS 헤더 세팅 + 프리플라이트는 즉시 204
-  const origin = req.headers.origin || 'https://chat.openai.com';
-  res.setHeader('Access-Control-Allow-Origin', origin);
+  // 기본 값 세팅 + 프리플라이트 즉시 종료
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || 'https://chat.openai.com');
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers',
