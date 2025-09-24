@@ -169,6 +169,84 @@ async function writeGitHubFile(path, content, message = 'Update file') {
   const r = await octokit.repos.createOrUpdateFileContents(putParams);
   return r.data.commit.sha;
 }
+// === /run 호환 레이어 시작 ===
+
+// 커넥터에서 mcp-server-new_* 같은 접두사를 써도 통과시키기
+function norm(name = "") {
+  return String(name).replace(/^mcp-server-(new_)?/, "");
+}
+
+// 서버 내부 툴 실행 재사용
+async function runToolCompat(nameRaw, args = {}) {
+  const name = norm(nameRaw);
+
+  if (name === "env_check") {
+    return { ok: true, tool: "env_check", data: { type: "json", json: {
+      GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
+    }}};
+  }
+
+  if (name === "fs_read") {
+    if (!args.file_path) throw new Error("file_path is required");
+    const content = await readGitHubFile(args.file_path);
+    return { ok: true, tool: "fs_read", data: { type: "text", text: content } };
+  }
+
+  if (name === "fs_write") {
+    if (!args.file_path || typeof args.content !== "string")
+      throw new Error("file_path and content are required");
+    const sha = await writeGitHubFile(args.file_path, args.content, args.message || "via /run");
+    return { ok: true, tool: "fs_write", data: { type: "text", text: `commit=${sha}` }, commit_sha: sha };
+  }
+
+  return { ok: false, error: `unknown tool: ${nameRaw}` };
+}
+
+// CORS/OPTIONS (기존 chooseOrigin/lockCors/setCors 사용)
+app.use(["/run","/tools/run","/batch_run"], (req, res, next) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, {
+    origin,
+    methods: ["POST","OPTIONS"],
+    allowHeaders: req.headers["access-control-request-headers"] || "accept, content-type, authorization",
+  });
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+// 항상 200 JSON으로 감싸서 424 방지
+function safeJson(res, payload) {
+  try { return res.status(200).json(payload); }
+  catch (e) { return res.status(200).json({ ok:false, error:String(e?.message||e) }); }
+}
+
+// /run & /tools/run
+app.post(["/run","/tools/run"], express.json(), async (req, res) => {
+  try {
+    const { name, arguments: args = {} } = req.body || {};
+    const out = await runToolCompat(name, args);
+    return safeJson(res, out);
+  } catch (e) {
+    console.error("[compat /run] error", e);
+    return safeJson(res, { ok:false, error:String(e?.message||e) });
+  }
+});
+
+// /batch_run
+app.post("/batch_run", express.json(), async (req, res) => {
+  try {
+    const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+    const results = [];
+    for (const s of steps) results.push(await runToolCompat(s?.name, s?.arguments||{}));
+    return safeJson(res, { ok:true, results });
+  } catch (e) {
+    console.error("[compat /batch_run] error", e);
+    return safeJson(res, { ok:false, error:String(e?.message||e) });
+  }
+});
+
+// === /run 호환 레이어 끝 ===
 
 /* -------------------- JSON-RPC (initialize / tools/list / tools/call) -------------------- */
 app.post(['/mcp','/mcp/'], async (req, res) => {
