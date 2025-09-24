@@ -1,64 +1,42 @@
+// mcp-server/index.js (FINAL)
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const { Octokit } = require('@octokit/rest');
 const axios = require('axios');
 
 const app = express();
-  
-// === SSE-CORS-ROUTE START ===
-const __sseCorsOpts = {
-  origin: 'https://chat.openai.com',
-  methods: ['GET','HEAD','OPTIONS'],
-  allowedHeaders: ['accept','content-type','authorization'],
-  credentials: false,
-  maxAge: 86400
-};
-app.use(['/sse','/sse/'], cors(__sseCorsOpts));
-app.options(['/sse','/sse/'], cors(__sseCorsOpts), (req,res)=>res.sendStatus(204));
-// === SSE-CORS-ROUTE END ===
+const port = process.env.PORT || 3000;
 
-
-  
-// === SSE-PREFLIGHT-TOP START ===
-function setSseCors(req, res) { res.removeHeader("Access-Control-Allow-Origin"); 
+/* ---------- /sse: CORS 고정 + 프리플라이트(OPTIONS) 조기 종료 ---------- */
+/* 반드시 다른 미들웨어(cos()/helmet()/static 등)보다 '앞'에 있어야 함 */
+function setSseCors(req, res) {
   const origin = req.headers.origin || 'https://chat.openai.com';
+  try { res.removeHeader('Access-Control-Allow-Origin'); } catch {}
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers',
-    req.headers['access-control-request-headers'] || 'accept, content-type, authorization');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    req.headers['access-control-request-headers'] || 'accept, content-type, authorization'
+  );
   res.setHeader('Access-Control-Max-Age', '86400');
-  res.setHeader('Access-Control-Allow-Credentials', 'false');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('Content-Encoding', 'identity');
 }
-// NOTE: Register before global cors()/helmet()/static()
-try {
-  if (typeof app !== 'undefined' && app && typeof app.options === 'function') {
-    app.options('/sse', (req, res) => { setSseCors(req, res); return res.sendStatus(204); });
-  }
-} catch {}
-// Guard: even if a global OPTIONS('*') exists, ensure /sse returns our CORS
-try {
-  if (typeof app !== 'undefined' && app && typeof app.use === 'function') {
-    app.use((req, res, next) => {
-      if (req.method === 'OPTIONS' && (req.path === '/sse' || req.path === '/sse/')) {
-        setSseCors(req, res); return res.sendStatus(204);
-      }
-      next();
-    });
-  }
-} catch {}
-// === SSE-PREFLIGHT-TOP END ===
 
+// /sse 전용 가드(프리플라이트는 여기서 즉시 204로 종료)
+app.use(['/sse','/sse/'], (req, res, next) => {
+  setSseCors(req, res);
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+});
 
-try { require("./sse-compat")(app); } catch (e) { console.error("sse-compat load failed", e); }
-
-const port = process.env.PORT || 3000;
-
+/* ---------- 공통 미들웨어 ---------- */
 app.use(bodyParser.json({ limit: '10mb' }));
 
+/* ---------- GitHub 설정 ---------- */
 const ghToken = process.env.GH_TOKEN;
 let octokit;
 if (ghToken) {
@@ -67,33 +45,21 @@ if (ghToken) {
   console.warn('Warning: GH_TOKEN not set. GitHub endpoints will fail.');
 }
 const ghOwner = process.env.GH_OWNER;
-const ghRepo = process.env.GH_REPO;
+const ghRepo  = process.env.GH_REPO;
 
-/**
- * Helper to read file contents from a GitHub repository.
- * @param {string} path Relative path within the repo (no leading slash).
- */
+/* ---------- GitHub helpers ---------- */
+/** Read file from GitHub repo */
 async function readGitHubFile(path) {
   if (!octokit || !ghOwner || !ghRepo) {
     throw new Error('Missing GitHub configuration (GH_TOKEN, GH_OWNER, GH_REPO).');
   }
   const result = await octokit.repos.getContent({ owner: ghOwner, repo: ghRepo, path });
-  if (Array.isArray(result.data)) {
-    throw new Error('Path ' + path + ' is a directory. Only files are supported.');
-  }
+  if (Array.isArray(result.data)) throw new Error(`Path ${path} is a directory.`);
   const content = Buffer.from(result.data.content, result.data.encoding).toString('utf8');
   return content;
 }
 
-/**
- * Helper to write file contents to a GitHub repository. If the file exists,
- * it is updated; otherwise it is created. Commits are created directly on
- * the default branch.
- *
- * @param {string} path Relative path within the repo (no leading slash).
- * @param {string} content Raw UTF-8 file contents.
- * @param {string} message Commit message.
- */
+/** Create/Update file in GitHub repo (commit on default branch) */
 async function writeGitHubFile(path, content, message = 'Update file') {
   if (!octokit || !ghOwner || !ghRepo) {
     throw new Error('Missing GitHub configuration (GH_TOKEN, GH_OWNER, GH_REPO).');
@@ -102,154 +68,91 @@ async function writeGitHubFile(path, content, message = 'Update file') {
   let sha;
   try {
     const { data } = await octokit.repos.getContent({ owner: ghOwner, repo: ghRepo, path });
-    if (!Array.isArray(data)) {
-      sha = data.sha;
-    }
-  } catch (err) {
-    // File does not exist; ignore
-  }
+    if (!Array.isArray(data)) sha = data.sha;
+  } catch (_) { /* not exists, ignore */ }
   const res = await octokit.repos.createOrUpdateFileContents({
-    owner: ghOwner,
-    repo: ghRepo,
-    path,
-    message,
-    content: encoded,
-    sha,
+    owner: ghOwner, repo: ghRepo, path, message, content: encoded, sha,
   });
   return res.data.commit.sha;
 }
 
-// Endpoint definitions
-
-// fs_read: reads a single file from GitHub and returns its contents
+/* ---------- HTTP endpoints ---------- */
+// fs_read
 app.post('/fs_read', async (req, res) => {
   const { file_path } = req.body;
-  if (!file_path) {
-    return res.status(400).json({ error: 'file_path is required' });
-  }
-  try {
-    const data = await readGitHubFile(file_path);
-    return res.json({ content: data });
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
-  }
+  if (!file_path) return res.status(400).json({ error: 'file_path is required' });
+  try { const data = await readGitHubFile(file_path); res.json({ content: data }); }
+  catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// fs_write: writes a file to GitHub, creating or updating it
+// fs_write
 app.post('/fs_write', async (req, res) => {
   const { file_path, content, message } = req.body;
   if (!file_path || typeof content !== 'string') {
     return res.status(400).json({ error: 'file_path and content are required' });
   }
-  try {
-    const sha = await writeGitHubFile(file_path, content, message);
-    return res.json({ ok: true, commit_sha: sha });
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
-  }
+  try { const sha = await writeGitHubFile(file_path, content, message); res.json({ ok: true, commit_sha: sha }); }
+  catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// deploy_vercel: triggers a Vercel deployment using the configured deploy hook
+// deploy_vercel
 app.post('/deploy_vercel', async (req, res) => {
   const hook = process.env.VERCEL_DEPLOY_HOOK;
-  if (!hook) {
-    return res.status(400).json({ error: 'VERCEL_DEPLOY_HOOK is not configured' });
-  }
-  try {
-    const response = await axios.post(hook, {});
-    return res.json({ status: response.status, data: response.data });
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
-  }
+  if (!hook) return res.status(400).json({ error: 'VERCEL_DEPLOY_HOOK is not configured' });
+  try { const r = await axios.post(hook, {}); res.json({ status: r.status, data: r.data }); }
+  catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// deploy_render: triggers a Render deployment using the configured deploy hook
+// deploy_render
 app.post('/deploy_render', async (req, res) => {
   const hook = process.env.RENDER_DEPLOY_HOOK;
-  if (!hook) {
-    return res.status(400).json({ error: 'RENDER_DEPLOY_HOOK is not configured' });
-  }
-  try {
-    const response = await axios.post(hook, {});
-    return res.json({ status: response.status, data: response.data });
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
-  }
+  if (!hook) return res.status(400).json({ error: 'RENDER_DEPLOY_HOOK is not configured' });
+  try { const r = await axios.post(hook, {}); res.json({ status: r.status, data: r.data }); }
+  catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// preview_url_get: returns a pre-configured preview URL
+// preview_url_get
 app.post('/preview_url_get', (req, res) => {
   const url = process.env.PREVIEW_URL;
-  if (!url) {
-    return res.status(400).json({ error: 'PREVIEW_URL is not configured' });
-  }
-  return res.json({ url });
+  if (!url) return res.status(400).json({ error: 'PREVIEW_URL is not configured' });
+  res.json({ url });
 });
 
-// Default route for health checks
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'MCP server is running' });
-});
+// health
+app.get('/', (_req, res) => res.json({ status: 'ok', message: 'MCP server is running' }));
 
-  
-// === SSE-CANONICAL-BLOCK START ===
+/* ---------- /sse: HEAD/GET (handshake + keepalive) ---------- */
 app.head(['/sse','/sse/'], (req, res) => {
   setSseCors(req, res);
   res.type('text/event-stream');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
   return res.sendStatus(200);
 });
+
 app.get(['/sse','/sse/'], (req, res) => {
   setSseCors(req, res);
   res.type('text/event-stream; charset=utf-8');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
-  const hello = { type:'handshake', protocol:'2024-11-05',
-    server:{ name:'tidewave-mcp', version:'0.1.0' }, capabilities:{ tools:true } };
-  res.write('event: handshake\n');
-  res.write('data: ' + JSON.stringify(hello) + '\n\n');
-  res.write('retry: 15000\n\n');
-  const ka = setInterval(()=>res.write(':\n\n'), 15000);
-  req.on('close', ()=>clearInterval(ka));
-});
-// === SSE-CANONICAL-BLOCK END ===
-app.listen(port, () => {
-  console.log('MCP server listening on port ' + port);
-});
-// CORS & OPTIONS for /sse (브라우저 커넥터용)
-app.use('/sse', (req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
-
-// SSE 핸들러
-app.get('/sse__disabled__20250924110013', (req, res) => {
-  // 일부 클라이언트가 charset을 싫어해서 정확히 지정
-  res.setHeader('Content-Type', 'text/event-stream'); // ← charset 없이
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');           // nginx 등 버퍼링 방지
-  res.flushHeaders?.();
 
   const hello = {
     type: 'handshake',
     protocol: '2024-11-05',
-    protocolVersion: '2024-11-05', // 혹시 모를 호환성 위해 둘 다
     server: { name: 'tidewave-mcp', version: '0.1.0' },
     capabilities: { tools: true }
   };
 
-  // event 라인까지 같이 보내면 클라이언트 호환성↑
   res.write('event: handshake\n');
   res.write(`data: ${JSON.stringify(hello)}\n\n`);
-  res.write('retry: 15000\n\n'); // 자동 재연결 힌트
+  res.write('retry: 15000\n\n');
 
-  const keepalive = setInterval(() => res.write(':\n\n'), 15000);
-  req.on('close', () => clearInterval(keepalive));
+  const ka = setInterval(() => res.write(':\n\n'), 15000);
+  req.on('close', () => clearInterval(ka));
 });
 
-
-
-
+/* ---------- start ---------- */
+const server = app.listen(port, () => {
+  console.log('MCP server listening on port ' + port);
+});
+// SSE 안정화용 타임아웃(프록시 환경 대비)
+server.keepAliveTimeout = 65000;
+server.headersTimeout   = 66000;
