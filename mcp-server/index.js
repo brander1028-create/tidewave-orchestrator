@@ -10,28 +10,37 @@ const port = process.env.PORT || 3000;
 
 /* ---------- /sse: CORS 고정 + 프리플라이트(OPTIONS) 조기 종료 ---------- */
 /* 반드시 다른 미들웨어(cos()/helmet()/static 등)보다 '앞'에 있어야 함 */
-function setSseCors(req, res) {
+// --- /sse 전용 CORS 가드(최종 오버라이드) ---
+app.use(['/sse','/sse/'], (req, res, next) => {
+  // ↓ 이후 어느 미들웨어가 '*'로 덮어써도 여기서 최종 강제 교체
+  const origSet = res.setHeader.bind(res);
+  res.setHeader = function(name, value) {
+    const key = String(name).toLowerCase();
+    if (key === 'access-control-allow-origin') {
+      value = 'https://chat.openai.com';
+    }
+    if (key === 'vary') {
+      const parts = String(value || '').split(',').map(s => s.trim().toLowerCase());
+      if (!parts.includes('origin')) value = (value ? String(value)+', Origin' : 'Origin');
+    }
+    return origSet(name, value);
+  };
+
+  // 기본 CORS 헤더 세팅 + 프리플라이트는 즉시 204
   const origin = req.headers.origin || 'https://chat.openai.com';
-  try { res.removeHeader('Access-Control-Allow-Origin'); } catch {}
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    req.headers['access-control-request-headers'] || 'accept, content-type, authorization'
-  );
+  res.setHeader('Access-Control-Allow-Headers',
+    req.headers['access-control-request-headers'] || 'accept, content-type, authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Content-Encoding', 'identity');
-}
 
-// /sse 전용 가드(프리플라이트는 여기서 즉시 204로 종료)
-app.use(['/sse','/sse/'], (req, res, next) => {
-  setSseCors(req, res);
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
 });
+
 
 /* ---------- 공통 미들웨어 ---------- */
 app.use(bodyParser.json({ limit: '10mb' }));
