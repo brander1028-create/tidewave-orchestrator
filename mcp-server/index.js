@@ -103,8 +103,8 @@ app.get(['/mcp','/mcp/'], (req, res) => {
   req.on('close', () => clearInterval(ka));
 });
 
-// POST /mcp → JSON-RPC 최소 구현(initialize, tools/list)
-app.post(['/mcp','/mcp/'], (req, res) => {
+/// POST /mcp → JSON-RPC (initialize / tools/list / tools/call)
+app.post(['/mcp','/mcp/'], async (req, res) => {
   lockCors(res, 'https://chat.openai.com');
   setCors(res, {
     origin: req.headers.origin || 'https://chat.openai.com',
@@ -116,69 +116,69 @@ app.post(['/mcp','/mcp/'], (req, res) => {
   const msg = req.body || {};
   const isRequest    = msg && typeof msg === 'object' && 'method' in msg && 'id' in msg;
   const isNotifyOnly = msg && typeof msg === 'object' && 'method' in msg && !('id' in msg);
+
+  // 알림은 202 무응답
   if (isNotifyOnly) return res.sendStatus(202);
 
   const rid = isRequest ? msg.id : null;
-  const bad = (code, message) => res.status(200).json({ jsonrpc: '2.0', id: rid, error: { code, message } });
+  const ok  = (result)  => res.status(200).json({ jsonrpc:'2.0', id: rid, result });
+  const err = (message) => res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code:-32001, message } });
+  const bad = (code, message) => res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code, message } });
+
   if (!isRequest) return bad(-32600, 'Invalid Request');
 
+  // ---- initialize ----
   if (msg.method === 'initialize') {
-    const result = {
+    return ok({
       protocolVersion: '2025-06-18',
       capabilities: { tools: { listChanged: true } },
       serverInfo: { name: 'tidewave-mcp', title: 'Tidewave MCP', version: '0.1.0' },
       instructions: 'OK'
-    };
-    return res.status(200).json({ jsonrpc: '2.0', id: rid, result });
+    });
   }
 
-// tools/list — 최소 3개 도구 노출
-if (msg.method === 'tools/list') {
-  const result = {
-    tools: [
-      {
-        name: 'echo',
-        description: 'Echo back input',
-        inputSchema: {
-          type: 'object',
-          properties: { text: { type: 'string' } },
-          required: ['text']
+  // ---- tools/list ----
+  if (msg.method === 'tools/list') {
+    return ok({
+      tools: [
+        {
+          name: 'echo',
+          description: 'Echo back input',
+          inputSchema: {
+            type: 'object',
+            properties: { text: { type: 'string' } },
+            required: ['text']
+          }
+        },
+        {
+          name: 'fs_read',
+          description: 'Read file from GitHub',
+          inputSchema: {
+            type: 'object',
+            properties: { file_path: { type: 'string' } },
+            required: ['file_path']
+          }
+        },
+        {
+          name: 'fs_write',
+          description: 'Write file to GitHub',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+              content:   { type: 'string' },
+              message:   { type: 'string' }
+            },
+            required: ['file_path','content']
+          }
         }
-      },
-      {
-        name: 'fs_read',
-        description: 'Read file from GitHub',
-        inputSchema: {
-          type: 'object',
-          properties: { file_path: { type: 'string' } },
-          required: ['file_path']
-        }
-      },
-      {
-        name: 'fs_write',
-        description: 'Write file to GitHub',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            file_path: { type: 'string' },
-            content: { type: 'string' },
-            message: { type: 'string' }
-          },
-          required: ['file_path','content']
-        }
-      }
-    ]
-  };
-  return res.status(200).json({ jsonrpc: '2.0', id: rid, result });
-}
+      ]
+    });
+  }
 
-// tools/call — 도구 실행
-if (msg.method === 'tools/call') {
-  const { name, arguments: args } = msg.params || {};
-  const ok  = (result) => res.status(200).json({ jsonrpc:'2.0', id: rid, result });
-  const err = (message)=> res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code:-32001, message } });
-
-  (async () => {
+  // ---- tools/call ----
+  if (msg.method === 'tools/call') {
+    const { name, arguments: args } = msg.params || {};
     try {
       if (name === 'echo') {
         return ok({ text: String(args?.text ?? '') });
@@ -192,7 +192,9 @@ if (msg.method === 'tools/call') {
         if (!args?.file_path || typeof args?.content !== 'string')
           return err('file_path and content are required');
         const sha = await writeGitHubFile(
-          args.file_path, args.content, args?.message || 'update via mcp'
+          args.file_path,
+          args.content,
+          args?.message || 'update via mcp'
         );
         return ok({ ok: true, commit_sha: sha });
       }
@@ -200,50 +202,12 @@ if (msg.method === 'tools/call') {
     } catch (e) {
       return err(String(e?.message ?? e));
     }
-  })();
-  return; // 이 분기에서 응답 완료
-}
+  }
 
-
+  // ---- 미구현 ----
   return bad(-32601, `Method not found: ${msg.method}`);
-  // --- add minimal tools ---
-  if (msg.method === 'tools/list') {
-    const result = {
-      tools: [
-        { name: 'echo',        description: 'Echo back input',      inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
-        { name: 'fs_read',     description: 'Read file from GitHub', inputSchema: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } },
-        { name: 'fs_write',    description: 'Write file to GitHub',  inputSchema: { type: 'object', properties: { file_path: { type: 'string' }, content: { type: 'string' }, message: { type: 'string' } }, required: ['file_path','content'] } },
-      ]
-    };
-    return res.status(200).json({ jsonrpc: '2.0', id: rid, result });
-  }
-
-  if (msg.method === 'tools/call') {
-    const { name, arguments: args } = msg.params || {};
-    async function ok(result){ return res.status(200).json({ jsonrpc:'2.0', id: rid, result }); }
-    async function err(message){ return res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code:-32001, message } }); }
-
-    try {
-      if (name === 'echo') {
-        return ok({ text: String(args?.text ?? '') });
-      }
-      if (name === 'fs_read') {
-        if (!args?.file_path) return err('file_path is required');
-        const content = await readGitHubFile(args.file_path);
-        return ok({ content });
-      }
-      if (name === 'fs_write') {
-        if (!args?.file_path || typeof args?.content !== 'string') return err('file_path and content are required');
-        const sha = await writeGitHubFile(args.file_path, args.content, args?.message || 'update via mcp');
-        return ok({ ok: true, commit_sha: sha });
-      }
-      return err(`Unknown tool: ${name}`);
-    } catch (e) {
-      return err(String(e.message || e));
-    }
-  }
-
 });
+
 
 /* -------------------- (선택) /sse 레거시 핸들러 유지 -------------------- */
 // /sse도 커넥터가 찔러볼 수 있으니 CORS 락을 동일하게 적용
