@@ -1,4 +1,4 @@
-// mcp-server/index.js — FIXED v2.3 (Render-ready, dynamic CORS, healthz, SSE safe, repo defaults)
+// mcp-server/index.js — FIXED v2.4 (Render-ready, dynamic CORS, healthz, SSE @/ and @/mcp, repo defaults)
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -110,7 +110,7 @@ app.head(['/mcp','/mcp/'], (req, res) => {
   return res.sendStatus(200);
 });
 
-app.get(['/mcp','/mcp/'], async (req, res) => {
+function sseHandshake(req, res) {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
   setCors(res, {
@@ -123,18 +123,49 @@ app.get(['/mcp','/mcp/'], async (req, res) => {
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
   const postUrl = `${externalBaseUrl(req)}/mcp`;
-  // Robust SSE prelude in one shot (actual newlines in a template literal)
+  // SSE prelude (actual newlines)
   res.write(`event: endpoint
-data: ${JSON.stringify({ post: postUrl })}
-retry: 15000
+`);
+  res.write(`data: ${JSON.stringify({ post: postUrl })}
+`);
+  res.write(`retry: 15000
 
 `);
 
-  // Keep-alive comment line every 15s (template literal with real newlines)
   const ka = setInterval(() => res.write(`:
 
 `), 15000);
   req.on('close', () => clearInterval(ka));
+}
+
+app.get(['/mcp','/mcp/'], async (req, res) => {
+  sseHandshake(req, res);
+});
+
+/* -------------------- Root as SSE alias (for tools that call '/') -------------------- */
+app.options('/', (req, res) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, {
+    origin,
+    methods: ['GET','POST','OPTIONS'],
+    allowHeaders: req.headers['access-control-request-headers'] || 'accept, content-type, authorization, mcp-protocol-version',
+  });
+  return res.sendStatus(204);
+});
+
+app.head('/', (req, res) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, { origin, methods: ['GET','OPTIONS'], allowHeaders: 'accept' });
+  return res.sendStatus(200);
+});
+
+app.get('/', (req, res) => {
+  const accept = String(req.headers.accept || '').toLowerCase();
+  const wantsSSE = accept.includes('text/event-stream') || 'mcp-protocol-version' in req.headers;
+  if (wantsSSE) return sseHandshake(req, res);
+  return res.json({ status: 'ok', message: 'MCP server is running' });
 });
 
 /* -------------------- GitHub helpers -------------------- */
@@ -299,7 +330,9 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
       console.error('[MCP] tools/call error', e, {
         owner: !!ghOwner, repo: !!ghRepo, token: !!ghToken, branch: ghBranch || '(default)'
       });
-      return err(String(e?.message ?? e));
+      // bubble up an informative message
+      const msgText = e?.response?.data?.message || e?.message || String(e);
+      return err(msgText);
     }
   }
 
@@ -314,8 +347,6 @@ app.get('/healthz', (req, res) => {
   setCors(res, { origin, methods: ['GET','OPTIONS'], allowHeaders: 'accept' });
   res.json({ status: 'ok', message: 'MCP server is healthy' });
 });
-
-app.get('/', (_req, res) => res.json({ status: 'ok', message: 'MCP server is running' }));
 
 /* -------------------- start -------------------- */
 const server = app.listen(port, () => {
