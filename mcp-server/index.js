@@ -163,6 +163,12 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
   const bad = (code, message) => res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code, message } });
 
   if (!isRequest) return bad(-32600, 'Invalid Request');
+{
+  name: 'env_check',
+  description: 'Report which GitHub env vars are set (booleans only)',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+}
+
 
   // ---- initialize ----
   if (msg.method === 'initialize') {
@@ -228,6 +234,14 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
         // UI 친화적 래핑
         return ok({ ok: true, tool: 'echo', data: { type: 'text', text: String(args?.text ?? '') } });
       }
+if (name === 'env_check') {
+  return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
+    GH_OWNER: !!process.env.GH_OWNER,
+    GH_REPO:  !!process.env.GH_REPO,
+    GH_TOKEN: !!process.env.GH_TOKEN
+  }}});
+}
+
 
       if (name === 'env_check') {
         return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
