@@ -179,6 +179,83 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
   }
 
   return bad(-32601, `Method not found: ${msg.method}`);
+// ---- __diag (진단용): 현재 핸들러 버전/시간/라우트 유무를 반환 ----
+if (msg.method === '__diag') {
+  return ok({
+    handler: 'mcp-post-vFINAL',
+    time: new Date().toISOString(),
+    routes: {
+      hasToolsList: true,
+      hasToolsCall: true
+    }
+  });
+}
+
+// ---- tools/list ----
+if (msg.method === 'tools/list') {
+  return ok({
+    tools: [
+      {
+        name: 'echo',
+        description: 'Echo back input',
+        inputSchema: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text']
+        }
+      },
+      {
+        name: 'fs_read',
+        description: 'Read file from GitHub',
+        inputSchema: {
+          type: 'object',
+          properties: { file_path: { type: 'string' } },
+          required: ['file_path']
+        }
+      },
+      {
+        name: 'fs_write',
+        description: 'Write file to GitHub',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+            content:   { type: 'string' },
+            message:   { type: 'string' }
+          },
+          required: ['file_path','content']
+        }
+      }
+    ]
+  });
+}
+
+// ---- tools/call ----
+if (msg.method === 'tools/call') {
+  const { name, arguments: args } = msg.params || {};
+  try {
+    if (name === 'echo') {
+      return ok({ text: String(args?.text ?? '') });
+    }
+    if (name === 'fs_read') {
+      if (!args?.file_path) return err('file_path is required');
+      const content = await readGitHubFile(args.file_path);
+      return ok({ content });
+    }
+    if (name === 'fs_write') {
+      if (!args?.file_path || typeof args?.content !== 'string')
+        return err('file_path and content are required');
+      const sha = await writeGitHubFile(
+        args.file_path, args.content, args?.message || 'update via mcp'
+      );
+      return ok({ ok: true, commit_sha: sha });
+    }
+    return err(`Unknown tool: ${name}`);
+  } catch (e) {
+    return err(String(e?.message ?? e));
+  }
+}
+
 });
 
 /* health */
