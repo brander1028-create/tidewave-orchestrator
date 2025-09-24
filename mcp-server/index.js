@@ -33,7 +33,7 @@ function lockCors(res, origin) {
           if (kk === 'access-control-allow-origin') headers[k] = origin;
           if (kk === 'vary') {
             const v = String(headers[k] || '');
-            if (!v.toLowerCase().split(',').map(s => s.trim()).includes('origin')) {
+            if (!v.toLowerCase().split(',').map(s=>s.trim()).includes('origin')) {
               headers[k] = v ? (v + ', Origin') : 'Origin';
             }
           }
@@ -62,11 +62,11 @@ function setCors(res, { origin, methods, allowHeaders, maxAge = 86400 }) {
 }
 
 /* -------------------- /mcp (guard + body) -------------------- */
-app.use(['/mcp', '/mcp/'], (req, res, next) => {
+app.use(['/mcp','/mcp/'], (req, res, next) => {
   lockCors(res, 'https://chat.openai.com');
   setCors(res, {
     origin: req.headers.origin || 'https://chat.openai.com',
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET','POST','OPTIONS'],
     allowHeaders: req.headers['access-control-request-headers'] || 'accept, content-type, authorization, mcp-protocol-version',
   });
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -100,7 +100,7 @@ app.get(['/mcp','/mcp/'], async (req, res) => {
 const ghToken  = process.env.GH_TOKEN;
 const ghOwner  = process.env.GH_OWNER;
 const ghRepo   = process.env.GH_REPO;
-const ghBranch = process.env.GH_BRANCH; // (선택) 없으면 기본 브랜치
+const ghBranch = process.env.GH_BRANCH; // optional
 
 let octokit = ghToken ? new Octokit({ auth: ghToken }) : null;
 if (!octokit) console.warn('Warning: GH_TOKEN not set. GitHub endpoints will fail.');
@@ -123,16 +123,9 @@ async function writeGitHubFile(path, content, message = 'Update file') {
     if (ghBranch) getParams.ref = ghBranch;
     const { data } = await octokit.repos.getContent(getParams);
     if (!Array.isArray(data)) sha = data.sha;
-  } catch (_) { /* not exists — create */ }
+  } catch (_) { /* not exists — will create */ }
 
-  const putParams = {
-    owner: ghOwner,
-    repo: ghRepo,
-    path,
-    message,
-    content: encoded,
-    sha,
-  };
+  const putParams = { owner: ghOwner, repo: ghRepo, path, message, content: encoded, sha };
   if (ghBranch) putParams.branch = ghBranch;
 
   const r = await octokit.repos.createOrUpdateFileContents(putParams);
@@ -163,12 +156,6 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
   const bad = (code, message) => res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code, message } });
 
   if (!isRequest) return bad(-32600, 'Invalid Request');
-{
-  name: 'env_check',
-  description: 'Report which GitHub env vars are set (booleans only)',
-  inputSchema: { type: 'object', properties: {}, additionalProperties: false }
-}
-
 
   // ---- initialize ----
   if (msg.method === 'initialize') {
@@ -231,17 +218,8 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
 
     try {
       if (name === 'echo') {
-        // UI 친화적 래핑
         return ok({ ok: true, tool: 'echo', data: { type: 'text', text: String(args?.text ?? '') } });
       }
-if (name === 'env_check') {
-  return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
-    GH_OWNER: !!process.env.GH_OWNER,
-    GH_REPO:  !!process.env.GH_REPO,
-    GH_TOKEN: !!process.env.GH_TOKEN
-  }}});
-}
-
 
       if (name === 'env_check') {
         return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
