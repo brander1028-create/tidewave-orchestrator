@@ -8,6 +8,14 @@ const axios = require('axios');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// res.end 직전 최종 강제(마지막 보정)
+const __origEnd = res.end.bind(res);
+res.end = function (chunk, encoding, cb) {
+  res.setHeader('Access-Control-Allow-Origin', 'https://chat.openai.com');
+  return __origEnd(chunk, encoding, cb);
+};
+
+
 // --- /sse 전용 CORS 가드(최종 오버라이드) ---
 app.use(['/sse','/sse/'], (req, res, next) => {
   // 최종 단계까지 헤더 강제 교체: setHeader + writeHead 둘 다 훅
