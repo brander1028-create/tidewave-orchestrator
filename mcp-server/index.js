@@ -1,4 +1,4 @@
-// mcp-server/index.js — FIXED v2.1 (Render-ready, dynamic CORS, healthz, SSE safe)
+// mcp-server/index.js — FIXED v2.2 (Render-ready, dynamic CORS, healthz, SSE safe, repo defaults)
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -123,19 +123,23 @@ app.get(['/mcp','/mcp/'], async (req, res) => {
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
   const postUrl = `${externalBaseUrl(req)}/mcp`;
-  // robust SSE writes using template literal to avoid accidental broken quotes
-  res.write(`event: endpoint\n`);
-  res.write(`data: ${JSON.stringify({ post: postUrl })}\n`);
-  res.write(`retry: 15000\n\n`);
+  // Robust SSE prelude in one shot (actual newlines)
+  res.write(`event: endpoint
+data: ${JSON.stringify({ post: postUrl })}
+retry: 15000
 
-  const ka = setInterval(() => res.write(':\n\n'), 15000);
+`);
+
+  const ka = setInterval(() => res.write(':
+
+'), 15000);
   req.on('close', () => clearInterval(ka));
 });
 
 /* -------------------- GitHub helpers -------------------- */
 const ghToken  = process.env.GH_TOKEN;
-const ghOwner  = process.env.GH_OWNER;
-const ghRepo   = process.env.GH_REPO;
+const ghOwner  = process.env.GH_OWNER || 'brander1028-create';
+const ghRepo   = process.env.GH_REPO  || 'tidewave-orchestrator';
 const ghBranch = process.env.GH_BRANCH; // optional
 
 let octokit = ghToken ? new Octokit({ auth: ghToken }) : null;
