@@ -132,11 +132,78 @@ app.post(['/mcp','/mcp/'], (req, res) => {
     return res.status(200).json({ jsonrpc: '2.0', id: rid, result });
   }
 
-  if (msg.method === 'tools/list') {
-    // 최소 1개 도구를 노출하는 편이 호환성↑ — 필요 시 추가
-    const result = { tools: [] };
-    return res.status(200).json({ jsonrpc: '2.0', id: rid, result });
-  }
+// tools/list — 최소 3개 도구 노출
+if (msg.method === 'tools/list') {
+  const result = {
+    tools: [
+      {
+        name: 'echo',
+        description: 'Echo back input',
+        inputSchema: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text']
+        }
+      },
+      {
+        name: 'fs_read',
+        description: 'Read file from GitHub',
+        inputSchema: {
+          type: 'object',
+          properties: { file_path: { type: 'string' } },
+          required: ['file_path']
+        }
+      },
+      {
+        name: 'fs_write',
+        description: 'Write file to GitHub',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+            content: { type: 'string' },
+            message: { type: 'string' }
+          },
+          required: ['file_path','content']
+        }
+      }
+    ]
+  };
+  return res.status(200).json({ jsonrpc: '2.0', id: rid, result });
+}
+
+// tools/call — 도구 실행
+if (msg.method === 'tools/call') {
+  const { name, arguments: args } = msg.params || {};
+  const ok  = (result) => res.status(200).json({ jsonrpc:'2.0', id: rid, result });
+  const err = (message)=> res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code:-32001, message } });
+
+  (async () => {
+    try {
+      if (name === 'echo') {
+        return ok({ text: String(args?.text ?? '') });
+      }
+      if (name === 'fs_read') {
+        if (!args?.file_path) return err('file_path is required');
+        const content = await readGitHubFile(args.file_path);
+        return ok({ content });
+      }
+      if (name === 'fs_write') {
+        if (!args?.file_path || typeof args?.content !== 'string')
+          return err('file_path and content are required');
+        const sha = await writeGitHubFile(
+          args.file_path, args.content, args?.message || 'update via mcp'
+        );
+        return ok({ ok: true, commit_sha: sha });
+      }
+      return err(`Unknown tool: ${name}`);
+    } catch (e) {
+      return err(String(e?.message ?? e));
+    }
+  })();
+  return; // 이 분기에서 응답 완료
+}
+
 
   return bad(-32601, `Method not found: ${msg.method}`);
   // --- add minimal tools ---
