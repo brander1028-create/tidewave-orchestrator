@@ -109,6 +109,7 @@ async function writeGitHubFile(path, content, message = 'Update file') {
 }
 
 /* JSON-RPC: initialize / tools/list / tools/call */
+// POST /mcp → JSON-RPC (initialize / tools/list / tools/call)
 app.post(['/mcp','/mcp/'], async (req, res) => {
   lockCors(res, 'https://chat.openai.com');
   setCors(res, {
@@ -117,6 +118,10 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
     allowHeaders: 'accept, content-type, authorization, mcp-protocol-version',
   });
   res.type('application/json; charset=utf-8');
+
+  // (선택) 실행 로깅 — 문제시 디버깅에 도움
+  const _rxAt = new Date().toISOString();
+  console.log('[MCP] POST /mcp rx @', _rxAt, 'body=', JSON.stringify(req.body));
 
   const msg = req.body || {};
   const isRequest    = msg && typeof msg === 'object' && 'method' in msg && 'id' in msg;
@@ -127,8 +132,10 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
   const ok  = (result)  => res.status(200).json({ jsonrpc:'2.0', id: rid, result });
   const err = (message) => res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code:-32001, message } });
   const bad = (code, message) => res.status(200).json({ jsonrpc:'2.0', id: rid, error:{ code, message } });
+
   if (!isRequest) return bad(-32600, 'Invalid Request');
 
+  // ---- initialize ----
   if (msg.method === 'initialize') {
     return ok({
       protocolVersion: '2025-06-18',
@@ -138,45 +145,81 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
     });
   }
 
+  // ---- tools/list ----
   if (msg.method === 'tools/list') {
     return ok({
       tools: [
-        { name: 'echo',
+        {
+          name: 'echo',
           description: 'Echo back input',
-          inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
-        { name: 'fs_read',
+          inputSchema: {
+            type: 'object',
+            properties: { text: { type: 'string' } },
+            required: ['text']
+          }
+        },
+        {
+          name: 'fs_read',
           description: 'Read file from GitHub',
-          inputSchema: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } },
-        { name: 'fs_write',
+          inputSchema: {
+            type: 'object',
+            properties: { file_path: { type: 'string' } },
+            required: ['file_path']
+          }
+        },
+        {
+          name: 'fs_write',
           description: 'Write file to GitHub',
-          inputSchema: { type: 'object',
-            properties: { file_path: { type: 'string' }, content: { type: 'string' }, message: { type: 'string' } },
-            required: ['file_path','content'] } }
+          inputSchema: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+              content:   { type: 'string' },
+              message:   { type: 'string' }
+            },
+            required: ['file_path','content']
+          }
+        }
       ]
     });
   }
 
+  // ---- tools/call ----
   if (msg.method === 'tools/call') {
     const { name, arguments: args } = msg.params || {};
+    console.log('[MCP] tools/call', { name, args }); // 로그
+
     try {
       if (name === 'echo') {
         return ok({ text: String(args?.text ?? '') });
       }
+
       if (name === 'fs_read') {
         if (!args?.file_path) return err('file_path is required');
         const content = await readGitHubFile(args.file_path);
         return ok({ content });
       }
+
       if (name === 'fs_write') {
-        if (!args?.file_path || typeof args?.content !== 'string') return err('file_path and content are required');
-        const sha = await writeGitHubFile(args.file_path, args.content, args?.message || 'update via mcp');
+        if (!args?.file_path || typeof args?.content !== 'string')
+          return err('file_path and content are required');
+        const sha = await writeGitHubFile(
+          args.file_path, args.content, args?.message || 'update via mcp'
+        );
         return ok({ ok: true, commit_sha: sha });
       }
+
       return err(`Unknown tool: ${name}`);
     } catch (e) {
+      console.error('[MCP] tools/call error', e);    // 로그
       return err(String(e?.message ?? e));
     }
   }
+
+  // ---- 기타 ----
+  return bad(-32601, `Method not found: ${msg.method}`);
+});
+
 
   return bad(-32601, `Method not found: ${msg.method}`);
 // ---- __diag (진단용): 현재 핸들러 버전/시간/라우트 유무를 반환 ----
