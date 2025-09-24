@@ -5,6 +5,20 @@ const axios = require('axios');
 
 const app = express();
   
+// === SSE-CORS-ROUTE START ===
+const __sseCorsOpts = {
+  origin: 'https://chat.openai.com',
+  methods: ['GET','HEAD','OPTIONS'],
+  allowedHeaders: ['accept','content-type','authorization'],
+  credentials: false,
+  maxAge: 86400
+};
+app.use(['/sse','/sse/'], cors(__sseCorsOpts));
+app.options(['/sse','/sse/'], cors(__sseCorsOpts), (req,res)=>res.sendStatus(204));
+// === SSE-CORS-ROUTE END ===
+
+
+  
 // === SSE-PREFLIGHT-TOP START ===
 function setSseCors(req, res) { res.removeHeader("Access-Control-Allow-Origin"); 
   const origin = req.headers.origin || 'https://chat.openai.com';
@@ -235,6 +249,7 @@ app.get('/sse__disabled__20250924110013', (req, res) => {
   const keepalive = setInterval(() => res.write(':\n\n'), 15000);
   req.on('close', () => clearInterval(keepalive));
 });
+
 
 
 
