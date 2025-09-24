@@ -1,4 +1,4 @@
-// mcp-server/index.js — FIXED v2.5 (Render-ready, root SSE, healthz, robust handlers)
+// mcp-server/index.js — FINAL (Render-ready, /mcp + /run, healthz, robots, robust handlers)
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -10,9 +10,7 @@ const port = process.env.PORT || 3000;
 
 /* -------------------- CORS helpers -------------------- */
 const ALLOW_ORIGINS = (process.env.CORS_ALLOW_ORIGINS || 'https://chatgpt.com,https://chat.openai.com,https://staging.chatgpt.com')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+  .split(',').map(s => s.trim()).filter(Boolean);
 
 function chooseOrigin(req) {
   const o = req.headers.origin || '';
@@ -41,7 +39,7 @@ function setCors(res, { origin, methods, allowHeaders, maxAge = 86400 }) {
   res.setHeader('Access-Control-Allow-Methods', methods.join(','));
   res.setHeader('Access-Control-Allow-Headers', allowHeaders);
   res.setHeader('Access-Control-Max-Age', String(maxAge));
-  // help SSE over proxies
+  // SSE-friendly
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('Content-Encoding', 'identity');
@@ -67,18 +65,12 @@ function sseHandshake(req, res) {
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
   const postUrl = `${externalBaseUrl(req)}/mcp`;
-  res.write(`event: endpoint
-`);
-  res.write(`data: ${JSON.stringify({ post: postUrl })}
-`);
-  res.write(`retry: 15000
-
-`);
+  res.write(`event: endpoint\n`);
+  res.write(`data: ${JSON.stringify({ post: postUrl })}\n`);
+  res.write(`retry: 15000\n\n`);
 
   const ka = setInterval(() => {
-    try { res.write(`:
-
-`); } catch (_) { /* client gone */ }
+    try { res.write(`:\n\n`); } catch (_) {}
   }, 15000);
   req.on('close', () => clearInterval(ka));
 }
@@ -89,7 +81,7 @@ app.use(['/mcp', '/mcp/'], (req, res, next) => {
   lockCors(res, origin);
   setCors(res, {
     origin,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET','POST','OPTIONS'],
     allowHeaders: req.headers['access-control-request-headers'] || 'accept, content-type, authorization, mcp-protocol-version',
   });
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -109,7 +101,7 @@ app.head(['/mcp','/mcp/'], (req, res) => {
   return res.sendStatus(200);
 });
 
-// GET /mcp -> SSE
+// GET /mcp -> SSE (endpoint discovery)
 app.get(['/mcp','/mcp/'], (req, res) => sseHandshake(req, res));
 
 /* -------------------- Root as SSE (dev-mode friendly) -------------------- */
@@ -123,8 +115,6 @@ app.options('/', (req, res) => {
   });
   return res.sendStatus(204);
 });
-
-// Always serve SSE on GET / so tool launchers that call root get an endpoint immediately
 app.get('/', (req, res) => sseHandshake(req, res));
 
 /* -------------------- GitHub helpers -------------------- */
@@ -155,100 +145,85 @@ async function writeGitHubFile(path, content, message = 'Update file') {
     const { data } = await octokit.repos.getContent(getParams);
     if (!Array.isArray(data)) sha = data.sha;
   } catch (_) { /* create new file */ }
-
   const putParams = {
-    owner: ghOwner,
-    repo: ghRepo,
-    path,
-    message,
-    content: encoded,
-    sha,
+    owner: ghOwner, repo: ghRepo, path, message, content: encoded, sha,
   };
   if (ghBranch) putParams.branch = ghBranch;
-
   const r = await octokit.repos.createOrUpdateFileContents(putParams);
   return r.data.commit.sha;
 }
-// === /run 호환 레이어 시작 ===
 
-// 커넥터에서 mcp-server-new_* 같은 접두사를 써도 통과시키기
-function norm(name = "") {
-  return String(name).replace(/^mcp-server-(new_)?/, "");
+/* -------------------- /run compatibility layer (for connectors calling /run) -------------------- */
+function normToolName(name = '') {
+  return String(name).replace(/^mcp-server-(new_)?/, '');
 }
 
-// 서버 내부 툴 실행 재사용
 async function runToolCompat(nameRaw, args = {}) {
-  const name = norm(nameRaw);
-
-  if (name === "env_check") {
-    return { ok: true, tool: "env_check", data: { type: "json", json: {
+  const name = normToolName(nameRaw);
+  if (name === 'env_check') {
+    return { ok: true, tool: 'env_check', data: { type: 'json', json: {
       GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
-    }}};
+    } } };
   }
-
-  if (name === "fs_read") {
-    if (!args.file_path) throw new Error("file_path is required");
+  if (name === 'fs_read') {
+    if (!args.file_path) throw new Error('file_path is required');
     const content = await readGitHubFile(args.file_path);
-    return { ok: true, tool: "fs_read", data: { type: "text", text: content } };
+    return { ok: true, tool: 'fs_read', data: { type: 'text', text: content } };
   }
-
-  if (name === "fs_write") {
-    if (!args.file_path || typeof args.content !== "string")
-      throw new Error("file_path and content are required");
-    const sha = await writeGitHubFile(args.file_path, args.content, args.message || "via /run");
-    return { ok: true, tool: "fs_write", data: { type: "text", text: `commit=${sha}` }, commit_sha: sha };
+  if (name === 'fs_write') {
+    if (!args.file_path || typeof args.content !== 'string')
+      throw new Error('file_path and content are required');
+    const sha = await writeGitHubFile(args.file_path, args.content, args.message || 'via /run');
+    return { ok: true, tool: 'fs_write', data: { type: 'text', text: `commit=${sha}` }, commit_sha: sha };
   }
-
   return { ok: false, error: `unknown tool: ${nameRaw}` };
 }
 
-// CORS/OPTIONS (기존 chooseOrigin/lockCors/setCors 사용)
-app.use(["/run","/tools/run","/batch_run"], (req, res, next) => {
+// CORS/OPTIONS for /run family
+app.use(['/run','/tools/run','/batch_run'], (req, res, next) => {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
   setCors(res, {
     origin,
-    methods: ["POST","OPTIONS"],
-    allowHeaders: req.headers["access-control-request-headers"] || "accept, content-type, authorization",
+    methods: ['POST','OPTIONS'],
+    allowHeaders: req.headers['access-control-request-headers'] || 'accept, content-type, authorization',
   });
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
-// 항상 200 JSON으로 감싸서 424 방지
+// always 200 JSON to avoid 424 wrapping
 function safeJson(res, payload) {
   try { return res.status(200).json(payload); }
   catch (e) { return res.status(200).json({ ok:false, error:String(e?.message||e) }); }
 }
 
 // /run & /tools/run
-app.post(["/run","/tools/run"], express.json(), async (req, res) => {
+app.post(['/run','/tools/run'], express.json(), async (req, res) => {
   try {
     const { name, arguments: args = {} } = req.body || {};
     const out = await runToolCompat(name, args);
     return safeJson(res, out);
   } catch (e) {
-    console.error("[compat /run] error", e);
+    console.error('[compat /run] error', e);
     return safeJson(res, { ok:false, error:String(e?.message||e) });
   }
 });
 
 // /batch_run
-app.post("/batch_run", express.json(), async (req, res) => {
+app.post('/batch_run', express.json(), async (req, res) => {
   try {
     const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
     const results = [];
     for (const s of steps) results.push(await runToolCompat(s?.name, s?.arguments||{}));
     return safeJson(res, { ok:true, results });
   } catch (e) {
-    console.error("[compat /batch_run] error", e);
+    console.error('[compat /batch_run] error', e);
     return safeJson(res, { ok:false, error:String(e?.message||e) });
   }
 });
 
-// === /run 호환 레이어 끝 ===
-
-/* -------------------- JSON-RPC (initialize / tools/list / tools/call) -------------------- */
+/* -------------------- JSON-RPC (/mcp) -------------------- */
 app.post(['/mcp','/mcp/'], async (req, res) => {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
@@ -274,7 +249,7 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
 
   if (!isRequest) return bad(-32600, 'Invalid Request');
 
-  // ---- initialize ----
+  // initialize
   if (msg.method === 'initialize') {
     return ok({
       protocolVersion: '2025-06-18',
@@ -284,82 +259,57 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
     });
   }
 
-  // ---- tools/list ----
+  // tools/list
   if (msg.method === 'tools/list') {
     return ok({
       tools: [
-        {
-          name: 'echo',
+        { name: 'echo',
           description: 'Echo back input',
-          inputSchema: {
-            type: 'object',
-            properties: { text: { type: 'string' } },
-            required: ['text']
-          }
-        },
-        {
-          name: 'env_check',
+          inputSchema: { type:'object', properties:{ text:{ type:'string' } }, required:['text'] } },
+        { name: 'env_check',
           description: 'Report which GitHub env vars are set (booleans only)',
-          inputSchema: { type: 'object', properties: {}, additionalProperties: false }
-        },
-        {
-          name: 'fs_read',
+          inputSchema: { type:'object', properties:{}, additionalProperties:false } },
+        { name: 'fs_read',
           description: 'Read file from GitHub',
-          inputSchema: {
-            type: 'object',
-            properties: { file_path: { type: 'string' } },
-            required: ['file_path']
-          }
-        },
-        {
-          name: 'fs_write',
+          inputSchema: { type:'object', properties:{ file_path:{ type:'string' } }, required:['file_path'] } },
+        { name: 'fs_write',
           description: 'Write file to GitHub',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              file_path: { type: 'string' },
-              content:   { type: 'string' },
-              message:   { type: 'string' }
-            },
-            required: ['file_path','content']
-          }
-        }
+          inputSchema: { type:'object', properties:{ file_path:{ type:'string' }, content:{ type:'string' }, message:{ type:'string' } }, required:['file_path','content'] } },
       ]
     });
   }
 
-  // ---- tools/call ----
+  // tools/call
   if (msg.method === 'tools/call') {
     const { name, arguments: args } = msg.params || {};
     console.log('[MCP] tools/call', { name, args, env: { owner: !!ghOwner, repo: !!ghRepo, token: !!ghToken, branch: !!ghBranch } });
 
     try {
       if (name === 'echo') {
-        return ok({ ok: true, tool: 'echo', data: { type: 'text', text: String(args?.text ?? '') } });
+        return ok({ ok:true, tool:'echo', data:{ type:'text', text:String(args?.text ?? '') } });
       }
 
       if (name === 'env_check') {
-        return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
-          GH_OWNER: !!ghOwner,
-          GH_REPO:  !!ghRepo,
-          GH_TOKEN: !!ghToken,
-          GH_BRANCH: !!ghBranch
-        }}});
+        try {
+          return ok({ ok:true, tool:'env_check', data:{ type:'json', json:{
+            GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
+          } } });
+        } catch (e) {
+          return ok({ ok:false, tool:'env_check', error:String(e?.message || e) }); // keep 200 JSON
+        }
       }
 
       if (name === 'fs_read') {
         if (!args?.file_path) return err('file_path is required');
         const content = await readGitHubFile(args.file_path);
-        return ok({ ok: true, tool: 'fs_read', data: { type: 'text', text: content } });
+        return ok({ ok:true, tool:'fs_read', data:{ type:'text', text: content } });
       }
 
       if (name === 'fs_write') {
         if (!args?.file_path || typeof args?.content !== 'string')
           return err('file_path and content are required');
-        const sha = await writeGitHubFile(
-          args.file_path, args.content, args?.message || 'update via mcp'
-        );
-        return ok({ ok: true, tool: 'fs_write', data: { type: 'text', text: `commit=${sha}` }, commit_sha: sha });
+        const sha = await writeGitHubFile(args.file_path, args.content, args?.message || 'update via mcp');
+        return ok({ ok:true, tool:'fs_write', data:{ type:'text', text:`commit=${sha}` }, commit_sha: sha });
       }
 
       return err(`Unknown tool: ${name}`);
@@ -368,15 +318,15 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
         owner: !!ghOwner, repo: !!ghRepo, token: !!ghToken, branch: ghBranch || '(default)'
       });
       const msgText = e?.response?.data?.message || e?.message || String(e);
-      return err(msgText);
+      return err(msgText); // keep 200 JSON with error envelope
     }
   }
 
-  // ---- fallback ----
+  // fallback
   return bad(-32601, `Method not found: ${msg.method}`);
 });
 
-/* -------------------- health -------------------- */
+/* -------------------- health & misc -------------------- */
 app.get('/healthz', (req, res) => {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
@@ -390,7 +340,6 @@ app.get('/robots.txt', (_req, res) =>
   res.type('text/plain').send('User-agent: *\nDisallow:')
 );
 
-
 /* -------------------- error & signal handlers -------------------- */
 app.use((err, _req, res, _next) => {
   try { console.error('[EXPRESS ERROR]', err); } catch (_) {}
@@ -399,8 +348,7 @@ app.use((err, _req, res, _next) => {
 
 process.on('uncaughtException', (e) => {
   console.error('[uncaughtException]', e);
-  // Let Render restart the process on crash
-  setTimeout(() => process.exit(1), 100);
+  setTimeout(() => process.exit(1), 100); // let Render restart
 });
 process.on('unhandledRejection', (e) => {
   console.error('[unhandledRejection]', e);
@@ -413,121 +361,3 @@ const server = app.listen(port, () => {
 server.keepAliveTimeout = 65000;
 server.headersTimeout   = 66000;
 server.requestTimeout   = 0; // never kill long SSE
-
-// === /run 호환 레이어 시작 ===
-
-// (1) 이름 정규화: mcp-server-new_* / mcp-server_* 프리픽스도 수용
-function normalizeName(name = "") {
-  return String(name).replace(/^mcp-server-new_/, "").replace(/^mcp-server_/, "");
-}
-
-// (2) 실제 툴 실행 (서버 내부 함수 재사용)
-async function runToolCompat(nameRaw, args = {}) {
-  const name = normalizeName(nameRaw);
-
-  if (name === "env_check") {
-    return { ok: true, tool: "env_check", data: { type: "json", json: {
-      GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
-    }}};
-  }
-
-  if (name === "fs_read") {
-    if (!args.file_path) throw new Error("file_path is required");
-    const content = await readGitHubFile(args.file_path);
-    return { ok: true, tool: "fs_read", data: { type: "text", text: content } };
-  }
-
-  if (name === "fs_write") {
-    if (!args.file_path || typeof args.content !== "string")
-      throw new Error("file_path and content are required");
-    const sha = await writeGitHubFile(args.file_path, args.content, args.message || "via /run");
-    return { ok: true, tool: "fs_write", data: { type: "text", text: `commit=${sha}` }, commit_sha: sha };
-  }
-
-  return { ok: false, error: `unknown tool: ${nameRaw}` };
-}
-
-// (3) CORS + OPTIONS 세팅 (/run 계열)
-app.use(["/run","/tools/run","/batch_run"], (req, res, next) => {
-  const origin = chooseOrigin(req);
-  lockCors(res, origin);
-  setCors(res, {
-    origin,
-    methods: ["POST","OPTIONS"],
-    allowHeaders: req.headers["access-control-request-headers"] || "accept, content-type, authorization",
-  });
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
-// (4) 항상 200 JSON으로 감싸기(게이트웨이 424 방지)
-function safeJson(res, payload) {
-  try { return res.status(200).json(payload); }
-  catch (e) { return res.status(200).json({ ok:false, error:String(e?.message||e) }); }
-}
-
-// (5) /run 계열 라우트
-app.post(["/run","/tools/run"], express.json(), async (req, res) => {
-  try {
-    const { name, arguments: args = {} } = req.body || {};
-    const out = await runToolCompat(name, args);
-    return safeJson(res, out);
-  } catch (e) {
-    console.error("[compat /run] error", e);
-    return safeJson(res, { ok:false, error:String(e?.message||e) });
-  }
-});
-
-app.post("/batch_run", express.json(), async (req, res) => {
-  try {
-    const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
-    const results = [];
-    for (const s of steps) results.push(await runToolCompat(s?.name, s?.arguments||{}));
-    return safeJson(res, { ok:true, results });
-  } catch (e) {
-    console.error("[compat /batch_run] error", e);
-    return safeJson(res, { ok:false, error:String(e?.message||e) });
-  }
-});
-
-// 진단용 REST: /tools/env_check
-app.use("/tools/env_check", (req, res, next) => {
-  const origin = chooseOrigin(req);
-  lockCors(res, origin);
-  setCors(res, {
-    origin,
-    methods: ["POST","OPTIONS"],
-    allowHeaders: req.headers["access-control-request-headers"] || "accept, content-type, authorization",
-  });
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
-app.post("/tools/env_check", express.json(), (req, res) => {
-  try {
-    res.status(200).json({
-      GH_OWNER: !!process.env.GH_OWNER,
-      GH_REPO:  !!process.env.GH_REPO,
-      GH_TOKEN: !!process.env.GH_TOKEN,
-    });
-  } catch (e) {
-    // 실패도 200 JSON으로 감싸 424 방지
-    res.status(200).json({ ok:false, error:String(e) });
-  }
-});
-if (name === 'env_check') {
-  try {
-    return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
-      GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
-    }}});
-  } catch (e) {
-    // 424 방지: 에러도 200 JSON으로
-    return ok({ ok: false, tool: 'env_check', error: String(e?.message || e) });
-  }
-}
-$body = '{"name":"env_check","arguments":{}}'
-irm "https://mcp-server-1zw4.onrender.com/run" -Method Post -Headers @{ "content-type"="application/json" } -Body $body
-
-
-// === /run 호환 레이어 끝 ===
-
