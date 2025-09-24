@@ -4,41 +4,6 @@ const { Octokit } = require('@octokit/rest');
 const axios = require('axios');
 
 const app = express();
-  
-// === SSE-PREFLIGHT-TOP START ===
-function setSseCors(req, res) {
-  const origin = req.headers.origin || 'https://chat.openai.com';
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers',
-    req.headers['access-control-request-headers'] || 'accept, content-type, authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.setHeader('Access-Control-Allow-Credentials', 'false');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Content-Encoding', 'identity');
-}
-// NOTE: Register before global cors()/helmet()/static()
-try {
-  if (typeof app !== 'undefined' && app && typeof app.options === 'function') {
-    app.options('/sse', (req, res) => { setSseCors(req, res); return res.sendStatus(204); });
-  }
-} catch {}
-// Guard: even if a global OPTIONS('*') exists, ensure /sse returns our CORS
-try {
-  if (typeof app !== 'undefined' && app && typeof app.use === 'function') {
-    app.use((req, res, next) => {
-      if (req.method === 'OPTIONS' && (req.path === '/sse' || req.path === '/sse/')) {
-        setSseCors(req, res); return res.sendStatus(204);
-      }
-      next();
-    });
-  }
-} catch {}
-// === SSE-PREFLIGHT-TOP END ===
-
-
 try { require("./sse-compat")(app); } catch (e) { console.error("sse-compat load failed", e); }
 
 const port = process.env.PORT || 3000;
@@ -177,27 +142,6 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'MCP server is running' });
 });
 
-  
-// === SSE-CANONICAL-BLOCK START ===
-app.head(['/sse','/sse/'], (req, res) => {
-  setSseCors(req, res);
-  res.type('text/event-stream');
-  if (typeof res.flushHeaders === 'function') res.flushHeaders();
-  return res.sendStatus(200);
-});
-app.get(['/sse','/sse/'], (req, res) => {
-  setSseCors(req, res);
-  res.type('text/event-stream; charset=utf-8');
-  if (typeof res.flushHeaders === 'function') res.flushHeaders();
-  const hello = { type:'handshake', protocol:'2024-11-05',
-    server:{ name:'tidewave-mcp', version:'0.1.0' }, capabilities:{ tools:true } };
-  res.write('event: handshake\n');
-  res.write('data: ' + JSON.stringify(hello) + '\n\n');
-  res.write('retry: 15000\n\n');
-  const ka = setInterval(()=>res.write(':\n\n'), 15000);
-  req.on('close', ()=>clearInterval(ka));
-});
-// === SSE-CANONICAL-BLOCK END ===
 app.listen(port, () => {
   console.log('MCP server listening on port ' + port);
 });
@@ -211,7 +155,7 @@ app.use('/sse', (req, res, next) => {
 });
 
 // SSE 핸들러
-app.get('/sse__disabled__20250924110013', (req, res) => {
+app.get('/sse', (req, res) => {
   // 일부 클라이언트가 charset을 싫어해서 정확히 지정
   res.setHeader('Content-Type', 'text/event-stream'); // ← charset 없이
   res.setHeader('Cache-Control', 'no-cache');
@@ -235,5 +179,4 @@ app.get('/sse__disabled__20250924110013', (req, res) => {
   const keepalive = setInterval(() => res.write(':\n\n'), 15000);
   req.on('close', () => clearInterval(keepalive));
 });
-
 
