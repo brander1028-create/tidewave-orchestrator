@@ -353,6 +353,40 @@ process.on('uncaughtException', (e) => {
 process.on('unhandledRejection', (e) => {
   console.error('[unhandledRejection]', e);
 });
+// ---- REST 진단 엔드포인트 (항상 200 JSON) ----
+app.post('/tools/env_check', express.json(), (req, res) => {
+  try {
+    res.status(200).json({
+      GH_OWNER: !!process.env.GH_OWNER,
+      GH_REPO:  !!process.env.GH_REPO,
+      GH_TOKEN: !!process.env.GH_TOKEN,
+    });
+  } catch (e) {
+    res.status(200).json({ ok:false, error:String(e) });
+  }
+});
+
+app.post('/tools/fs_read', express.json(), async (req, res) => {
+  try {
+    const fp = req.body?.file_path;
+    if (!fp) throw new Error('file_path is required');
+    const content = await readGitHubFile(fp);
+    res.status(200).json({ ok:true, content });
+  } catch (e) {
+    res.status(200).json({ ok:false, error:String(e?.message||e) });
+  }
+});
+
+app.post('/tools/fs_write', express.json(), async (req, res) => {
+  try {
+    const { file_path, content, message } = req.body || {};
+    if (!file_path || typeof content !== 'string') throw new Error('file_path and content are required');
+    const sha = await writeGitHubFile(file_path, content, message || 'via /tools');
+    res.status(200).json({ ok:true, commit_sha: sha });
+  } catch (e) {
+    res.status(200).json({ ok:false, error:String(e?.message||e) });
+  }
+});
 
 /* -------------------- start -------------------- */
 const server = app.listen(port, () => {
