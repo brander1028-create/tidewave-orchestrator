@@ -333,3 +333,82 @@ const server = app.listen(port, () => {
 server.keepAliveTimeout = 65000;
 server.headersTimeout   = 66000;
 server.requestTimeout   = 0; // never kill long SSE
+
+// === /run 호환 레이어 시작 ===
+
+// (1) 이름 정규화: mcp-server-new_* / mcp-server_* 프리픽스도 수용
+function normalizeName(name = "") {
+  return String(name).replace(/^mcp-server-new_/, "").replace(/^mcp-server_/, "");
+}
+
+// (2) 실제 툴 실행 (서버 내부 함수 재사용)
+async function runToolCompat(nameRaw, args = {}) {
+  const name = normalizeName(nameRaw);
+
+  if (name === "env_check") {
+    return { ok: true, tool: "env_check", data: { type: "json", json: {
+      GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
+    }}};
+  }
+
+  if (name === "fs_read") {
+    if (!args.file_path) throw new Error("file_path is required");
+    const content = await readGitHubFile(args.file_path);
+    return { ok: true, tool: "fs_read", data: { type: "text", text: content } };
+  }
+
+  if (name === "fs_write") {
+    if (!args.file_path || typeof args.content !== "string")
+      throw new Error("file_path and content are required");
+    const sha = await writeGitHubFile(args.file_path, args.content, args.message || "via /run");
+    return { ok: true, tool: "fs_write", data: { type: "text", text: `commit=${sha}` }, commit_sha: sha };
+  }
+
+  return { ok: false, error: `unknown tool: ${nameRaw}` };
+}
+
+// (3) CORS + OPTIONS 세팅 (/run 계열)
+app.use(["/run","/tools/run","/batch_run"], (req, res, next) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, {
+    origin,
+    methods: ["POST","OPTIONS"],
+    allowHeaders: req.headers["access-control-request-headers"] || "accept, content-type, authorization",
+  });
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+// (4) 항상 200 JSON으로 감싸기(게이트웨이 424 방지)
+function safeJson(res, payload) {
+  try { return res.status(200).json(payload); }
+  catch (e) { return res.status(200).json({ ok:false, error:String(e?.message||e) }); }
+}
+
+// (5) /run 계열 라우트
+app.post(["/run","/tools/run"], express.json(), async (req, res) => {
+  try {
+    const { name, arguments: args = {} } = req.body || {};
+    const out = await runToolCompat(name, args);
+    return safeJson(res, out);
+  } catch (e) {
+    console.error("[compat /run] error", e);
+    return safeJson(res, { ok:false, error:String(e?.message||e) });
+  }
+});
+
+app.post("/batch_run", express.json(), async (req, res) => {
+  try {
+    const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+    const results = [];
+    for (const s of steps) results.push(await runToolCompat(s?.name, s?.arguments||{}));
+    return safeJson(res, { ok:true, results });
+  } catch (e) {
+    console.error("[compat /batch_run] error", e);
+    return safeJson(res, { ok:false, error:String(e?.message||e) });
+  }
+});
+
+// === /run 호환 레이어 끝 ===
+
