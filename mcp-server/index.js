@@ -251,6 +251,12 @@ if (msg.method === 'tools/list') {
           required: ['text']
         }
       },
+{
+  name: 'env_check',
+  description: 'Report which GitHub env vars are set (booleans only)',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+},
+
       {
         name: 'fs_read',
         description: 'Read file from GitHub',
@@ -284,6 +290,14 @@ if (msg.method === 'tools/call') {
     if (name === 'echo') {
       return ok({ text: String(args?.text ?? '') });
     }
+if (name === 'env_check') {
+  return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
+    GH_OWNER: !!process.env.GH_OWNER,
+    GH_REPO:  !!process.env.GH_REPO,
+    GH_TOKEN: !!process.env.GH_TOKEN
+  }}});
+}
+
     if (name === 'fs_read') {
       if (!args?.file_path) return err('file_path is required');
       const content = await readGitHubFile(args.file_path);
