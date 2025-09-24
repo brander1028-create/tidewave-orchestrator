@@ -490,5 +490,44 @@ app.post("/batch_run", express.json(), async (req, res) => {
   }
 });
 
+// 진단용 REST: /tools/env_check
+app.use("/tools/env_check", (req, res, next) => {
+  const origin = chooseOrigin(req);
+  lockCors(res, origin);
+  setCors(res, {
+    origin,
+    methods: ["POST","OPTIONS"],
+    allowHeaders: req.headers["access-control-request-headers"] || "accept, content-type, authorization",
+  });
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+app.post("/tools/env_check", express.json(), (req, res) => {
+  try {
+    res.status(200).json({
+      GH_OWNER: !!process.env.GH_OWNER,
+      GH_REPO:  !!process.env.GH_REPO,
+      GH_TOKEN: !!process.env.GH_TOKEN,
+    });
+  } catch (e) {
+    // 실패도 200 JSON으로 감싸 424 방지
+    res.status(200).json({ ok:false, error:String(e) });
+  }
+});
+if (name === 'env_check') {
+  try {
+    return ok({ ok: true, tool: 'env_check', data: { type: 'json', json: {
+      GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
+    }}});
+  } catch (e) {
+    // 424 방지: 에러도 200 JSON으로
+    return ok({ ok: false, tool: 'env_check', error: String(e?.message || e) });
+  }
+}
+$body = '{"name":"env_check","arguments":{}}'
+irm "https://mcp-server-1zw4.onrender.com/run" -Method Post -Headers @{ "content-type"="application/json" } -Body $body
+
+
 // === /run 호환 레이어 끝 ===
 
