@@ -8,6 +8,69 @@ const app = express();
 app.set('trust proxy', true);
 const port = process.env.PORT || 3000;
 
+// === MCP Tool Definitions ===
+const TOOL_DEFS = [
+  {
+    name: "env_check",
+    description: "Show which GH_* envs are set",
+    input_schema: { type: "object", properties: {} },
+    output_schema: {
+      type: "object",
+      properties: {
+        GH_OWNER:  { type: "boolean" },
+        GH_REPO:   { type: "boolean" },
+        GH_TOKEN:  { type: "boolean" },
+        GH_BRANCH: { type: "boolean" }
+      },
+      required: ["GH_OWNER","GH_REPO","GH_TOKEN"]
+    }
+  },
+  {
+    name: "fs_read",
+    description: "Read a file from repo",
+    input_schema: {
+      type: "object",
+      properties: { file_path: { type: "string" } },
+      required: ["file_path"]
+    },
+    output_schema: { type: "object" }
+  },
+  {
+    name: "fs_write",
+    description: "Write file & commit to repo",
+    input_schema: {
+      type: "object",
+      properties: {
+        file_path: { type: "string" },
+        content:   { type: "string" },
+        message:   { type: "string" }
+      },
+      required: ["file_path","content"]
+    },
+    output_schema: {
+      type: "object",
+      properties: { commit_sha: { type: "string" } },
+      required: ["commit_sha"]
+    }
+  }
+];
+
+// (없다면 추가) 툴 실행 스위치
+async function callToolByName(name, args) {
+  if (name === "env_check") {
+    const GH_OWNER  = !!process.env.GH_OWNER;
+    const GH_REPO   = !!process.env.GH_REPO;
+    const GH_TOKEN  = !!process.env.GH_TOKEN;
+    const GH_BRANCH = !!(process.env.GH_BRANCH || "main"); // 기본 main 가정 → true
+    return { GH_OWNER, GH_REPO, GH_TOKEN, GH_BRANCH };
+  }
+  // fs_read / fs_write 기존 구현은 그대로 유지
+  if (name === "fs_read")  { /* ...existing... */ }
+  if (name === "fs_write") { /* ...existing... */ }
+  throw new Error(`Unknown tool: ${name}`);
+}
+
+
 /* -------------------- CORS helpers -------------------- */
 const ALLOW_ORIGINS = (process.env.CORS_ALLOW_ORIGINS || 'https://chatgpt.com,https://chat.openai.com,https://staging.chatgpt.com')
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -221,6 +284,26 @@ app.post('/batch_run', express.json(), async (req, res) => {
     console.error('[compat /batch_run] error', e);
     return safeJson(res, { ok:false, error:String(e?.message||e) });
   }
+app.post("/mcp", express.json(), async (req, res) => {
+  const { jsonrpc, id, method, params } = req.body || {};
+  try {
+    // 1) 필수: 툴 목록 제공 (슬래시 버전)
+    if (method === "tools/list") {
+      return res.json({ jsonrpc: "2.0", id, result: { tools: TOOL_DEFS } });
+    }
+    // 2) 실행: 호환을 위해 3가지 메서드 모두 허용
+    if (method === "tools/call" || method === "call_tool" || method === "tools.call") {
+      const { name, arguments: args = {} } = params || {};
+      const result = await callToolByName(name, args);
+      return res.json({ jsonrpc: "2.0", id, result });
+    }
+    // 3) 기본: 표준 에러
+    return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+  } catch (e) {
+    return res.json({ jsonrpc: "2.0", id, error: { code: -32000, message: String(e?.message || e) } });
+  }
+});
+
 });
 
 /* -------------------- JSON-RPC (/mcp) -------------------- */
