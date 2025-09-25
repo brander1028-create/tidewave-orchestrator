@@ -366,6 +366,21 @@ app.post(/^\/mcp\/[^\/]+\/([a-zA-Z0-9_\-\.]+)$/, async (req, res) => {
   } catch (e) {
     res.status(200).json({ ok: false, error: String(e?.message || e) });
   }
+
+});
+// Bridge: accept /mcp/<link-id>/<tool> with raw args body, always 200 JSON
+app.post(/^\/mcp\/[^\/]+\/([a-zA-Z0-9_\-\.]+)$/, async (req, res) => {
+  try {
+    const raw = req.params[0];                               // e.g. "echo"
+    const tool = String(raw || '').replace(/^mcp-server-(new_)?/, ''); // 접두사 제거
+    const args = (req.body && typeof req.body === 'object') ? req.body : {};
+    // 재사용 디스패처
+    const out = await callToolByName(tool, args);
+    // 항상 200 JSON
+    res.status(200).json({ ok: true, ...out });
+  } catch (e) {
+    res.status(200).json({ ok: false, error: String(e?.message || e) });
+  }
 });
 
 
