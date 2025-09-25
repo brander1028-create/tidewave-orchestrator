@@ -353,6 +353,22 @@ app.use((err, _req, res, _next) => {
 process.on('uncaughtException', (e) => { console.error('[uncaughtException]', e); setTimeout(() => process.exit(1), 100); });
 process.on('unhandledRejection', (e) => { console.error('[unhandledRejection]', e); });
 
+// Bridge: accept /mcp/<link-id>/<tool> with raw args body, always 200 JSON
+app.post(/^\/mcp\/[^\/]+\/([a-zA-Z0-9_\-\.]+)$/, async (req, res) => {
+  try {
+    const raw = req.params[0];                               // e.g. "echo"
+    const tool = String(raw || '').replace(/^mcp-server-(new_)?/, ''); // 접두사 제거
+    const args = (req.body && typeof req.body === 'object') ? req.body : {};
+    // 재사용 디스패처
+    const out = await callToolByName(tool, args);
+    // 항상 200 JSON
+    res.status(200).json({ ok: true, ...out });
+  } catch (e) {
+    res.status(200).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+
 /* -------------------- start -------------------- */
 const server = app.listen(port, () => { console.log('MCP server listening on port ' + port); });
 server.keepAliveTimeout = 65000;
