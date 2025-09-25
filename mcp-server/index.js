@@ -188,14 +188,17 @@ const TOOL_DEFS = [
   }
 ];
 
-/* -------------------- Tool dispatcher (normalize + async) -------------------- */
+//* -------------------- Tool dispatcher (normalize + async) -------------------- */
 async function callToolByName(name, args = {}) {
-  // 접두사 허용 (mcp-server_ / mcp-server-new_)
-  name = String(name || '').replace(/^mcp-server-(new_)?/, '');
+  // 접두사 허용: mcp-server_ / mcp-server-new_ / mcp_ / mcp-
+  name = String(name || '')
+    .replace(/^mcp-server-(new_)?/, '')
+    .replace(/^mcp[-_]/, '');
 
   if (name === 'echo') {
     return { ok: true, tool: 'echo', data: { type: 'text', text: String(args?.text ?? '') } };
   }
+
   if (name === 'env_check') {
     return {
       ok: true,
@@ -205,19 +208,23 @@ async function callToolByName(name, args = {}) {
       } }
     };
   }
+
   if (name === 'fs_read') {
     if (!args?.file_path) throw new Error('file_path is required');
     const content = await readGitHubFile(args.file_path);
     return { ok: true, tool: 'fs_read', data: { type: 'text', text: content } };
   }
+
   if (name === 'fs_write') {
     if (!args?.file_path || typeof args?.content !== 'string')
       throw new Error('file_path and content are required');
     const sha = await writeGitHubFile(args.file_path, args.content, args?.message || 'update via mcp');
     return { ok: true, tool: 'fs_write', data: { type: 'text', text: `commit=${sha}` }, commit_sha: sha };
   }
+
   throw new Error(`Unknown tool: ${name}`);
 }
+
 
 /* -------------------- /run compatibility (always 200 JSON) -------------------- */
 function safeJson(res, payload) {
@@ -353,33 +360,20 @@ app.use((err, _req, res, _next) => {
 process.on('uncaughtException', (e) => { console.error('[uncaughtException]', e); setTimeout(() => process.exit(1), 100); });
 process.on('unhandledRejection', (e) => { console.error('[unhandledRejection]', e); });
 
-// Bridge: accept /mcp/<link-id>/<tool> with raw args body, always 200 JSON
+/* -------------------- Bridge: /mcp/<link-id>/<tool> (always 200 JSON) -------------------- */
+// 위치: app.listen(...) 위(중요). callToolByName는 "블록 A"로 정의돼 있어야 함.
 app.post(/^\/mcp\/[^\/]+\/([a-zA-Z0-9_\-\.]+)$/, async (req, res) => {
   try {
-    const raw = req.params[0];                               // e.g. "echo"
-    const tool = String(raw || '').replace(/^mcp-server-(new_)?/, ''); // 접두사 제거
-    const args = (req.body && typeof req.body === 'object') ? req.body : {};
-    // 재사용 디스패처
-    const out = await callToolByName(tool, args);
-    // 항상 200 JSON
-    res.status(200).json({ ok: true, ...out });
-  } catch (e) {
-    res.status(200).json({ ok: false, error: String(e?.message || e) });
-  }
+    const raw  = req.params[0];  // e.g. "echo", "mcp_echo"
+    const tool = String(raw || '')
+      .replace(/^mcp-server-(new_)?/, '')
+      .replace(/^mcp[-_]/, '');   // mcp_echo / mcp-echo -> echo
 
-});
-// Bridge: accept /mcp/<link-id>/<tool> with raw args body, always 200 JSON
-app.post(/^\/mcp\/[^\/]+\/([a-zA-Z0-9_\-\.]+)$/, async (req, res) => {
-  try {
-    const raw = req.params[0];                               // e.g. "echo"
-    const tool = String(raw || '').replace(/^mcp-server-(new_)?/, ''); // 접두사 제거
     const args = (req.body && typeof req.body === 'object') ? req.body : {};
-    // 재사용 디스패처
-    const out = await callToolByName(tool, args);
-    // 항상 200 JSON
-    res.status(200).json({ ok: true, ...out });
+    const out  = await callToolByName(tool, args);
+    return res.status(200).json({ ok: true, ...out });
   } catch (e) {
-    res.status(200).json({ ok: false, error: String(e?.message || e) });
+    return res.status(200).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
