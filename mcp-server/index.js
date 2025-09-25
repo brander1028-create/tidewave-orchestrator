@@ -188,11 +188,16 @@ function okEnvelope(result) {
 }
 function errEnvelope(id, code, message) {
   return { jsonrpc: '2.0', id, error: { code, message } };
-}
 async function callToolByName(name, args) {
+  // mcp-server-*, mcp-server-new_*)
+  name = String(name || '').replace(/^mcp-server-(new_)?/, '');
+
   if (name === 'echo') {
     return { ok: true, tool: 'echo', data: { type: 'text', text: String(args?.text ?? '') } };
   }
+  // ...
+}
+
   if (name === 'env_check') {
     return {
       ok: true, tool: 'env_check',
