@@ -1,5 +1,9 @@
 // mcp-server/index.js — FINAL (Render-ready; /mcp JSON-RPC + /run compat + healthz + robots)
-// NOTE: tools.list & tools/list 모두 지원, tools.call & tools/call & call_tool 모두 지원.
+//
+// - JSON-RPC: tools.list / tools/list, tools.call / tools/call / call_tool 모두 지원
+// - 툴 이름 정규화: mcp-server_* / mcp-server-new_* 접두사도 허용
+// - /run 호환: /run, /tools/run, /batch_run (항상 200 JSON)
+// - 진단용 REST: /tools/env_check, /tools/fs_read, /tools/fs_write
 
 const express = require('express');
 const { Octokit } = require('@octokit/rest');
@@ -47,6 +51,8 @@ function externalBaseUrl(req) {
   const host = req.get('x-forwarded-host') || req.get('host');
   return `${proto}://${host}`;
 }
+
+/* -------------------- SSE helper -------------------- */
 function sseHandshake(req, res) {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
@@ -59,7 +65,6 @@ function sseHandshake(req, res) {
   res.setHeader('Connection', 'keep-alive');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
-  // Let clients discover POST endpoint for JSON-RPC
   const postUrl = `${externalBaseUrl(req)}/mcp`;
   res.write(`event: endpoint\n`);
   res.write(`data: ${JSON.stringify({ post: postUrl })}\n`);
@@ -93,10 +98,10 @@ app.use(['/run','/tools/run','/batch_run'], (req, res, next) => {
   return next();
 });
 
-// Global JSON parser
+/* -------------------- Global JSON body parser -------------------- */
 app.use(express.json({ limit: '10mb' }));
 
-// HEAD/GET for /mcp (SSE discovery)
+/* -------------------- /mcp HEAD/GET (SSE discovery) -------------------- */
 app.head(['/mcp','/mcp/'], (req, res) => {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
@@ -109,7 +114,7 @@ app.head(['/mcp','/mcp/'], (req, res) => {
 });
 app.get(['/mcp','/mcp/'], (req, res) => sseHandshake(req, res));
 
-// Root as SSE (dev-mode friendly)
+/* -------------------- Root as SSE (dev-mode) -------------------- */
 app.options('/', (req, res) => {
   const origin = chooseOrigin(req);
   lockCors(res, origin);
@@ -155,7 +160,7 @@ async function writeGitHubFile(path, content, message = 'Update file') {
   return r.data.commit.sha;
 }
 
-/* -------------------- Tools (schemas + dispatcher) -------------------- */
+/* -------------------- Tool schemas -------------------- */
 const TOOL_DEFS = [
   {
     name: 'echo',
@@ -183,25 +188,21 @@ const TOOL_DEFS = [
   }
 ];
 
-function okEnvelope(result) {
-  return { jsonrpc: '2.0', id: null, result }; // id는 아래에서 주입
-}
-function errEnvelope(id, code, message) {
-  return { jsonrpc: '2.0', id, error: { code, message } };
-async function callToolByName(name, args) {
-  // mcp-server-*, mcp-server-new_*)
+/* -------------------- Tool dispatcher (normalize + async) -------------------- */
+async function callToolByName(name, args = {}) {
+  // 접두사 허용 (mcp-server_ / mcp-server-new_)
   name = String(name || '').replace(/^mcp-server-(new_)?/, '');
 
   if (name === 'echo') {
     return { ok: true, tool: 'echo', data: { type: 'text', text: String(args?.text ?? '') } };
   }
-  // ...
-}
-
   if (name === 'env_check') {
     return {
-      ok: true, tool: 'env_check',
-      data: { type: 'json', json: { GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch } }
+      ok: true,
+      tool: 'env_check',
+      data: { type: 'json', json: {
+        GH_OWNER: !!ghOwner, GH_REPO: !!ghRepo, GH_TOKEN: !!ghToken, GH_BRANCH: !!ghBranch
+      } }
     };
   }
   if (name === 'fs_read') {
@@ -210,7 +211,8 @@ async function callToolByName(name, args) {
     return { ok: true, tool: 'fs_read', data: { type: 'text', text: content } };
   }
   if (name === 'fs_write') {
-    if (!args?.file_path || typeof args?.content !== 'string') throw new Error('file_path and content are required');
+    if (!args?.file_path || typeof args?.content !== 'string')
+      throw new Error('file_path and content are required');
     const sha = await writeGitHubFile(args.file_path, args.content, args?.message || 'update via mcp');
     return { ok: true, tool: 'fs_write', data: { type: 'text', text: `commit=${sha}` }, commit_sha: sha };
   }
@@ -279,7 +281,6 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
 
   if (!isRequest) return bad(-32600, 'Invalid Request');
 
-  // initialize
   if (msg.method === 'initialize') {
     return ok({
       protocolVersion: '2025-06-18',
@@ -289,12 +290,10 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
     });
   }
 
-  // tools list (dot + slash)
   if (msg.method === 'tools/list' || msg.method === 'tools.list') {
     return ok({ tools: TOOL_DEFS });
   }
 
-  // tools call (slash + dot + call_tool)
   if (msg.method === 'tools/call' || msg.method === 'tools.call' || msg.method === 'call_tool') {
     const { name, arguments: args } = msg.params || {};
     try {
@@ -309,7 +308,6 @@ app.post(['/mcp','/mcp/'], async (req, res) => {
     }
   }
 
-  // fallback
   return bad(-32601, `Method not found: ${msg.method}`);
 });
 
