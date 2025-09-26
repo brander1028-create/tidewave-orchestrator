@@ -1,8 +1,8 @@
 diff --git a//dev/null b/mcp-server/index.js
-index 0000000000000000000000000000000000000000..32ff67a786d51728a6bb42120f2517b5710077cf 100644
+index 0000000000000000000000000000000000000000..040b2e9cf2a69148cee1bf26ca5f0b20f37ab01b 100644
 --- a//dev/null
 +++ b/mcp-server/index.js
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,508 @@
 +import express from 'express';
 +import crypto from 'crypto';
 +
@@ -10,8 +10,6 @@ index 0000000000000000000000000000000000000000..32ff67a786d51728a6bb42120f2517b5
 +app.use(express.json({ limit: '1mb' }));
 +
 +const APP_NAME = process.env.APP_NAME || 'mcp-server';
-+const MCP_SHARED_SECRET = process.env.MCP_SHARED_SECRET || '';
-+const MCP_REQUIRE_SHARED_SECRET = parseBool(process.env.MCP_REQUIRE_SHARED_SECRET, false);
 +
 +const tools = [
 +  {
@@ -101,14 +99,6 @@ index 0000000000000000000000000000000000000000..32ff67a786d51728a6bb42120f2517b5
 +  }
 +];
 +
-+function parseBool(value, defaultValue) {
-+  if (value === undefined || value === null) return defaultValue;
-+  const lowered = String(value).trim().toLowerCase();
-+  if (['1', 'true', 'yes', 'on'].includes(lowered)) return true;
-+  if (['0', 'false', 'no', 'off', ''].includes(lowered)) return false;
-+  return defaultValue;
-+}
-+
 +function redact(value) {
 +  return value ? '***' : null;
 +}
@@ -121,18 +111,6 @@ index 0000000000000000000000000000000000000000..32ff67a786d51728a6bb42120f2517b5
 +  const error = { code, message };
 +  if (data !== undefined) error.data = data;
 +  return { jsonrpc: '2.0', id, error };
-+}
-+
-+function extractSharedSecret(req) {
-+  const auth = req.get('authorization');
-+  if (auth) {
-+    const token = auth.toLowerCase().startsWith('bearer ')
-+      ? auth.slice(7).trim()
-+      : auth.trim();
-+    if (token) return token;
-+  }
-+  const headerToken = req.get('x-mcp-shared-secret') || req.get('mcp-shared-secret');
-+  return headerToken ? headerToken.trim() : '';
 +}
 +
 +function secretsEqual(a, b) {
@@ -412,8 +390,6 @@ index 0000000000000000000000000000000000000000..32ff67a786d51728a6bb42120f2517b5
 +        GH_REPO: gh.repo || null,
 +        GH_BRANCH: gh.branch || null,
 +        GH_TOKEN: redact(gh.token),
-+        MCP_SHARED_SECRET_SET: Boolean(MCP_SHARED_SECRET),
-+        MCP_REQUIRE_SHARED_SECRET,
 +        RENDER_DEPLOY_HOOK: render.deploy_hook,
 +        RENDER_SERVICE_ID: render.service_id,
 +        RENDER_API_KEY: render.api_key,
@@ -494,12 +470,6 @@ index 0000000000000000000000000000000000000000..32ff67a786d51728a6bb42120f2517b5
 +app.post('/mcp', async (req, res) => {
 +  const payload = req.body;
 +  const rpcId = payload && typeof payload === 'object' ? payload.id : null;
-+  if (MCP_SHARED_SECRET && MCP_REQUIRE_SHARED_SECRET) {
-+    const provided = extractSharedSecret(req);
-+    if (!secretsEqual(provided, MCP_SHARED_SECRET)) {
-+      return res.status(200).json(jsonRpcError(rpcId, 'Unauthorized', -32001));
-+    }
-+  }
 +  if (!payload || payload.jsonrpc !== '2.0' || !payload.method) {
 +    return res.status(200).json(jsonRpcError(rpcId, 'Invalid JSON-RPC request', -32600));
 +  }
