@@ -1,3 +1,11 @@
+app.use("/mcp", (req, res, next) => {
+  try {
+    if (req.method === "POST" && req.body && typeof req.body.method === "string") {
+      req.body.method = String(req.body.method).toLowerCase().replace(/\./g,"/");
+    }
+  } catch {}
+  next();
+});
 "use strict";
 
 const express = require("express");
@@ -23,7 +31,7 @@ function requireSecretIfNeeded(req, res, next){
   if(!s) return next();
   const auth = (req.headers["authorization"] || "");
   const good = (auth === ("Bearer " + s)) || (auth === s);
-  if(!good) return ok(res, { result: { is_error: true, error: "unauthorized" } });
+  if(!good) return ok(res, { result: { is_error: true,  isError: true, error: "unauthorized" } });
   return next();
 }
 
@@ -77,11 +85,11 @@ async function ghWriteFile(file_path, content, message){
 const tools = {
   echo: async (args) => {
     const text = (args && typeof args.text !== "undefined") ? String(args.text) : "";
-    return { is_error: false, value: text };
+    return { is_error: false, isError: false, value: text };
   },
-  health: async () => ({ is_error: false, value: { status: "ok" } }),
+  health: async () => ({ is_error: false, isError: false, value: { status: "ok" } }),
   env_check: async () => ({
-    is_error: false,
+    is_error: false, isError: false,
     value: {
       GITHUB_TOKEN:      boolEnv("GITHUB_TOKEN"),
       GITHUB_REPO_OWNER: boolEnv("GITHUB_REPO_OWNER"),
@@ -92,11 +100,11 @@ const tools = {
     try {
       const file_path = args && args.file_path;
       const ref       = args && args.ref;
-      if(!file_path) return { is_error: true, error: "missing file_path" };
+      if(!file_path) return { is_error: true,  isError: true, error: "missing file_path" };
       const out = await ghReadFile(file_path, ref);
-      return { is_error: false, value: out };
+      return { is_error: false, isError: false, value: out };
     } catch(e){
-      return { is_error: true, error: String(e && e.message ? e.message : e) };
+      return { is_error: true,  isError: true, error: String(e && e.message ? e.message : e) };
     }
   },
   fs_write: async (args) => {
@@ -104,11 +112,11 @@ const tools = {
       const file_path = args && args.file_path;
       const content   = args && args.content;
       const message   = args && args.message;
-      if(!file_path || typeof content !== "string") return { is_error: true, error: "missing file_path or content" };
+      if(!file_path || typeof content !== "string") return { is_error: true,  isError: true, error: "missing file_path or content" };
       const out = await ghWriteFile(file_path, content, message);
-      return { is_error: false, value: out };
+      return { is_error: false, isError: false, value: out };
     } catch(e){
-      return { is_error: true, error: String(e && e.message ? e.message : e) };
+      return { is_error: true,  isError: true, error: String(e && e.message ? e.message : e) };
     }
   }
 };
@@ -123,14 +131,14 @@ app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
     const body = (req && req.body) ? req.body : {};
     const name = body && body.name ? body.name : null;
     const args = (body && (body.arguments || body.args)) ? (body.arguments || body.args) : {};
-    if(!name) return ok(res, { result: { is_error: true, error: "missing name" } });
+    if(!name) return ok(res, { result: { is_error: true,  isError: true, error: "missing name" } });
     const fn = tools[name];
-    if(!fn) return ok(res, { result: { is_error: true, error: "unknown tool: " + name } });
+    if(!fn) return ok(res, { result: { is_error: true,  isError: true, error: "unknown tool: " + name } });
     const result = await fn(args || {});
     const textOut = (result && typeof result.value === "string") ? result.value : undefined;
     return ok(res, { result, text: textOut });
   } catch(e){
-    return ok(res, { result: { is_error: true, error: String(e && e.message ? e.message : e) } });
+    return ok(res, { result: { is_error: true,  isError: true, error: String(e && e.message ? e.message : e) } });
   }
 });
 
@@ -169,9 +177,18 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
 app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => {
   const linkId = (req.params.linkId || "").toLowerCase();
   if(linkId === "tools") return next();
-  return ok(res, { result: { is_error: true, error: "bridge route not implemented" } });
+  return ok(res, { result: { is_error: true,  isError: true, error: "bridge route not implemented" } });
 });
 
 app.listen(PORT, () => {
   console.log(APP_NAME + " listening on " + PORT);
+});
+
+app.get("/mcp", (req, res) => {
+  try {
+    res.set("Cache-Control","no-store");
+    return res.status(200).json({ ok:true, transport:"http", spec:"mcp/streamable-http", endpoints:["POST /mcp","GET /mcp/jobs/:id"] });
+  } catch (e) {
+    return res.status(200).json({ ok:false, error:String(e && e.message || e) });
+  }
 });
