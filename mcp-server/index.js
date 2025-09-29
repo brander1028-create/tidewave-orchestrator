@@ -64,6 +64,7 @@ function normalizeName(name) {
   s = s.replace(/^mcp[./:_-]*/g, "");
   s = s.replace(/^(tools?|tool|call)[./:_-]*/g, "");
   s = s.replace(/[^\w]/g, "");
+  s = s.replace(/_/g, "");
   return s;
 }
 
@@ -256,3 +257,4 @@ app.get("/", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
