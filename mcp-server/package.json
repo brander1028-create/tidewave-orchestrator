@@ -1,22 +1,17 @@
-diff --git a//dev/null b/mcp-server/package.json
-index 0000000000000000000000000000000000000000..c2f43736afe176a15985bca5a940347a933119a7 100644
---- a//dev/null
-+++ b/mcp-server/package.json
-@@ -0,0 +1,17 @@
-+{
-+  "name": "outreach-mcp-server",
-+  "private": true,
-+  "version": "1.0.0",
-+  "description": "Express MCP server ported from FastAPI",
-+  "main": "index.js",
-+  "scripts": {
-+    "start": "node index.js"
-+  },
-+  "dependencies": {
-+    "express": "^4.19.2",
-+    "cors": "^2.8.5"
-+  },
-+  "engines": {
-+    "node": ">=18"
-+  }
-+}
+{
+  "name": "outreach-mcp-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Express MCP server ported from FastAPI",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
