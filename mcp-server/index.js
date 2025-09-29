@@ -317,9 +317,27 @@ app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
   }
 });
 
-app.get("/mcp/tools/list", requireSecretIfNeeded, (req, res) => {
-  try { return res.status(200).json(toolList()); }
-  catch (e) { return res.status(200).json({ tools: [] }); }
+app.get("/mcp/tools/list", requireSecretIfNeeded, async (req, res) => {
+  try {
+    if (typeof toolList === "function") {
+      const t = toolList();
+      if (t && Array.isArray(t.tools) && t.tools.length) {
+        return res.status(200).json(t);
+      }
+    }
+    // fallback: call our own JSON-RPC tools.list
+    const r = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "rest-list", method: "tools.list" })
+    });
+    const j = await r.json().catch(() => ({}));
+    const tools = (j && j.result && j.result.tools) || [];
+    return res.status(200).json({ tools });
+  } catch (e) {
+    return res.status(200).json({ tools: [] });
+  }
+});}
 });
 
 app.get("/", (req, res) => {
@@ -332,6 +350,7 @@ app.get("/mcp", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
 
 
