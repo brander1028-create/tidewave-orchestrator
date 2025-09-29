@@ -10,6 +10,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+
+app.get("/", (req,res) => res.status(200).send("ok"));
 // Optional shared-secret (no 4xx: always 200 + is_error)
 function requireSecretIfNeeded(req, res, next) {
   const secret = process.env.MCP_SHARED_SECRET;
@@ -161,3 +163,4 @@ app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => 
 app.listen(PORT, () => {
   console.log(`${APP_NAME} listening on ${PORT}`);
 });
+
