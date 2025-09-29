@@ -218,7 +218,7 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
       const params = body.params || {};
       const name = params.name || "";
       const args = params.arguments || {};
-      const wait = !!params.wait;
+      const wait = Object.prototype.hasOwnProperty.call(params, "wait") ? !!params.wait : true;
       if (wait) {
         const r = await callTool(name, args);
         return res.status(200).json(makeJsonRpcResult(id, r));
