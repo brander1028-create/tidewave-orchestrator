@@ -18,6 +18,8 @@ try { cors = require("cors"); } catch (e) {
 }
 
 const app = express();
+// MCP: ensure JSON body parsing
+app.use(express.json());
 app.disable("x-powered-by");
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
@@ -279,7 +281,7 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
   }
 });
 
-app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => { if ((req.params.linkId||"").toLowerCase()==="tools") return next();
+app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => { if(((req.params.linkId||"")+"").toLowerCase()==="tools") return next();  if ((req.params.linkId||"").toLowerCase()==="tools") return next();
   try {
     const tool = req.params.tool;
     const args = (req.body && req.body.arguments) || {};
@@ -361,3 +363,66 @@ http.createServer(app).listen(PORT, HOST, () => {
 
 
 
+// == MCP REST routes (auto-injected) ==
+// MCP_REST_BLOCK_START
+try {
+  // 안전한 tool 찾기(전역/locals/스코프 탐색)
+  const __findTools = () => {
+    try { if (typeof tools !== "undefined") return tools; } catch (e) {}
+    if (globalThis && globalThis.MCP_TOOLS) return globalThis.MCP_TOOLS;
+    if (typeof app !== "undefined" && app.locals && typeof app.locals.tools !== "undefined") return app.locals.tools;
+    return null;
+  };
+
+  const __ok = (res, payload) => res.status(200).json(payload);
+
+  // GET /mcp/tools/list
+  app.get("/mcp/tools/list", (req, res) => {
+    const t = __findTools();
+    const names = t ? Object.keys(t) : ["echo","health","env_check","fs_read","fs_write"];
+    return __ok(res, { tools: names.map(n => ({ name: n })) });
+  });
+
+  // POST /mcp/tools/call  — { name, arguments, wait? }
+  app.post("/mcp/tools/call", async (req, res) => {
+    try {
+      const body = req && req.body ? req.body : {};
+      const name = body && body.name ? body.name : null;
+      const args = body && body.arguments ? body.arguments : {};
+      const wait = body && typeof body.wait !== "undefined" ? body.wait : true;
+
+      if (!name) return __ok(res, { result: { is_error: true, error: "missing name" } });
+
+      const t = __findTools();
+      // 의존성 없는 fallback 도구
+      const fallbacks = {
+        echo: async ({ text }) => ({ is_error: false, value: String(text || "") }),
+        health: async () => ({ is_error: false, value: { status: "ok" } }),
+        env_check: async () => ({
+          is_error: false,
+          value: {
+            GITHUB_TOKEN: !!process.env.GITHUB_TOKEN,
+            GITHUB_REPO_OWNER: !!process.env.GITHUB_REPO_OWNER,
+            GITHUB_REPO_NAME: !!process.env.GITHUB_REPO_NAME
+          }
+        })
+      };
+
+      let fn = (t && t[name]) ? t[name] : fallbacks[name];
+      if (!fn) return __ok(res, { result: { is_error: true, error: "unknown tool: " + name } });
+
+      // 간단화: wait은 true 동작으로 처리(비동기 잡 미사용)
+      const result = await fn(args || {});
+
+      // 텍스트+JSON 동시 반환(프록시 파서 회피)
+      const textOut = (result && typeof result.value === "string") ? result.value : undefined;
+      return __ok(res, { result, text: textOut });
+    } catch (e) {
+      return __ok(res, { result: { is_error: true, error: String(e && e.message ? e.message : e) } });
+    }
+  });
+} catch (e) {
+  console.error("[MCP REST inject] failed:", e);
+}
+#MCP_REST_BLOCK_END
+// == end MCP REST routes ==
