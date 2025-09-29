@@ -72,6 +72,11 @@ function listTools() {
   return {
     tools: [
       {
+        name: "health",
+        description: "Return server health check result.",
+        inputSchema: { type: "object", properties: {}, required: [] }
+      },
+      {
         name: "echo",
         description: "Echo text back to the caller.",
         inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
@@ -237,7 +242,7 @@ app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res) => {
   try {
     const tool = req.params.tool;
     const args = (req.body && req.body.arguments) || {};
-    const wait = !!(req.body && req.body.wait);
+    const wait = (req.body && Object.prototype.hasOwnProperty.call(req.body, "wait")) ? !!req.body.wait : true;
     if (wait) {
       const r = await callTool(tool, args);
       return res.status(200).json(makeJsonRpcResult(null, r));
@@ -257,4 +262,5 @@ app.get("/", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
