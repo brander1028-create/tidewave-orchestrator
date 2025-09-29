@@ -166,6 +166,7 @@ async function callTool(rawName, args = {}) {
   const name = normalizeName(rawName);
   try {
     switch (name) {
+      case "health": { return ok([{ type:"json", json: { ok:true, service:"mcp-server", time:new Date().toISOString() } }]); }
       case "echo": {
         const text = (args && typeof args.text !== "undefined") ? String(args.text) : "pong";
         return ok([{ type:"text", text }]);
@@ -262,5 +263,6 @@ app.get("/", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
 
