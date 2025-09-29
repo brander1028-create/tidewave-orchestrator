@@ -279,7 +279,7 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
   }
 });
 
-app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res) => {
+app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => { if ((req.params.linkId||"").toLowerCase()==="tools") return next();
   try {
     const tool = req.params.tool;
     const args = (req.body && req.body.arguments) || {};
@@ -332,6 +332,7 @@ app.get("/mcp", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
 
 
