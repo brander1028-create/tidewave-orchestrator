@@ -1,3 +1,14 @@
+function flattenRpcResult(r) {
+  try {
+    if (r && typeof r === "object" && r.result) {
+      const inner = r.result;
+      if (inner && (Array.isArray(inner.content) || "is_error" in inner || "isError" in inner || "value" in inner)) {
+        return inner;
+      }
+    }
+  } catch {}
+  return r;
+}
 "use strict";
 
 const express = require("express");
