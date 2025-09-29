@@ -168,28 +168,25 @@ async function callTool(rawName, args = {}) {
   const name = normalizeName(rawName);
   try {
     switch (name) {
-      case "health": { return ok([{ type:"json", json: { ok:true, service:"mcp-server", time:new Date().toISOString() } }]); }
-      case "search": {
-  const query = (args && typeof args.query !== "undefined") ? String(args.query) : "";
-  return ok([{ type: "json", json: { query, items: [] } }]); // 최소 스텁
-}
-      case "fetch": {
-  const url = (args && typeof args.url !== "undefined") ? String(args.url) : "";
-  if (!/^https?:\/\//i.test(url)) return err({ ok:false, code:"INVALID_URL" });
-  try {
-    const resp = await fetch(url, { headers: { "Accept": "*/*", "User-Agent": "mcp-server/1.0" } });
-    const text = await resp.text();
-    return ok([{ type: "text", text: String(text).slice(0,5000) }]);
-  } catch (e) {
-    return err({ ok:false, code:"FETCH_ERROR", message: String(e && e.message || e) });
-  }
-}
+      case "health": {
+        const payload = { ok:true, service:"mcp-server", time:new Date().toISOString() };
+        // text 먼저 + json 함께 (일부 프록시가 type:"json" 처리에서 터지는 문제 회피)
+        return ok([
+          { type:"text", text:"ok" },
+          { type:"json", json: payload }
+        ]);
+      }
       case "echo": {
         const text = (args && typeof args.text !== "undefined") ? String(args.text) : "pong";
         return ok([{ type:"text", text }]);
       }
       case "envcheck": {
-        return ok([{ type:"json", json: { GH_OWNER: !!GH_OWNER, GH_REPO: !!GH_REPO, GH_TOKEN: !!GH_TOKEN, GH_BRANCH } }]);
+        const payload = { GH_OWNER: !!GH_OWNER, GH_REPO: !!GH_REPO, GH_TOKEN: !!GH_TOKEN, GH_BRANCH };
+        const summary = `env GH_OWNER=${!!GH_OWNER} GH_REPO=${!!GH_REPO} GH_TOKEN=${!!GH_TOKEN} BRANCH=${GH_BRANCH}`;
+        return ok([
+          { type:"text", text: summary },
+          { type:"json", json: payload }
+        ]);
       }
       case "fsread": {
         if (!args || !args.file_path) return err({ ok:false, code:"MISSING_ARGUMENT", arg:"file_path" });
@@ -309,6 +306,7 @@ app.get("/mcp", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
 
 
