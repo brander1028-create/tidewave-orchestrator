@@ -16,16 +16,7 @@ app.head("/healthz", (req, res) => res.status(200).end());
 
 /** MCP JSON-RPC method normalizer (dot→slash).
  *  NOTE: must run AFTER express.json() so req.body is available. */
-app.use("/mcp", (req, res, next) => {
-  try {
-    if (req.method === "POST" && req.body && typeof req.body.method === "string") {
-      req.body.method = String(req.body.method).toLowerCase().replace(/\./g, "/");
-    }
-  } catch {}
-  next();
-});
-
-
+/* removed wrong method-normalizer (dot→slash) */
 // ----- health / root (Render 헬스용/웜업용) -----
 app.get("/", (req, res) => res.status(200).send("ok"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
@@ -162,11 +153,11 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
 
   try {
     if(method === "ping") return sendOk({ pong: true, t: Date.now() });
-    if(((method==="tools/list"||method==="tools.list")||method==="tools.list")){
+    if(((method==="tools.list"||method==="tools.list")||method==="tools.list")){
       const names = Object.keys(tools);
       return sendOk({ tools: names.map(n => ({ name: n })) });
     }
-    if(((method==="tools/call"||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||(method==="tools/call"||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||method==="tool.call"))||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||(method==="tools/call"||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||method==="tool.call"))){
+    if(((method==="tools.call"||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||(method==="tools.call"||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||method==="tool.call"))||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||(method==="tools.call"||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||method==="tool.call"))){
       const name = params && (params.name || (params.tool && params.tool.name)) ? (params.name || params.tool.name) : null;
       const args = (params && (params.arguments || params.args)) ? (params.arguments || params.args) : {};
       if(!name) return sendErr(-32602, "missing tool name");
