@@ -1,11 +1,3 @@
-app.use("/mcp", (req, res, next) => {
-  try {
-    if (req.method === "POST" && req.body && typeof req.body.method === "string") {
-      req.body.method = String(req.body.method).toLowerCase().replace(/\./g,"/");
-    }
-  } catch {}
-  next();
-});
 "use strict";
 
 const express = require("express");
@@ -17,6 +9,17 @@ const PORT = parseInt(process.env.PORT || "10000", 10);
 const app = express();
 app.use(cors());
 app.use(express.json());
+/** MCP JSON-RPC method normalizer (dot→slash).
+ *  NOTE: must run AFTER express.json() so req.body is available. */
+app.use("/mcp", (req, res, next) => {
+  try {
+    if (req.method === "POST" && req.body && typeof req.body.method === "string") {
+      req.body.method = String(req.body.method).toLowerCase().replace(/\./g, "/");
+    }
+  } catch {}
+  next();
+});
+
 
 // ----- health / root (Render 헬스용/웜업용) -----
 app.get("/", (req, res) => res.status(200).send("ok"));
