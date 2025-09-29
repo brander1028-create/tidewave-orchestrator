@@ -154,13 +154,55 @@ app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
 
 // ----- JSON-RPC (/mcp) -----
 app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
-  const b = (req && req.body) ? req.body : {};
-  const id = (typeof b.id !== "undefined") ? b.id : null;
-  const method = b && b.method ? String(b.method) : "";
-  const params = (b && (b.params || b.parameters)) ? (b.params || b.parameters) : {};
+  try {
+    const body = req.body || {};
+    const id = Object.prototype.hasOwnProperty.call(body, "id") ? body.id : null;
 
-  const sendOk  = (r) => ok(res, { jsonrpc: "2.0", id, result: r });
-  const sendErr = (code, message, data) => ok(res, { jsonrpc: "2.0", id, error: { code, message, data } });
+    // method 정규화: 슬래시/점 혼용 모두 허용하되 내부적으로 점 표기 사용
+    let method = String(body.method || "").toLowerCase().replace(/\/+/g, ".");
+
+    const isList = (m) => m === "tools.list" || m === "tools/list";
+    const isCall = (m) => m === "tools.call" || m === "tool.call" || m === "tools/call" || m === "tool/call";
+
+    if (isList(method)) {
+      // 도구 목록 그대로 반환 (JSON-RPC 표준: result 바로 아래)
+      return res.status(200).json({ jsonrpc: "2.0", id, result: toolList() });
+    }
+
+    if (isCall(method)) {
+      const params = body.params || {};
+      const name = params.name || "";
+      const args = params.arguments || {};
+      const wait = Object.prototype.hasOwnProperty.call(params, "wait") ? !!params.wait : true;
+
+      if (wait) {
+        const r = await callTool(name, args);
+        // r을 중첩하지 않고 그대로 result에 넣음
+        return res.status(200).json({ jsonrpc: "2.0", id, result: r });
+      } else {
+        const jobId = scheduleJob(() => callTool(name, args));
+        return res.status(200).json({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "json", json: { ok: true, jobId } }], is_error: false, isError: false }
+        });
+      }
+    }
+
+    // 미지원 메서드도 200 + isError로만 표현
+    return res.status(200).json({
+      jsonrpc: "2.0",
+      id,
+      result: { content: [{ type: "text", text: `unknown method: ${method}` }], is_error: true, isError: true }
+    });
+  } catch (e) {
+    return res.status(200).json({
+      jsonrpc: "2.0",
+      id: null,
+      result: { content: [{ type: "text", text: String(e && e.message || e) }], is_error: true, isError: true }
+    });
+  }
+});const sendErr = (code, message, data) => ok(res, { jsonrpc: "2.0", id, error: { code, message, data } });
 
   try {
     if(method === "ping") return sendOk({ pong: true, t: Date.now() });
