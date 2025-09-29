@@ -38,13 +38,13 @@ const jobs = new Map();
 function makeJsonRpcResult(id, result) { return { jsonrpc: "2.0", id, result }; }
 function ok(content) {
   const arr = Array.isArray(content) ? content : [{ type: "text", text: String(content ?? "") }];
-  return { content: arr, is_error: false };
+  return { content: arr, isError: false };
 }
 function err(objOrText) {
   const item = (typeof objOrText === "object" && objOrText !== null)
     ? { type: "json", json: objOrText }
     : { type: "text", text: String(objOrText ?? "error") };
-  return { content: [item], is_error: true };
+  return { content: [item], isError: true };
 }
 
 function requireSecretIfNeeded(req, res, next) {
@@ -234,6 +234,32 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
   const id = body.id ?? null;
   const method = String(body.method || "").toLowerCase();
   try {
+        // --- MCP initialize / initialized / ping (spec compliant) ---
+    if (method === "initialize") {
+      const p = body.params || {};
+      const result = {
+        protocolVersion: p.protocolVersion || "2025-03-26",
+        capabilities: {
+          logging: {},
+          prompts: { listChanged: true },
+          resources: { subscribe: false, listChanged: true },
+          tools: { listChanged: true }
+        },
+        serverInfo: { name: "outreach-mcp-server", version: "1.0.0" }
+      };
+      // (선택) 세션 ID 제공
+      try { res.set("Mcp-Session-Id", (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2))); } catch {}
+      return res.status(200).json({ jsonrpc: "2.0", id, result });
+    }
+    if (method === "notifications/initialized") {
+      // JSON-RPC notification: 본문 없이 202
+      return res.status(202).end();
+    }
+    if (method === "ping") {
+      const p = body.params || {};
+      return res.status(200).json({ jsonrpc: "2.0", id, result: { id: p.id || null } });
+    }
+    // -------------------------------------------------------------
     if (method === "tools.list" || method === "tools/list") {
       return res.status(200).json(makeJsonRpcResult(id, listTools()));
     }
@@ -283,6 +309,7 @@ app.get("/mcp", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
 
 
