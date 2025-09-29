@@ -9,6 +9,11 @@ const PORT = parseInt(process.env.PORT || "10000", 10);
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.get("/healthz", (req, res) => {
+  res.status(200).json({ ok:true, service:"mcp-server", time:new Date().toISOString() });
+});
+app.head("/healthz", (req, res) => res.status(200).end());
+
 /** MCP JSON-RPC method normalizer (dot→slash).
  *  NOTE: must run AFTER express.json() so req.body is available. */
 app.use("/mcp", (req, res, next) => {
