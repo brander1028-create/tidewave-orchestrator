@@ -160,7 +160,38 @@ app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => 
   return ok(res, { result: { is_error: true, error: "bridge route not implemented" } });
 });
 
+// == MCP JSON-RPC shim (/mcp) ==
+app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
+  const b = (req && req.body) ? req.body : {};
+  const id = (typeof b.id !== "undefined") ? b.id : null;
+  const method = b && b.method ? String(b.method) : "";
+  const params = (b && (b.params || b.parameters)) ? (b.params || b.parameters) : {};
+
+  const sendOk  = (result) => res.status(200).json({ jsonrpc: "2.0", id, result });
+  const sendErr = (code, message, data) => res.status(200).json({ jsonrpc: "2.0", id, error: { code, message, data } });
+
+  try {
+    if (method === "tools.list") {
+      const names = Object.keys(tools);
+      return sendOk({ tools: names.map(n => ({ name: n })) });
+    }
+    if (method === "tools.call") {
+      const name = params && (params.name || (params.tool && params.tool.name)) ? (params.name || params.tool.name) : null;
+      const args = (params && (params.arguments || params.args)) ? (params.arguments || params.args) : {};
+      if (!name) return sendErr(-32602, "missing tool name");
+      const fn = tools[name];
+      if (!fn) return sendErr(-32601, "unknown tool: " + name);
+      const result = await fn(args || {}); // { is_error, value|error }
+      return sendOk({ result });
+    }
+    return sendErr(-32601, "method not found: " + method);
+  } catch (e) {
+    return sendErr(-32000, String(e && e.message ? e.message : e));
+  }
+});
+// == end MCP JSON-RPC shim ==
 app.listen(PORT, () => {
   console.log(`${APP_NAME} listening on ${PORT}`);
 });
+
 
