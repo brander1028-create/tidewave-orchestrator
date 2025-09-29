@@ -296,6 +296,32 @@ app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res) => {
   }
 });
 
+app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
+  try {
+    const b = req.body || {};
+    let raw = b.name || b.tool || b.action || "";
+    let name = String(raw || "").toLowerCase().trim();
+    if (name.startsWith("mcp_")) name = name.slice(4); // mcp_echo -> echo
+    const args = b.arguments || b.args || {};
+    const wait = Object.prototype.hasOwnProperty.call(b, "wait") ? !!b.wait : true;
+
+    if (wait) {
+      const r = await callTool(name, args);
+      return res.status(200).json({ result: r });          // 항상 200
+    } else {
+      const jobId = scheduleJob(() => callTool(name, args));
+      return res.status(200).json({ result: { content:[{ type:"json", json:{ ok:true, jobId } }], isError:false }});
+    }
+  } catch (e) {
+    return res.status(200).json({ result: { content:[{ type:"text", text:String(e && e.message || e) }], isError:true }});
+  }
+});
+
+app.get("/mcp/tools/list", requireSecretIfNeeded, (req, res) => {
+  try { return res.status(200).json(toolList()); }
+  catch (e) { return res.status(200).json({ tools: [] }); }
+});
+
 app.get("/", (req, res) => {
   res.status(200).json({ ok:true, service:"mcp-server", endpoints:["/healthz","/mcp"] });
 });
@@ -306,6 +332,7 @@ app.get("/mcp", (req, res) => {
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
 
 
