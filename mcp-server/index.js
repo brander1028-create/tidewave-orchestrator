@@ -162,11 +162,11 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
 
   try {
     if(method === "ping") return sendOk({ pong: true, t: Date.now() });
-    if(method === "tools.list"){
+    if(((method==="tools/list"||method==="tools.list")||method==="tools.list")){
       const names = Object.keys(tools);
       return sendOk({ tools: names.map(n => ({ name: n })) });
     }
-    if(method === "tools.call"){
+    if(((method==="tools/call"||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||(method==="tools/call"||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||method==="tool.call"))||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||(method==="tools/call"||method==="tools.call"||(method==="tools/call"||method==="tools.call"||method==="tool/call"||method==="tool.call")||method==="tool.call"))){
       const name = params && (params.name || (params.tool && params.tool.name)) ? (params.name || params.tool.name) : null;
       const args = (params && (params.arguments || params.args)) ? (params.arguments || params.args) : {};
       if(!name) return sendErr(-32602, "missing tool name");
