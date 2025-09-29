@@ -71,6 +71,8 @@ function normalizeName(name) {
 function listTools() {
   return {
     tools: [
+      { name: "fetch", description: "Fetch a URL and return text (first 5000 chars)", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+      { name: "search", description: "Simple search stub", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
       {
         name: "health",
         description: "Return server health check result.",
@@ -167,6 +169,21 @@ async function callTool(rawName, args = {}) {
   try {
     switch (name) {
       case "health": { return ok([{ type:"json", json: { ok:true, service:"mcp-server", time:new Date().toISOString() } }]); }
+      case "search": {
+  const query = (args && typeof args.query !== "undefined") ? String(args.query) : "";
+  return ok([{ type: "json", json: { query, items: [] } }]); // 최소 스텁
+}
+      case "fetch": {
+  const url = (args && typeof args.url !== "undefined") ? String(args.url) : "";
+  if (!/^https?:\/\//i.test(url)) return err({ ok:false, code:"INVALID_URL" });
+  try {
+    const resp = await fetch(url, { headers: { "Accept": "*/*", "User-Agent": "mcp-server/1.0" } });
+    const text = await resp.text();
+    return ok([{ type: "text", text: String(text).slice(0,5000) }]);
+  } catch (e) {
+    return err({ ok:false, code:"FETCH_ERROR", message: String(e && e.message || e) });
+  }
+}
       case "echo": {
         const text = (args && typeof args.text !== "undefined") ? String(args.text) : "pong";
         return ok([{ type:"text", text }]);
@@ -260,9 +277,13 @@ app.get("/", (req, res) => {
   res.status(200).json({ ok:true, service:"mcp-server", endpoints:["/healthz","/mcp"] });
 });
 
+app.get("/mcp", (req, res) => {
+  res.status(200).json({ ok: true, transport: "http", spec: "mcp/streamable-http", endpoints: ["POST /mcp","GET /mcp/jobs/:id"] });
+});
 http.createServer(app).listen(PORT, HOST, () => {
   console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
 });
+
 
 
 
