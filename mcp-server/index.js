@@ -1,421 +1,163 @@
 "use strict";
 
-const http = require("http");
-let express;
-try { express = require("express"); } catch (e) {
-  console.error("express not installed"); process.exit(1);
-}
+const express = require("express");
+const cors = require("cors");
 
-let cors;
-try { cors = require("cors"); } catch (e) {
-  cors = () => (req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    if (req.method === "OPTIONS") return res.status(204).end();
-    next();
-  };
-}
+const APP_NAME = "mcp-server";
+const PORT = parseInt(process.env.PORT || "10000", 10);
 
 const app = express();
-// MCP: ensure JSON body parsing
+app.use(cors());
 app.use(express.json());
 
-// == MCP REST routes (auto-injected) ==
-try {
-  const __findTools = () => {
-    try { if (typeof tools !== "undefined") return tools; } catch (e) {}
-    if (typeof globalThis !== "undefined" && globalThis.MCP_TOOLS) return globalThis.MCP_TOOLS;
-    if (typeof app !== "undefined" && app.locals && typeof app.locals.tools !== "undefined") return app.locals.tools;
-    return null;
-  };
-  const __ok = (res, payload) => res.status(200).json(payload);
-
-  // 목록
-  app.get("/mcp/tools/list", (req, res) => {
-    const t = __findTools();
-    const names = t ? Object.keys(t) : ["echo","health","env_check","fs_read","fs_write"];
-    return __ok(res, { tools: names.map(n => ({ name: n })) });
-  });
-
-  // 호출: { name, arguments, wait? }
-  app.post("/mcp/tools/call", async (req, res) => {
-    try {
-      const body = (req && req.body) ? req.body : {};
-      const name = body && body.name ? body.name : null;
-      const args = body && body.arguments ? body.arguments : {};
-      const wait = (typeof body.wait !== "undefined") ? body.wait : true;
-      if (!name) return __ok(res, { result: { is_error: true, error: "missing name" } });
-
-      const t = __findTools();
-      const fallbacks = {
-        echo:     async ({ text }) => ({ is_error: false, value: String(text || "") }),
-        health:   async () => ({ is_error: false, value: { status: "ok" } }),
-        env_check:async () => ({
-          is_error: false,
-          value: {
-            GITHUB_TOKEN: !!process.env.GITHUB_TOKEN,
-            GITHUB_REPO_OWNER: !!process.env.GITHUB_REPO_OWNER,
-            GITHUB_REPO_NAME: !!process.env.GITHUB_REPO_NAME
-          }
-        })
-      };
-      let fn = (t && t[name]) ? t[name] : fallbacks[name];
-      if (!fn) return __ok(res, { result: { is_error: true, error: "unknown tool: " + name } });
-
-      const result = await fn(args || {});
-      const textOut = (result && typeof result.value === "string") ? result.value : undefined;
-      return __ok(res, { result, text: textOut });
-    } catch (e) {
-      return __ok(res, { result: { is_error: true, error: String(e && e.message ? e.message : e) } });
-    }
-  });
-} catch (e) {
-  console.error("[MCP REST inject] failed:", e);
-}
-// == end MCP REST routes ==
-app.disable("x-powered-by");
-app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-
-const PORT = parseInt(process.env.PORT || "10000", 10);
-const HOST = "0.0.0.0";
-
-const REQUIRE_SECRET = String(process.env.MCP_REQUIRE_SHARED_SECRET || "false").toLowerCase() === "true";
-const SHARED_SECRET = process.env.MCP_SHARED_SECRET || "";
-
-const GH_OWNER  = process.env.GH_OWNER || "";
-const GH_REPO   = process.env.GH_REPO  || "";
-const GH_TOKEN  = process.env.GH_TOKEN || "";
-const GH_BRANCH = process.env.GH_BRANCH || "main";
-
-const jobs = new Map();
-
-function makeJsonRpcResult(id, result) { return { jsonrpc: "2.0", id, result }; }
-function ok(content) {
-  const arr = Array.isArray(content) ? content : [{ type: "text", text: String(content ?? "") }];
-  return { content: arr, isError: false };
-}
-function err(objOrText) {
-  const item = (typeof objOrText === "object" && objOrText !== null)
-    ? { type: "json", json: objOrText }
-    : { type: "text", text: String(objOrText ?? "error") };
-  return { content: [item], isError: true };
-}
-
+// Optional shared-secret (no 4xx: always 200 + is_error)
 function requireSecretIfNeeded(req, res, next) {
-  if (!REQUIRE_SECRET) return next();
-  const h = req.headers || {};
-  const auth = String(h["authorization"] || "");
-  const x = String(h["x-mcp-shared-secret"] || "");
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
-  if (token && token === SHARED_SECRET) return next();
-  if (x && x === SHARED_SECRET) return next();
-  res.status(200).json(makeJsonRpcResult(null, err({ ok:false, code:"UNAUTHORIZED" })));
+  const secret = process.env.MCP_SHARED_SECRET;
+  if (!secret) return next();
+  const auth = req.headers["authorization"] || "";
+  const ok = auth === `Bearer ${secret}` || auth === secret;
+  if (!ok) return res.status(200).json({ result: { is_error: true, error: "unauthorized" } });
+  return next();
 }
 
-function normalizeName(name) {
-  if (!name) return "";
-  let s = String(name).toLowerCase().trim();
-  s = s.replace(/^mcp[./:_-]*/g, "");
-  s = s.replace(/^(tools?|tool|call)[./:_-]*/g, "");
-  s = s.replace(/[^\w]/g, "");
-  s = s.replace(/_/g, "");
-  return s;
-}
+function ok(res, payload){ return res.status(200).json(payload); }
+function boolEnv(k){ return Boolean(process.env[k]); }
 
-function listTools() {
-  return {
-    tools: [
-      { name: "fetch", description: "Fetch a URL and return text (first 5000 chars)", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
-      { name: "search", description: "Simple search stub", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-      {
-        name: "health",
-        description: "Return server health check result.",
-        inputSchema: { type: "object", properties: {}, required: [] }
-      },
-      {
-        name: "echo",
-        description: "Echo text back to the caller.",
-        inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
-      },
-      {
-        name: "env_check",
-        description: "Report presence of GitHub env variables.",
-        inputSchema: { type: "object", properties: {}, required: [] }
-      },
-      {
-        name: "fs_read",
-        description: "Read a file from the configured GitHub repo via Contents API.",
-        inputSchema: {
-          type: "object",
-          properties: { file_path: { type: "string" }, ref: { type: "string" } },
-          required: ["file_path"]
-        }
-      },
-      {
-        name: "fs_write",
-        description: "Write a file to the configured GitHub repo via Contents API.",
-        inputSchema: {
-          type: "object",
-          properties: { file_path: { type: "string" }, content: { type: "string" }, message: { type: "string" } },
-          required: ["file_path", "content"]
-        }
-      }
-    ]
-  };
-}
-
-async function ghReadFile({ file_path, ref }) {
-  if (!(GH_OWNER && GH_REPO && GH_TOKEN)) {
-    return err({ ok:false, code:"MISSING_GH_CREDENTIALS",
-      missing: { GH_OWNER: !!GH_OWNER, GH_REPO: !!GH_REPO, GH_TOKEN: !!GH_TOKEN } });
+// ----- GitHub helpers (Node 18+ has global fetch) -----
+async function ghFetch(path, options) {
+  const owner = process.env.GITHUB_REPO_OWNER;
+  const repo  = process.env.GITHUB_REPO_NAME;
+  const token = process.env.GITHUB_TOKEN;
+  if (!owner || !repo || !token) throw new Error("missing GitHub env");
+  const url = `https://api.github.com/repos/${owner}/${repo}${path}`;
+  const headers = Object.assign({
+    "User-Agent": APP_NAME,
+    "Accept": "application/vnd.github+json",
+    "Authorization": `token ${token}`
+  }, (options && options.headers) ? options.headers : {});
+  const res = await fetch(url, Object.assign({}, options, { headers }));
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GitHub ${res.status}: ${text}`);
   }
-  const url = `https://api.github.com/repos/${encodeURIComponent(GH_OWNER)}/${encodeURIComponent(GH_REPO)}/contents/${file_path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
-  const r = await fetch(url, {
-    headers: {
-      "Authorization": `Bearer ${GH_TOKEN}`,
-      "User-Agent": "mcp-server/1.0",
-      "Accept": "application/vnd.github+json"
-    }
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) return err({ ok:false, code:"GITHUB_API_ERROR", status:r.status, body:j });
-  const b64 = j && j.content ? j.content : "";
-  let text = ""; try { text = Buffer.from(b64, "base64").toString("utf8"); } catch { text = ""; }
-  return ok([{ type:"text", text }]);
+  return res;
 }
 
-async function ghWriteFile({ file_path, content, message }) {
-  if (!(GH_OWNER && GH_REPO && GH_TOKEN)) {
-    return err({ ok:false, code:"MISSING_GH_CREDENTIALS",
-      missing: { GH_OWNER: !!GH_OWNER, GH_REPO: !!GH_REPO, GH_TOKEN: !!GH_TOKEN } });
-  }
-  const base = `https://api.github.com/repos/${encodeURIComponent(GH_OWNER)}/${encodeURIComponent(GH_REPO)}/contents/${file_path}`;
-  let sha;
-  const r0 = await fetch(`${base}?ref=${encodeURIComponent(GH_BRANCH)}`, {
-    headers: { "Authorization": `Bearer ${GH_TOKEN}`, "User-Agent": "mcp-server/1.0", "Accept":"application/vnd.github+json" }
-  });
-  if (r0.ok) { const j0 = await r0.json().catch(() => ({})); if (j0 && j0.sha) sha = j0.sha; }
+async function ghReadFile(file_path, ref) {
+  const refQ = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+  const res = await ghFetch(`/contents/${encodeURIComponent(file_path)}${refQ}`);
+  const json = await res.json();
+  const content = Buffer.from(json.content, "base64").toString("utf8");
+  return { path: file_path, sha: json.sha, content };
+}
 
-  const payload = {
-    message: message || "update via mcp",
-    content: Buffer.from(String(content ?? ""), "utf8").toString("base64"),
-    branch: GH_BRANCH
-  };
-  if (sha) payload.sha = sha;
-
-  const r = await fetch(base, {
+async function ghWriteFile(file_path, content, message, shaOpt) {
+  const owner = process.env.GITHUB_REPO_OWNER;
+  const repo  = process.env.GITHUB_REPO_NAME;
+  const token = process.env.GITHUB_TOKEN;
+  if (!owner || !repo || !token) throw new Error("missing GitHub env");
+  const b64 = Buffer.from(content, "utf8").toString("base64");
+  const body = { message: message || `chore: write ${file_path} via MCP`, content: b64 };
+  if (shaOpt) body.sha = shaOpt;
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(file_path)}`;
+  const res = await fetch(url, {
     method: "PUT",
     headers: {
-      "Authorization": `Bearer ${GH_TOKEN}`,
-      "User-Agent": "mcp-server/1.0",
+      "User-Agent": APP_NAME,
       "Accept": "application/vnd.github+json",
+      "Authorization": `token ${token}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(body)
   });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) return err({ ok:false, code:"GITHUB_API_ERROR", status:r.status, body:j });
-  return ok([{ type:"json", json: { ok:true, commit:j.commit || null } }]);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GitHub ${res.status}: ${text}`);
+  }
+  const json = await res.json();
+  return { path: file_path, committed_sha: json.commit && json.commit.sha };
 }
 
-async function callTool(rawName, args = {}) {
-  const name = normalizeName(rawName);
-  try {
-    switch (name) {
-      case "health": {
-        const payload = { ok:true, service:"mcp-server", time:new Date().toISOString() };
-        // text 먼저 + json 함께 (일부 프록시가 type:"json" 처리에서 터지는 문제 회피)
-        return ok([
-          { type:"text", text:"ok" },
-          { type:"json", json: payload }
-        ]);
-      }
-      case "echo": {
-        const text = (args && typeof args.text !== "undefined") ? String(args.text) : "pong";
-        return ok([{ type:"text", text }]);
-      }
-      case "envcheck": {
-        const payload = { GH_OWNER: !!GH_OWNER, GH_REPO: !!GH_REPO, GH_TOKEN: !!GH_TOKEN, GH_BRANCH };
-        const summary = `env GH_OWNER=${!!GH_OWNER} GH_REPO=${!!GH_REPO} GH_TOKEN=${!!GH_TOKEN} BRANCH=${GH_BRANCH}`;
-        return ok([
-          { type:"text", text: summary },
-          { type:"json", json: payload }
-        ]);
-      }
-      case "fsread": {
-        if (!args || !args.file_path) return err({ ok:false, code:"MISSING_ARGUMENT", arg:"file_path" });
-        return await ghReadFile({ file_path: args.file_path, ref: args.ref || GH_BRANCH });
-      }
-      case "fswrite": {
-        if (!args || !args.file_path || typeof args.content === "undefined") {
-          return err({ ok:false, code:"MISSING_ARGUMENT", required:["file_path","content"] });
-        }
-        return await ghWriteFile({ file_path: args.file_path, content: args.content, message: args.message || "update via mcp" });
-      }
-      default:
-        return err({ ok:false, code:"UNKNOWN_TOOL", name: rawName, normalized: name });
+// ----- Tools -----
+const tools = {
+  echo: async (args) => {
+    const text = args && typeof args.text !== "undefined" ? String(args.text) : "";
+    return { is_error: false, value: text };
+  },
+  health: async () => {
+    return { is_error: false, value: { status: "ok" } };
+  },
+  env_check: async () => {
+    return { is_error: false, value: {
+      GITHUB_TOKEN:      boolEnv("GITHUB_TOKEN"),
+      GITHUB_REPO_OWNER: boolEnv("GITHUB_REPO_OWNER"),
+      GITHUB_REPO_NAME:  boolEnv("GITHUB_REPO_NAME")
+    }};
+  },
+  fs_read: async (args) => {
+    try {
+      const file_path = args && args.file_path;
+      const ref = args && args.ref;
+      if (!file_path) return { is_error: true, error: "missing file_path" };
+      const out = await ghReadFile(file_path, ref);
+      return { is_error: false, value: out };
+    } catch (e) {
+      return { is_error: true, error: String(e && e.message ? e.message : e) };
     }
-  } catch (e) {
-    return err({ ok:false, code:"TOOL_EXCEPTION", message: String(e && e.message || e) });
+  },
+  fs_write: async (args) => {
+    try {
+      const file_path = args && args.file_path;
+      const content   = args && args.content;
+      const message   = args && args.message;
+      if (!file_path || typeof content !== "string") {
+        return { is_error: true, error: "missing file_path or content" };
+      }
+      let sha = null;
+      try {
+        const existing = await ghReadFile(file_path);
+        sha = existing.sha || null;
+      } catch (e) { /* new file */ }
+      const out = await ghWriteFile(file_path, content, message, sha);
+      return { is_error: false, value: out };
+    } catch (e) {
+      return { is_error: true, error: String(e && e.message ? e.message : e) };
+    }
   }
-}
+};
 
-function scheduleJob(fn) {
-  const id = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
-  jobs.set(id, { status: "pending", result: null });
-  setImmediate(async () => {
-    try { jobs.set(id, { status: "done", result: await fn() }); }
-    catch (e) { jobs.set(id, { status: "error", result: err({ ok:false, code:"JOB_EXCEPTION", message:String(e && e.message || e) }) }); }
-  });
-  return id;
-}
+// ----- REST endpoints (always HTTP 200) -----
+app.get("/health", (req, res) => ok(res, { status: "ok" }));
 
-app.get("/healthz", (req, res) => {
-  res.status(200).json({ ok:true, service:"mcp-server", time:new Date().toISOString() });
+app.get("/mcp/tools/list", (req, res) => {
+  const names = Object.keys(tools);
+  return ok(res, { tools: names.map(n => ({ name: n })) });
 });
 
-app.get("/mcp/jobs/:id", (req, res) => {
-  const j = jobs.get(req.params.id);
-  if (!j) return res.status(200).json(makeJsonRpcResult(null, err({ ok:false, code:"JOB_NOT_FOUND" })));
-  return res.status(200).json(makeJsonRpcResult(req.params.id, ok([{ type:"json", json:j }])));
-});
-
-app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
-  const body = req.body || {};
-  const id = body.id ?? null;
-  const method = String(body.method || "").toLowerCase();
+app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
   try {
-        // --- MCP initialize / initialized / ping (spec compliant) ---
-    if (method === "initialize") {
-      const p = body.params || {};
-      const result = {
-        protocolVersion: p.protocolVersion || "2025-03-26",
-        capabilities: {
-          logging: {},
-          prompts: { listChanged: true },
-          resources: { subscribe: false, listChanged: true },
-          tools: { listChanged: true }
-        },
-        serverInfo: { name: "outreach-mcp-server", version: "1.0.0" }
-      };
-      // (선택) 세션 ID 제공
-      try { res.set("Mcp-Session-Id", (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2))); } catch {}
-      return res.status(200).json({ jsonrpc: "2.0", id, result });
-    }
-    if (method === "notifications/initialized") {
-      // JSON-RPC notification: 본문 없이 202
-      return res.status(202).end();
-    }
-    if (method === "ping") {
-      const p = body.params || {};
-      return res.status(200).json({ jsonrpc: "2.0", id, result: { id: p.id || null } });
-    }
-    // -------------------------------------------------------------
-    if (method === "tools.list" || method === "tools/list") {
-      return res.status(200).json(makeJsonRpcResult(id, listTools()));
-    }
-    if (method === "tools.call" || method === "tools/call" || method === "tool.call" || method === "tool/call") {
-      const params = body.params || {};
-      const name = params.name || "";
-      const args = params.arguments || {};
-      const wait = Object.prototype.hasOwnProperty.call(params, "wait") ? !!params.wait : true;
-      if (wait) {
-        const r = await callTool(name, args);
-        return res.status(200).json(makeJsonRpcResult(id, r));
-      } else {
-        const jobId = scheduleJob(() => callTool(name, args));
-        return res.status(200).json(makeJsonRpcResult(id, ok([{ type:"json", json:{ ok:true, jobId } }])));
-      }
-    }
-    return res.status(200).json(makeJsonRpcResult(id, err({ ok:false, code:"UNKNOWN_METHOD", method: body.method })));
+    const body = req && req.body ? req.body : {};
+    const name = body && body.name ? body.name : null;
+    const args = (body && (body.arguments || body.args)) ? (body.arguments || body.args) : {};
+    const wait = (typeof body.wait !== "undefined") ? body.wait : true;
+    if (!name) return ok(res, { result: { is_error: true, error: "missing name" } });
+    const fn = tools[name];
+    if (!fn) return ok(res, { result: { is_error: true, error: "unknown tool: " + name } });
+    const result = await fn(args || {});
+    const textOut = (result && typeof result.value === "string") ? result.value : undefined;
+    return ok(res, { result, text: textOut });
   } catch (e) {
-    return res.status(200).json(makeJsonRpcResult(id, err({ ok:false, code:"HANDLER_EXCEPTION", message:String(e && e.message || e) })));
+    return ok(res, { result: { is_error: true, error: String(e && e.message ? e.message : e) } });
   }
 });
 
-app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => { if(((req.params.linkId||"")+"").toLowerCase()==="tools") return next();  if ((req.params.linkId||"").toLowerCase()==="tools") return next();
-  try {
-    const tool = req.params.tool;
-    const args = (req.body && req.body.arguments) || {};
-    const wait = (req.body && Object.prototype.hasOwnProperty.call(req.body, "wait")) ? !!req.body.wait : true;
-    if (wait) {
-      const r = await callTool(tool, args);
-      return res.status(200).json(makeJsonRpcResult(null, r));
-    } else {
-      const jobId = scheduleJob(() => callTool(tool, args));
-      return res.status(200).json(makeJsonRpcResult(null, ok([{ type:"json", json:{ ok:true, jobId } }])));
-    }
-  } catch (e) {
-    return res.status(200).json(makeJsonRpcResult(null, err({ ok:false, code:"BRIDGE_EXCEPTION", message:String(e && e.message || e) })));
-  }
+// Keep generic bridge but bypass for /mcp/tools/*
+app.post("/mcp/:linkId/:tool", requireSecretIfNeeded, async (req, res, next) => {
+  const linkId = (req.params.linkId || "").toLowerCase();
+  if (linkId === "tools") return next();
+  return ok(res, { result: { is_error: true, error: "bridge route not implemented" } });
 });
 
-app.post("/mcp/tools/call", requireSecretIfNeeded, async (req,res,next) => { if(((req.params.linkId||"")+"").toLowerCase()==="tools") return next(); 
-  try {
-    const b = req.body || {};
-    let raw = b.name || b.tool || b.action || "";
-    let name = String(raw || "").toLowerCase().trim();
-    if (name.startsWith("mcp_")) name = name.slice(4); // mcp_echo -> echo
-    const args = b.arguments || b.args || {};
-    const wait = Object.prototype.hasOwnProperty.call(b, "wait") ? !!b.wait : true;
-
-    if (wait) {
-      const r = await callTool(name, args);
-      return res.status(200).json({ result: r });          // 항상 200
-    } else {
-      const jobId = scheduleJob(() => callTool(name, args));
-      return res.status(200).json({ result: { content:[{ type:"json", json:{ ok:true, jobId } }], isError:false }});
-    }
-  } catch (e) {
-    return res.status(200).json({ result: { content:[{ type:"text", text:String(e && e.message || e) }], isError:true }});
-  }
+app.listen(PORT, () => {
+  console.log(`${APP_NAME} listening on ${PORT}`);
 });
-
-app.get("/mcp/tools/list", requireSecretIfNeeded, async (req, res) => {
-  try {
-    if (typeof toolList === "function") {
-      const t = toolList();
-      if (t && Array.isArray(t.tools) && t.tools.length) {
-        return res.status(200).json(t);
-      }
-    }
-    // fallback: call our own JSON-RPC tools.list
-    const r = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: "rest-list", method: "tools.list" })
-    });
-    const j = await r.json().catch(() => ({}));
-    const tools = (j && j.result && j.result.tools) || [];
-    return res.status(200).json({ tools });
-  } catch (e) {
-    return res.status(200).json({ tools: [] });
-  }
-});
-});
-
-app.get("/", (req, res) => {
-  res.status(200).json({ ok:true, service:"mcp-server", endpoints:["/healthz","/mcp"] });
-});
-
-app.get("/mcp", (req, res) => {
-  res.status(200).json({ ok: true, transport: "http", spec: "mcp/streamable-http", endpoints: ["POST /mcp","GET /mcp/jobs/:id"] });
-});
-http.createServer(app).listen(PORT, HOST, () => {
-  console.log(`[mcp-server] listening on http://${HOST}:${PORT}`);
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
