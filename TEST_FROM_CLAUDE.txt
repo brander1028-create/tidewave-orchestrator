@@ -1,0 +1,2 @@
+Claude MCP가 GitHub에 파일을 생성했습니다!
+테스트 성공!
