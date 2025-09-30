@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: mcp-server
+    env: docker
+    region: oregon
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: GH_TOKEN
+        sync: false
+      - key: GH_OWNER
+        value: brander1028-create
+      - key: GH_REPO
+        value: tidewave-orchestrator
+      - key: VERCEL_DEPLOY_HOOK_OPS_MAIN
+        sync: false
+      - key: VERCEL_DEPLOY_HOOK_PROD_MANUAL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: N8N_URL
+        sync: false
