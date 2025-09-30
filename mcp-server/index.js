@@ -254,6 +254,29 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
   const method = normalizeMethod(body.method);
   res.set("X-MCP-Handler", "v2");
   
+  if (method === "initialize") {
+    console.log("=== INITIALIZE ===");
+    return res.status(200).json({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: "2025-03-26",
+        capabilities: {
+          tools: { listChanged: false }
+        },
+        serverInfo: {
+          name: "mcp-server",
+          version: "1.0.0"
+        }
+      }
+    });
+  }
+  
+  if (method === "initialized") {
+    console.log("=== INITIALIZED ===");
+    return res.status(200).end();
+  }
+  
   if (method === "tools.list" || method === "tools/list") {
     return res.status(200).json({ jsonrpc: "2.0", id, result: toolList() });
   }
