@@ -156,13 +156,7 @@ app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
 /* removed legacy /mcp handler */
 
 
-    const isList = (m) => m === "tools.list" || m === "tools/list";
-    const isCall = (m) => m === "tools.call" || m === "tool.call" || m === "tools/call" || m === "tool/call";
-
-    if (isList(method)) {
-      // 도구 목록 그대로 반환 (JSON-RPC 표준: result 바로 아래)
-      return res.status(200).json({ jsonrpc: "2.0", id, result: toolList() });
-    }
+    
 
     if (isCall(method)) {
       const params = body.params || {};
@@ -196,27 +190,6 @@ app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
       id: null,
       result: { content: [{ type: "text", text: String(e && e.message || e) }], is_error: true, isError: true }
     });
-  }
-});const sendErr = (code, message, data) => ok(res, { jsonrpc: "2.0", id, error: { code, message, data } });
-
-  try {
-    if(method === "ping") return sendOk({ pong: true, t: Date.now() });
-    if(((method==="tools.list"||method==="tools.list")||method==="tools.list")){
-      const names = Object.keys(tools);
-      return sendOk({ tools: names.map(n => ({ name: n })) });
-    }
-    if(((method==="tools.call"||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||(method==="tools.call"||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||method==="tool.call"))||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||(method==="tools.call"||method==="tools.call"||(method==="tools.call"||method==="tools.call"||method==="tool.call"||method==="tool.call")||method==="tool.call"))){
-      const name = params && (params.name || (params.tool && params.tool.name)) ? (params.name || params.tool.name) : null;
-      const args = (params && (params.arguments || params.args)) ? (params.arguments || params.args) : {};
-      if(!name) return sendErr(-32602, "missing tool name");
-      const fn = tools[name];
-      if(!fn) return sendErr(-32601, "unknown tool: " + name);
-      const result = await fn(args || {});
-      return sendOk({ result });
-    }
-    return sendErr(-32601, "method not found: " + method);
-  } catch(e){
-    return sendErr(-32000, String(e && e.message ? e.message : e));
   }
 });
 
