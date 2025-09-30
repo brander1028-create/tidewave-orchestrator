@@ -191,7 +191,7 @@ function normalizeToolResult(r) {
     if (r && typeof r === "object" && typeof r.value !== "undefined" && !Array.isArray(r.content)) {
       const isErr = !!(r.is_error || r.isError);
       return {
-        content: [{ type: "text", text: String(r.value) }],
+        content: [{ type: "text", text: typeof r.value === "object" ? JSON.stringify(r.value, null, 2) : String(r.value) }],
         is_error: isErr,
         isError: isErr
       };
