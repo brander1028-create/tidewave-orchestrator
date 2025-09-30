@@ -153,13 +153,8 @@ app.post("/mcp/tools/call", requireSecretIfNeeded, async (req, res) => {
 });
 
 // ----- JSON-RPC (/mcp) -----
-app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
-  try {
-    const body = req.body || {};
-    const id = Object.prototype.hasOwnProperty.call(body, "id") ? body.id : null;
+/* removed legacy /mcp handler */
 
-    // method 정규화: 슬래시/점 혼용 모두 허용하되 내부적으로 점 표기 사용
-    let method = String(body.method || "").toLowerCase().replace(/\/+/g, ".");
 
     const isList = (m) => m === "tools.list" || m === "tools/list";
     const isCall = (m) => m === "tools.call" || m === "tool.call" || m === "tools/call" || m === "tool/call";
@@ -244,3 +239,80 @@ app.get("/mcp", (req, res) => {
     return res.status(200).json({ ok:false, error:String(e && e.message || e) });
   }
 });
+
+/* ==== MCP JSON-RPC: canonical single handler (v2) ==== */
+function _mcpNormalizeMethod(m){ return String(m||"").toLowerCase().replace(/\/+/g,"."); }
+function _mcpNormalizeToolResult(r){
+  try{
+    if (r && typeof r === "object" && r.result) r = r.result; // flatten nested {result:...}
+    // legacy { value: ... } -> text content
+    if (r && typeof r === "object" && typeof r.value !== "undefined" && !Array.isArray(r.content)){
+      const isErr = !!(r.is_error || r.isError);
+      return { content:[{ type:"text", text:String(r.value) }], is_error:isErr, isError:isErr };
+    }
+    if (Array.isArray(r)) return { content:r, is_error:false, isError:false };
+    if (r && typeof r === "object" && Array.isArray(r.content)){
+      if (typeof r.is_error === "undefined") r.is_error = !!r.isError;
+      if (typeof r.isError === "undefined") r.isError = !!r.is_error;
+      return r;
+    }
+    return { content:[{ type:"json", json:r }], is_error:false, isError:false };
+  }catch(e){
+    return { content:[{ type:"text", text:String(e && e.message || e) }], is_error:true, isError:true };
+  }
+}
+const _mcpCallToolFn = (typeof callTool === "function") ? callTool : async function(name, args){
+  switch(String(name)){
+    case "echo": {
+      const text = (args && typeof args.text !== "undefined") ? String(args.text) : "pong";
+      return { content:[{ type:"text", text }], is_error:false, isError:false };
+    }
+    case "health": {
+      return { content:[{ type:"json", json:{ ok:true, service:"mcp-server", time:new Date().toISOString() } }], is_error:false, isError:false };
+    }
+    case "env_check": {
+      return { content:[{ type:"json", json:{ node:process.version, pid:process.pid } }], is_error:false, isError:false };
+    }
+    default:
+      return { content:[{ type:"text", text:`unknown tool: ${name}` }], is_error:true, isError:true };
+  }
+};
+function _mcpToolList(){
+  try { if (typeof toolList === "function") return toolList(); } catch {}
+  return { tools: [ {name:"echo"}, {name:"health"}, {name:"env_check"}, {name:"fs_read"}, {name:"fs_write"} ] };
+}
+try {
+  if (app && app._router && Array.isArray(app._router.stack)) {
+    app._router.stack = app._router.stack.filter(layer => !(layer && layer.route && layer.route.path === "/mcp" && layer.route.methods && layer.route.methods.post));
+  }
+} catch{}
+app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
+  const body = req.body || {};
+  const id = Object.prototype.hasOwnProperty.call(body,"id") ? body.id : null;
+  const method = _mcpNormalizeMethod(body.method);
+  res.set("X-MCP-Handler","v2");
+
+  if (method === "tools.list" || method === "tools/list") {
+    return res.status(200).json({ jsonrpc:"2.0", id, result: _mcpToolList() });
+  }
+  if (method === "tools.call" || method === "tool.call" || method === "tools/call" || method === "tool/call") {
+    const params = body.params || {};
+    const name = params.name || "";
+    const args = params.arguments || {};
+    const wait = Object.prototype.hasOwnProperty.call(params,"wait") ? !!params.wait : true;
+    if (wait) {
+      const r = await _mcpCallToolFn(name, args);
+      return res.status(200).json({ jsonrpc:"2.0", id, result: _mcpNormalizeToolResult(r) });
+    } else {
+      return res.status(200).json({
+        jsonrpc:"2.0", id,
+        result: { content:[{ type:"text", text:"queued (not implemented)" }], is_error:false, isError:false }
+      });
+    }
+  }
+  return res.status(200).json({
+    jsonrpc:"2.0", id,
+    result: { content:[{ type:"text", text:`unknown method: ${method}` }], is_error:true, isError:true }
+  });
+});
+/* ==== end of canonical handler ==== */
