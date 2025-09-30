@@ -286,7 +286,7 @@ try {
     app._router.stack = app._router.stack.filter(layer => !(layer && layer.route && layer.route.path === "/mcp" && layer.route.methods && layer.route.methods.post));
   }
 } catch{}
-app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
+app.post("/mcp_legacy", requireSecretIfNeeded, async (req, res) => {
   const body = req.body || {};
   const id = Object.prototype.hasOwnProperty.call(body,"id") ? body.id : null;
   const method = _mcpNormalizeMethod(body.method);
@@ -316,3 +316,40 @@ app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
   });
 });
 /* ==== end of canonical handler ==== */
+
+/* ==== MCP JSON-RPC v2 (canonical) ==== */
+function _mcpNormalizeMethod(m){ return String(m||"").toLowerCase().replace(/\/+/g,"."); }
+function _mcpNormalizeToolResult(r){
+  try{
+    if (r && typeof r==="object" && r.result) r=r.result;                   // flatten nested {result:...}
+    if (r && typeof r==="object" && typeof r.value!=="undefined" && !Array.isArray(r.content)){
+      const e=!!(r.is_error||r.isError); return {content:[{type:"text",text:String(r.value)}],is_error:e,isError:e};
+    }
+    if (Array.isArray(r)) return {content:r,is_error:false,isError:false};   // already content[]
+    if (r && typeof r==="object" && Array.isArray(r.content)){
+      if (typeof r.is_error==="undefined") r.is_error=!!r.isError;
+      if (typeof r.isError==="undefined") r.isError=!!r.is_error;
+      return r;
+    }
+    return {content:[{type:"json",json:r}],is_error:false,isError:false};
+  }catch(e){ return {content:[{type:"text",text:String(e&&e.message||e)}],is_error:true,isError:true}; }
+}
+const _mcpCallToolFn = (typeof callTool==="function")? callTool : async (name,args)=>{
+  if(name==="echo"){ const t=String((args&&args.text)??"pong"); return {content:[{type:"text",text:t}],is_error:false,isError:false}; }
+  if(name==="health"){ return {content:[{type:"json",json:{ok:true,service:"mcp-server",time:new Date().toISOString()}}],is_error:false,isError:false}; }
+  if(name==="env_check"){ return {content:[{type:"json",json:{node:process.version,pid:process.pid}}],is_error:false,isError:false}; }
+  return {content:[{type:"text",text:`unknown tool: ${name}`}],is_error:true,isError:true};
+};
+function _mcpToolList(){ try{ if(typeof toolList==="function") return toolList(); }catch{} return {tools:[{name:"echo"},{name:"health"},{name:"env_check"},{name:"fs_read"},{name:"fs_write"}]}; }
+app.post("/mcp", requireSecretIfNeeded, async (req,res)=>{
+  const body=req.body||{}; const id=(Object.prototype.hasOwnProperty.call(body,"id")?body.id:null);
+  const method=_mcpNormalizeMethod(body.method); res.set("X-MCP-Handler","v2");
+  if(method==="tools.list"||method==="tools/list"){ return res.status(200).json({jsonrpc:"2.0",id,result:_mcpToolList()}); }
+  if(method==="tools.call"||method==="tool.call"||method==="tools/call"||method==="tool/call"){
+    const p=body.params||{}; const name=p.name||""; const args=p.arguments||{}; const wait=(Object.prototype.hasOwnProperty.call(p,"wait")?!!p.wait:true);
+    if(wait){ const r=await _mcpCallToolFn(name,args); return res.status(200).json({jsonrpc:"2.0",id,result:_mcpNormalizeToolResult(r)}); }
+    return res.status(200).json({jsonrpc:"2.0",id,result:{content:[{type:"text",text:"queued"}],is_error:false,isError:false}});
+  }
+  return res.status(200).json({jsonrpc:"2.0",id,result:{content:[{type:"text",text:`unknown method: ${method}`}],is_error:true,isError:true}});
+});
+/* ==== end v2 ==== */
