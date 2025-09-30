@@ -341,7 +341,7 @@ const _mcpCallToolFn = (typeof callTool==="function")? callTool : async (name,ar
   return {content:[{type:"text",text:`unknown tool: ${name}`}],is_error:true,isError:true};
 };
 function _mcpToolList(){ try{ if(typeof toolList==="function") return toolList(); }catch{} return {tools:[{name:"echo"},{name:"health"},{name:"env_check"},{name:"fs_read"},{name:"fs_write"}]}; }
-app.post("/mcp", requireSecretIfNeeded, async (req,res)=>{
+app.post("/mcp", requireSecretIfNeeded, async async (req, res) => {
   const body=req.body||{}; const id=(Object.prototype.hasOwnProperty.call(body,"id")?body.id:null);
   const method=_mcpNormalizeMethod(body.method); res.set("X-MCP-Handler","v2");
   if(method==="tools.list"||method==="tools/list"){ return res.status(200).json({jsonrpc:"2.0",id,result:_mcpToolList()}); }
