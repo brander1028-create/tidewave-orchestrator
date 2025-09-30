@@ -246,6 +246,9 @@ app.get("/mcp", (req, res) => {
 });
 
 app.post("/mcp", requireSecretIfNeeded, async (req, res) => {
+  console.log("=== MCP REQUEST ===");
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+  console.log("Headers:", JSON.stringify(req.headers, null, 2));
   const body = req.body || {};
   const id = Object.prototype.hasOwnProperty.call(body, "id") ? body.id : null;
   const method = normalizeMethod(body.method);
