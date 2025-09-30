@@ -1,16 +1,10 @@
-# rankpage
+# rankpage (import-ready)
 
-간단한 랭킹/검색 랜딩 페이지 템플릿입니다.
+- 기존 콘텐츠는 `archive/2025-09-30_rankpage_backup/` 으로 이동(백업).
+- 여기는 새 프로젝트 파일을 넣기 위한 비어있는 준비 상태입니다.
 
-## 구성
-- 정적 사이트(HTML/CSS/JS)
-- GitHub Pages 또는 정적 호스팅에 적합
-
-## 로컬 실행
-index.html 파일을 브라우저로 여세요.
-
-## 배포
-- GitHub Actions로 rankpage 디렉터리를 Pages에 배포할 수 있습니다.
-- 또는 S3/Vercel/Netlify 등으로 업로드하세요.
+## 가져오기 안내
+1) 이 채팅에 ZIP을 업로드하거나 공개 Git URL을 알려주세요.
+2) 제가 `rankpage/`에 그대로 넣고 커밋합니다.
 
 작성: ChatGPT (2025-09-30, KST)
