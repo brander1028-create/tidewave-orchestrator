@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>rankpage — starter</title>
+  <style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:40px;max-width:860px;margin:0 auto;background:#fafafa} .card{border:1px solid #e5e7eb;border-radius:16px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,.06);background:#fff} h1{margin:0 0 8px} .input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid #d1d5db} .list{margin-top:16px} .item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed #eee} .rank{font-weight:700}</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🏁 rankpage</h1>
+    <p>간단한 랭킹/검색 데모입니다. 상단 입력창에 검색하면 리스트가 필터링됩니다.</p>
+    <input id="q" class="input" placeholder="검색어를 입력하세요..." />
+    <div id="list" class="list"></div>
+  </div>
+  <script>
+    const data=[
+      { name:'Alpha', score:98 },{ name:'Bravo', score:92 },{ name:'Charlie', score:90 },{ name:'Delta', score:84 },{ name:'Echo', score:80 }
+    ];
+    const list=document.getElementById('list');
+    const q=document.getElementById('q');
+    function render(filter=''){
+      const items=data
+        .filter(x=>x.name.toLowerCase().includes(filter.toLowerCase()))
+        .sort((a,b)=>b.score-a.score)
+        .map((x,i)=>`<div class=\"item\"><span><span class=\"rank\">#${i+1}</span> ${x.name}</span><span>${x.score}</span></div>`)
+        .join('');
+      list.innerHTML=items||'<p>검색 결과가 없습니다.</p>';
+    }
+    q.addEventListener('input',e=>render(e.target.value));
+    render();
+  </script>
+</body>
+</html>
